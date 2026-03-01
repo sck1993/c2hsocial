@@ -1,0 +1,37 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // 워크스페이스: 해당 workspace에 속한 인증된 유저만 접근
+    match /workspaces/{workspaceId} {
+      allow read, write: if request.auth != null
+        && request.auth.token.workspaceId == workspaceId;
+
+      // 구독 채널 설정
+      match /subscribed_channels/{channelId} {
+        allow read, write: if request.auth != null
+          && request.auth.token.workspaceId == workspaceId;
+      }
+
+      // 일일 리포트
+      match /reports/{date}/channels/{channelId} {
+        allow read: if request.auth != null
+          && request.auth.token.workspaceId == workspaceId;
+        allow write: if false; // Cloud Functions만 쓰기 허용
+      }
+
+      // 사용량 로그
+      match /usage_logs/{logId} {
+        allow read: if request.auth != null
+          && request.auth.token.workspaceId == workspaceId;
+        allow write: if false; // Cloud Functions만 쓰기 허용
+      }
+    }
+
+    // 슈퍼 어드민: admin 커스텀 클레임 보유자만 접근
+    match /admin/{document=**} {
+      allow read, write: if request.auth != null
+        && request.auth.token.admin == true;
+    }
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node --version)",
+      "Bash(npm --version)",
+      "Bash(firebase --version)",
+      "Bash(npm install -g firebase-tools)",
+      "Bash(npm install)",
+      "Bash(firebase deploy --only functions)",
+      "Bash(gcloud --version)",
+      "Bash(firebase deploy --only functions --force)",
+      "Bash(curl -s \"https://api-xsauyjh24q-du.a.run.app/ping\")",
+      "Bash(curl -s -X POST \"https://api-xsauyjh24q-du.a.run.app/seed\" -H \"Content-Type: application/json\" -H \"x-admin-secret: sl-admin-2024-antigravity\" -d '{:*)",
+      "Bash(firebase deploy --only firestore:rules)",
+      "Bash(curl -s -X POST \"https://api-xsauyjh24q-du.a.run.app/trigger\" -H \"x-admin-secret: sl-admin-2024-antigravity\")",
+      "Bash(curl -s -X POST \"https://api-xsauyjh24q-du.a.run.app/trigger\" -H \"x-admin-secret: sl-admin-2024-antigravity\" -H \"Content-Type: application/json\" -d '{}')",
+      "Bash(curl -s \"https://api-xsauyjh24q-du.a.run.app/report?workspaceId=ws_antigravity\" -H \"x-admin-secret: sl-admin-2024-antigravity\")",
+      "Bash(python3 -m json.tool)",
+      "Bash(firebase deploy --only hosting)",
+      "Bash(firebase deploy --only functions,hosting)",
+      "Bash(npm install resend googleapis)",
+      "Bash(ls \"C:\\\\Users\\\\gunho\\\\Desktop\\\\dev\\\\SocialListener\\\\apps-script\"\" 2>&1 || echo \"directory not found \")",
+      "Bash(powershell.exe -Command \"New-Item -ItemType Directory -Path ''C:\\\\Users\\\\gunho\\\\Desktop\\\\dev\\\\SocialListener\\\\apps-script'' -Force\")",
+      "Bash(powershell.exe -Command \"New-Item -ItemType File -Path ''C:\\\\Users\\\\gunho\\\\Desktop\\\\dev\\\\SocialListener\\\\apps-script\\\\Code.gs'' -Force\")",
+      "Bash(Remove-Item \"C:\\\\Users\\\\gunho\\\\Desktop\\\\dev\\\\SocialListener\\\\functions\\\\src\\\\delivery.js\" -Force)",
+      "Bash(Write-Host \"delivery.js 삭제 완료\")",
+      "Bash(del \"C:\\\\Users\\\\gunho\\\\Desktop\\\\dev\\\\SocialListener\\\\functions\\\\src\\\\delivery.js\")",
+      "Bash(powershell.exe -Command \"Remove-Item ''C:\\\\Users\\\\gunho\\\\Desktop\\\\dev\\\\SocialListener\\\\functions\\\\src\\\\delivery.js'' -Force; Write-Host ''done''\")",
+      "Bash(powershell.exe -Command \"cd ''C:\\\\Users\\\\gunho\\\\Desktop\\\\dev\\\\SocialListener\\\\functions''; npm uninstall resend googleapis 2>&1\")",
+      "Bash(powershell.exe -Command \"cd ''C:\\\\Users\\\\gunho\\\\Desktop\\\\dev\\\\SocialListener''; firebase deploy --only functions,hosting 2>&1\")",
+      "Bash(powershell.exe -Command \"cd ''C:\\\\Users\\\\gunho\\\\Desktop\\\\dev\\\\SocialListener''; firebase deploy --only ''functions,hosting'' 2>&1\")",
+      "Bash(powershell.exe -Command \"cd ''C:\\\\Users\\\\gunho\\\\Desktop\\\\dev\\\\SocialListener\\\\functions''; npm install nodemailer googleapis 2>&1\")",
+      "Bash(powershell.exe -Command \"firebase functions:log --project sociallistener-8efde 2>&1 | Select-String -Pattern ''시트|sheet|Sheet|googleapis|PERMISSION|403|400|spread'' -CaseSensitive:$false | Select-Object -Last 20\")",
+      "Bash(powershell.exe -Command \"firebase functions:log --project sociallistener-8efde 2>&1 | Select-Object -Last 40\")",
+      "Bash(powershell.exe -Command \"cd ''C:\\\\Users\\\\gunho\\\\Desktop\\\\dev\\\\SocialListener''; firebase deploy --only functions 2>&1\")",
+      "Bash(powershell.exe -Command \"cd ''C:\\\\Users\\\\gunho\\\\Desktop\\\\dev\\\\SocialListener''; git status 2>&1\")",
+      "Bash(powershell.exe -Command \"cd ''C:\\\\Users\\\\gunho\\\\Desktop\\\\dev\\\\SocialListener''; git init 2>&1\")",
+      "Bash(git add .)"
+    ]
+  }
+}

@@ -1,0 +1,29 @@
+# 환경변수 (절대 커밋 금지)
+.env
+.env.*
+*.local
+
+# Firebase
+.firebase/
+firebase-debug.log
+firebase-debug.*.log
+.firebaserc.local
+
+# Node
+node_modules/
+functions/node_modules/
+npm-debug.log
+yarn-error.log
+
+# 빌드 산출물
+hosting/public/dist/
+
+# 에디터
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
