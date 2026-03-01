@@ -35,7 +35,11 @@
       "Bash(powershell.exe -Command \"cd ''C:\\\\Users\\\\gunho\\\\Desktop\\\\dev\\\\SocialListener''; firebase deploy --only functions 2>&1\")",
       "Bash(powershell.exe -Command \"cd ''C:\\\\Users\\\\gunho\\\\Desktop\\\\dev\\\\SocialListener''; git status 2>&1\")",
       "Bash(powershell.exe -Command \"cd ''C:\\\\Users\\\\gunho\\\\Desktop\\\\dev\\\\SocialListener''; git init 2>&1\")",
-      "Bash(git add .)"
+      "Bash(git add .)",
+      "Bash(git commit:*)",
+      "Bash(git remote add origin https://github.com/sck1993/c2hsocial)",
+      "Bash(git branch -M main)",
+      "Bash(git push -u origin main)"
     ]
   }
 }
