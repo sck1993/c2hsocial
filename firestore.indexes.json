@@ -7,6 +7,14 @@
         { "fieldPath": "workspaceId", "order": "ASCENDING" },
         { "fieldPath": "createdAt", "order": "DESCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "collection_logs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "date",        "order": "ASCENDING" },
+        { "fieldPath": "collectedAt", "order": "ASCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []
