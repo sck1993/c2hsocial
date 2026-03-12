@@ -22,6 +22,19 @@ function getKSTDaysAgoString(n) {
   return new Date(Date.now() + 9 * 60 * 60 * 1000 - n * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
 }
 
+function toIntOrNull(v) {
+  if (v === null || v === undefined || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.round(n) : null;
+}
+
+function normalizeMediaType(mediaType) {
+  const t = String(mediaType || "").toUpperCase();
+  if (!t) return null;
+  if (t === "REELS") return "VIDEO";
+  return t;
+}
+
 /**
  * Instagram 일별 파이프라인 (리포트 생성 + Firestore 저장)
  * KST 18:00에 실행 → PDT 전일 완전 데이터 수집 → 이메일 발송 없이 저장만
@@ -150,16 +163,16 @@ async function runInstagramPipeline(filterWorkspaceId = null, targetDate = null,
               const td = trendSnap.data();
               trendData.push({
                 date: trendDate,
-                followerCount: td.followerCount ?? null,
-                dailyViews:    td.dailyViews    ?? null,
+                followerCount: toIntOrNull(td.followerCount),
+                dailyViews:    toIntOrNull(td.dailyViews),
               });
             }
           }
           // 오늘(현재 수집) 데이터를 맨 끝에 추가
           trendData.push({
             date,
-            followerCount: accountMetrics.followerCount ?? null,
-            dailyViews:    accountMetrics.dailyViews    ?? null,
+            followerCount: toIntOrNull(accountMetrics.followerCount),
+            dailyViews:    toIntOrNull(accountMetrics.dailyViews),
           });
         } catch (trendErr) {
           console.warn(`[instagramPipeline] trendData 수집 실패 — ${docId}: ${trendErr.message}`);
@@ -178,11 +191,14 @@ async function runInstagramPipeline(filterWorkspaceId = null, targetDate = null,
           await sleep(500);
           try {
             const insights = await fetchPostInsights(post.id, accessToken, post);
+            const normalizedMediaType = normalizeMediaType(post.media_type);
             postsWithInsights.push({
               id: post.id,
               timestamp: post.timestamp,
               permalink: post.permalink || null,
-              mediaType: post.media_type || null,
+              mediaType: normalizedMediaType,
+              mediaTypeRaw: post.media_type || null,
+              media_type: post.media_type || null,
               caption: post.caption || null,
               ...insights,
             });
@@ -243,19 +259,19 @@ async function runInstagramPipeline(filterWorkspaceId = null, targetDate = null,
           igUserId,
           username,
           date,
-          followerCount: accountMetrics.followerCount,
+          followerCount: toIntOrNull(accountMetrics.followerCount),
           followerDelta,
-          profileViews: accountMetrics.profileViews,
+          profileViews: toIntOrNull(accountMetrics.profileViews),
           profileViewsDelta,
-          dailyReach:   accountMetrics.dailyReach,
+          dailyReach:   toIntOrNull(accountMetrics.dailyReach),
           reachDelta,
-          mediaReach:   accountMetrics.mediaReach,
-          storyReach:   accountMetrics.storyReach,
-          dailyViews:   accountMetrics.dailyViews,
+          mediaReach:   toIntOrNull(accountMetrics.mediaReach),
+          storyReach:   toIntOrNull(accountMetrics.storyReach),
+          dailyViews:   toIntOrNull(accountMetrics.dailyViews),
           viewsDelta,
-          dailyShares:  accountMetrics.dailyShares,
+          dailyShares:  toIntOrNull(accountMetrics.dailyShares),
           sharesDelta,
-          dailySaves:   accountMetrics.dailySaves,
+          dailySaves:   toIntOrNull(accountMetrics.dailySaves),
           savesDelta,
           totalShares14d,
           totalSaves14d,

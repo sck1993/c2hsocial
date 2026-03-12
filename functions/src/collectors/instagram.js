@@ -241,6 +241,7 @@ async function fetchRecentPosts(igUserId, accessToken, since) {
  */
 async function fetchPostInsights(mediaId, accessToken, mediaObj = {}) {
   const mediaType = (mediaObj.media_type || "").toUpperCase();
+  const isVideoLike = mediaType === "VIDEO" || mediaType === "REELS";
 
   // 미디어 타입별 요청 메트릭 구성
   // views: FEED + REELS + STORY 지원 ("under development"이나 현재 사용 가능)
@@ -248,7 +249,7 @@ async function fetchPostInsights(mediaId, accessToken, mediaObj = {}) {
   let metrics;
   if (mediaType === "STORY") {
     metrics = "reach,shares,views";
-  } else if (mediaType === "VIDEO") {
+  } else if (isVideoLike) {
     metrics = "reach,likes,comments,shares,saved,ig_reels_avg_watch_time,views";
   } else {
     // IMAGE, CAROUSEL_ALBUM (FEED)
@@ -296,7 +297,7 @@ async function fetchPostInsights(mediaId, accessToken, mediaObj = {}) {
   const reelAvgWatchTime = rawInsights.ig_reels_avg_watch_time ?? null;
 
   // follows (FEED 전용 — VIDEO/STORY는 API 400 확인, null 고정)
-  const follows = (mediaType !== "VIDEO" && mediaType !== "STORY")
+  const follows = (!isVideoLike && mediaType !== "STORY")
     ? (rawInsights.follows ?? null)
     : null;
 
