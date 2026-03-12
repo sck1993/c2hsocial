@@ -11,12 +11,12 @@ function sleep(ms) {
 }
 
 /**
- * 액세스 토큰 검증 + igUserId / username 조회
+ * 액세스 토큰으로 연결 가능한 Instagram 비즈니스 계정 목록 조회
  * Facebook Login for Business 방식: /me/accounts 에서 연결된 IG 비즈니스 계정 탐색
  * @param {string} accessToken - EAAxxxx 형식의 Facebook User Access Token
- * @returns {Promise<{igUserId: string, username: string}>}
+ * @returns {Promise<Array<{igUserId: string, username: string, pageId: string, pageName: string}>>}
  */
-async function verifyToken(accessToken) {
+async function listConnectedInstagramAccounts(accessToken) {
   const resp = await axios.get(`${IG_API}/me/accounts`, {
     params: {
       fields: "instagram_business_account{id,username}",
@@ -26,13 +26,19 @@ async function verifyToken(accessToken) {
   });
 
   const pages = resp.data?.data || [];
+  const accounts = [];
   for (const page of pages) {
     const igAcc = page.instagram_business_account;
     if (igAcc?.id) {
-      return { igUserId: igAcc.id, username: igAcc.username || "" };
+      accounts.push({
+        igUserId: igAcc.id,
+        username: igAcc.username || "",
+        pageId: page.id || "",
+        pageName: page.name || "",
+      });
     }
   }
-  throw new Error("연결된 Instagram 비즈니스/크리에이터 계정을 찾을 수 없음. Facebook 페이지에 Instagram 계정이 연결되어 있는지 확인하세요.");
+  return accounts;
 }
 
 /**
@@ -322,44 +328,6 @@ async function fetchPostInsights(mediaId, accessToken, mediaObj = {}) {
 }
 
 /**
- * 가장 최근 게시물 최대 n개 조회 (media_url / thumbnail_url 포함)
- * @param {string} igUserId
- * @param {string} accessToken
- * @param {number} count - 조회할 게시물 수 (기본 2)
- * @returns {Promise<object[]>}
- */
-async function fetchLatestPost(igUserId, accessToken, count = 2) {
-  const resp = await axios.get(`${IG_API}/${igUserId}/media`, {
-    params: {
-      fields: "id,timestamp,media_type,permalink,caption,media_url,thumbnail_url",
-      limit: count,
-      access_token: accessToken,
-    },
-    timeout: 15000,
-  });
-  return resp.data?.data?.slice(0, count) || [];
-}
-
-/**
- * 게시물 댓글 최대 limit개 조회 (기본 6개)
- * @param {string} mediaId
- * @param {string} accessToken
- * @param {number} limit
- * @returns {Promise<Array<{id, text, username, timestamp}>>}
- */
-async function fetchPostComments(mediaId, accessToken, limit = 6) {
-  const resp = await axios.get(`${IG_API}/${mediaId}/comments`, {
-    params: {
-      fields: "text,username,timestamp",
-      limit,
-      access_token: accessToken,
-    },
-    timeout: 15000,
-  });
-  return resp.data?.data || [];
-}
-
-/**
  * debug_token API로 실제 토큰 만료 시각 조회
  * @param {string} inputToken - 검사할 액세스 토큰
  * @param {string} appId
@@ -385,13 +353,11 @@ async function debugToken(inputToken, appId, appSecret) {
 }
 
 module.exports = {
-  verifyToken,
+  listConnectedInstagramAccounts,
   refreshToken,
   debugToken,
   fetchAccountMetrics,
   fetchRecentPosts,
   fetchPostInsights,
-  fetchLatestPost,
-  fetchPostComments,
   sleep,
 };

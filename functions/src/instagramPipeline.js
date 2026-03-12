@@ -17,11 +17,6 @@ function getKSTYesterdayString() {
   return new Date(Date.now() + 9 * 60 * 60 * 1000 - 24 * 60 * 60 * 1000).toISOString().split("T")[0];
 }
 
-// KST(UTC+9) 기준 n일 전 날짜 문자열 반환
-function getKSTDaysAgoString(n) {
-  return new Date(Date.now() + 9 * 60 * 60 * 1000 - n * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
-}
-
 function toIntOrNull(v) {
   if (v === null || v === undefined || v === "") return null;
   const n = Number(v);
@@ -35,10 +30,14 @@ function normalizeMediaType(mediaType) {
   return t;
 }
 
+function getDateDaysAgo(dateStr, days) {
+  const [y, m, d] = String(dateStr).split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d - days)).toISOString().split("T")[0];
+}
+
 /**
- * Instagram 일별 파이프라인 (리포트 생성 + Firestore 저장)
- * KST 18:00에 실행 → PDT 전일 완전 데이터 수집 → 이메일 발송 없이 저장만
- * 이메일은 다음날 KST 09:00 runInstagramEmailSender가 발송
+ * Instagram 일별 파이프라인 (리포트 생성 + Firestore 저장, 선택적으로 이메일 발송)
+ * 현재 운영 스케줄은 매일 KST 09:00이며, 기본 대상 날짜는 KST 어제입니다.
  *
  * @param {string|null} filterWorkspaceId - 지정 시 해당 워크스페이스만 처리
  * @param {string|null} targetDate - 지정 시 해당 날짜 리포트 생성 (기본: KST 어제)
@@ -123,8 +122,7 @@ async function runInstagramPipeline(filterWorkspaceId = null, targetDate = null,
         const accountMetrics = await fetchAccountMetrics(igUserId, accessToken, date);
 
         // ── b-2. 전날 리포트에서 delta 계산 (Firestore 1회 읽기로 전체 처리) ──
-        const [py, pm, pd] = date.split("-").map(Number);
-        const prevDate = new Date(Date.UTC(py, pm - 1, pd - 1)).toISOString().split("T")[0];
+        const prevDate = getDateDaysAgo(date, 1);
         let followerDelta = null;
         let reachDelta = null;
         let viewsDelta = null;
@@ -179,7 +177,7 @@ async function runInstagramPipeline(filterWorkspaceId = null, targetDate = null,
         }
 
         // ── c. 최근 14일 포스트 목록 ──
-        const since14Days = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000);
+        const since14Days = new Date(`${getDateDaysAgo(date, 13)}T00:00:00Z`);
         const recentPosts = await fetchRecentPosts(igUserId, accessToken, since14Days);
         console.log(`[instagramPipeline] ${workspaceId}/${docId}: 포스트 ${recentPosts.length}개`);
 
@@ -338,17 +336,15 @@ async function runInstagramPipeline(filterWorkspaceId = null, targetDate = null,
 }
 
 /**
- * Instagram 이메일 발송 (KST 09:00 실행)
- * instagramPipeline이 전날 KST 18:00에 저장해 둔 리포트를 이메일로 발송
- * 발송 대상 날짜 = KST 이틀 전 (= 전날 18시에 생성된 어제 PDT 리포트)
+ * Instagram 이메일 발송
+ * 현재는 수동 발송/분리 실행 용도로 유지됩니다.
  *
  * @param {string|null} filterWorkspaceId
- * @param {string|null} targetDate - 지정 시 해당 날짜 리포트 발송 (기본: KST 이틀 전)
+ * @param {string|null} targetDate - 지정 시 해당 날짜 리포트 발송 (기본: KST 어제)
  * @returns {Promise<{sent: number, skipped: number, errors: number}>}
  */
 async function runInstagramEmailSender(filterWorkspaceId = null, targetDate = null) {
   const db = admin.firestore();
-  // KST 09:00 기준 어제 = 당일 UTC 00:00에 막 완성된 날짜 (전일 UTC 하루 완전 데이터)
   const date = targetDate || getKSTYesterdayString();
   const results = { sent: 0, skipped: 0, errors: 0 };
 

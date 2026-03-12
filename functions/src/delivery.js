@@ -603,69 +603,130 @@ async function sendWeeklyEmailReport({ recipients, guildName, weekStart, weekEnd
  * @param {object}   opts.report     instagramPipeline 저장 데이터
  */
 async function sendInstagramEmailReport({ recipients, username, date, report }) {
-  const html = buildInstagramEmailHTML({ username, date, report });
+  const { html, attachments } = buildInstagramEmailHTML({ username, date, report });
 
   await getTransporter().sendMail({
     from:    `AI Social Listening <${process.env.GMAIL_USER}>`,
     to:      recipients.join(", "),
     subject: `[AI Social Listening] @${username} - Instagram 일일 리포트 (${date})`,
     html,
+    attachments,
   });
+}
+
+function buildInstagramTrendChartSvg(report = {}) {
+  const td = Array.isArray(report.trendData) ? report.trendData.filter((d) => d && d.date) : [];
+  if (!td.length) return "";
+
+  const W = 1120;
+  const H = 360;
+  const padL = 84;
+  const padR = 86;
+  const padT = 34;
+  const padB = 54;
+  const innerW = W - padL - padR;
+  const innerH = H - padT - padB;
+
+  const viewsVals = td.map((d) => Number(d.dailyViews)).map((v) => Number.isFinite(v) ? Math.max(0, v) : null);
+  const followerVals = td.map((d) => Number(d.followerCount)).map((v) => Number.isFinite(v) ? Math.max(0, v) : null);
+
+  const maxViews = Math.max(...viewsVals.filter((v) => v != null), 1);
+  const minFollower = Math.min(...followerVals.filter((v) => v != null));
+  const maxFollower = Math.max(...followerVals.filter((v) => v != null));
+  const followerRangeRaw = Math.max(maxFollower - minFollower, 1);
+  const followerPad = Math.max(Math.round(followerRangeRaw * 0.15), 10);
+  const followerMinAxis = Math.max(0, minFollower - followerPad);
+  const followerMaxAxis = maxFollower + followerPad;
+  const followerRange = Math.max(followerMaxAxis - followerMinAxis, 1);
+
+  const step = td.length > 1 ? innerW / (td.length - 1) : innerW / 2;
+  const barW = Math.max(18, Math.min(40, Math.round(innerW / Math.max(td.length * 2, 10))));
+
+  const xAt = (i) => padL + (td.length === 1 ? innerW / 2 : i * step);
+  const yForViews = (v) => padT + innerH - ((v / maxViews) * innerH);
+  const yForFollower = (v) => padT + innerH - (((v - followerMinAxis) / followerRange) * innerH);
+
+  const gridLines = [0, 0.33, 0.66, 1].map((ratio) => {
+    const y = padT + innerH - Math.round(innerH * ratio);
+    const viewsLabel = Math.round(maxViews * ratio).toLocaleString();
+    const followerLabel = Math.round(followerMinAxis + followerRange * ratio).toLocaleString();
+    return `
+      <line x1="${padL}" y1="${y}" x2="${W - padR}" y2="${y}" stroke="${ratio === 0 ? "#CBD5E1" : "#E2E8F0"}" stroke-width="${ratio === 0 ? 2 : 1}"/>
+      <text x="${padL - 14}" y="${y + 5}" text-anchor="end" fill="#94A3B8" font-size="12" font-family="Arial, sans-serif">${viewsLabel}</text>
+      <text x="${W - padR + 14}" y="${y + 5}" fill="#94A3B8" font-size="12" font-family="Arial, sans-serif">${followerLabel}</text>`;
+  }).join("");
+
+  const bars = td.map((d, i) => {
+    const v = viewsVals[i];
+    if (v == null) return "";
+    const x = Math.round(xAt(i) - barW / 2);
+    const y = Math.round(yForViews(v));
+    const h = Math.max(4, Math.round(padT + innerH - y));
+    const fill = i === td.length - 1 ? "#059669" : "#6EE7B7";
+    const labelFill = i === td.length - 1 ? "#065F46" : "#047857";
+    return `
+      <rect x="${x}" y="${y}" width="${barW}" height="${h}" rx="6" fill="${fill}"/>
+      <text x="${Math.round(xAt(i))}" y="${y - 10}" text-anchor="middle" fill="${labelFill}" font-size="12" font-family="Arial, sans-serif" font-weight="${i === td.length - 1 ? 700 : 600}">${v.toLocaleString()}</text>`;
+  }).join("");
+
+  const linePoints = td.map((d, i) => {
+    const v = followerVals[i];
+    if (v == null) return null;
+    return `${Math.round(xAt(i))},${Math.round(yForFollower(v))}`;
+  }).filter(Boolean);
+
+  const points = td.map((d, i) => {
+    const v = followerVals[i];
+    if (v == null) return "";
+    const x = Math.round(xAt(i));
+    const y = Math.round(yForFollower(v));
+    const fill = i === td.length - 1 ? "#4338CA" : "#6366F1";
+    const radius = i === td.length - 1 ? 7 : 6;
+    return `
+      <circle cx="${x}" cy="${y}" r="${radius}" fill="${fill}" stroke="#FFFFFF" stroke-width="3"/>
+      <text x="${x}" y="${y - 14}" text-anchor="middle" fill="${fill}" font-size="12" font-family="Arial, sans-serif" font-weight="${i === td.length - 1 ? 700 : 600}">${v.toLocaleString()}</text>`;
+  }).join("");
+
+  const labels = td.map((d, i) => {
+    const parts = String(d.date || "").split("-");
+    const label = parts.length === 3 ? `${+parts[1]}/${+parts[2]}` : String(d.date || "");
+    const fill = i === td.length - 1 ? "#4338CA" : "#64748B";
+    const weight = i === td.length - 1 ? 700 : 400;
+    return `<text x="${Math.round(xAt(i))}" y="${H - 16}" text-anchor="middle" fill="${fill}" font-size="13" font-family="Arial, sans-serif" font-weight="${weight}">${label}</text>`;
+  }).join("");
+
+  return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="팔로워 및 오가닉 조회 추이">
+    <rect width="${W}" height="${H}" rx="18" fill="#FCFDFF"/>
+    <rect x="0.5" y="0.5" width="${W - 1}" height="${H - 1}" rx="17.5" stroke="#E2E8F0"/>
+    ${gridLines}
+    ${bars}
+    ${linePoints.length > 1 ? `<polyline points="${linePoints.join(" ")}" fill="none" stroke="#6366F1" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>` : ""}
+    ${points}
+    ${labels}
+    <circle cx="24" cy="${H - 28}" r="6" fill="#6366F1"/>
+    <text x="38" y="${H - 23}" fill="#475569" font-size="13" font-family="Arial, sans-serif">팔로워</text>
+    <rect x="104" y="${H - 34}" width="12" height="12" rx="3" fill="#10B981"/>
+    <text x="126" y="${H - 23}" fill="#475569" font-size="13" font-family="Arial, sans-serif">오가닉 조회</text>
+  </svg>`;
 }
 
 function buildInstagramEmailHTML({ username, date, report }) {
   const HEADING = "font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#6366f1";
   const displayDate = formatKSTDate(date);
+  const chartCid = "instagram-trend-chart";
+  const chartSvg = buildInstagramTrendChartSvg(report);
+  const attachments = chartSvg ? [{
+    filename: `instagram-trend-${date}.svg`,
+    content: Buffer.from(chartSvg, "utf8"),
+    contentType: "image/svg+xml",
+    cid: chartCid,
+  }] : [];
 
-  const fmtNum = (v) => v != null ? v.toLocaleString() : "—";
-
-  // ── 트렌드 차트 (팔로워 + 오가닉 조회, 최근 최대 14일) ──
-  const trendSection = (() => {
-    const td = report.trendData;
-    if (!td || td.length === 0) return "";
-
-    const MAX_H = 60;
-    const followerVals = td.map(d => d.followerCount).filter(v => v != null);
-    const viewsVals    = td.map(d => d.dailyViews).filter(v => v != null);
-    const maxF = followerVals.length > 0 ? Math.max(...followerVals) : 1;
-    const maxV = viewsVals.length    > 0 ? Math.max(...viewsVals)    : 1;
-    const isLast = (i) => i === td.length - 1;
-
-    const buildRow = (vals, maxVal, todayBg, otherBg) => td.map((d, i) => {
-      const val = vals[i];
-      const h   = val != null ? Math.max(2, Math.round(val / maxVal * MAX_H)) : 0;
-      const sp  = MAX_H - h;
-      const bg  = isLast(i) ? todayBg : otherBg;
-      const tip = val != null ? val.toLocaleString() : "—";
-      return `<td style="padding:0 2px;vertical-align:bottom">` +
-        `<div style="height:${sp}px"></div>` +
-        `<div title="${tip}" style="background:${bg};height:${h}px;border-radius:2px 2px 0 0"></div></td>`;
-    }).join("");
-
-    const followerRow = buildRow(td.map(d => d.followerCount), maxF, "#6366f1", "#a5b4fc");
-    const viewsRow    = buildRow(td.map(d => d.dailyViews),    maxV, "#10b981", "#6ee7b7");
-
-    const labelRow = td.map((d, i) => {
-      const parts = d.date.split("-");
-      const mm = +parts[1]; const dd = +parts[2];
-      const color = isLast(i) ? "#6366f1" : "#94a3b8";
-      const fw    = isLast(i) ? "700" : "400";
-      return `<td style="text-align:center;padding:4px 2px 0;font-size:10px;color:${color};font-weight:${fw}">${mm}/${dd}</td>`;
-    }).join("");
-
-    return `<div style="margin-bottom:24px">
-      <div style="${HEADING};margin-bottom:10px">팔로워 · 조회 트렌드 (최근 ${td.length}일)</div>
-      <table style="border-collapse:collapse;width:100%;table-layout:fixed"><tbody>
-        <tr>${followerRow}</tr>
-        <tr>${viewsRow}</tr>
-        <tr>${labelRow}</tr>
-      </tbody></table>
-      <div style="margin-top:8px;font-size:10px;color:#64748b">
-        <span style="margin-right:12px">&#9646;&nbsp;<span style="color:#6366f1">팔로워</span></span>
-        <span>&#9646;&nbsp;<span style="color:#10b981">오가닉 조회</span></span>
-      </div>
-    </div>`;
-  })();
+  const trendSection = chartSvg ? `
+    <div style="margin-bottom:24px">
+      <div style="${HEADING};margin-bottom:10px">팔로워 · 조회 트렌드 (${(report.trendData || []).length}일)</div>
+      <img src="cid:${chartCid}" alt="팔로워 및 오가닉 조회 추이 차트" style="display:block;width:100%;height:auto;border:1px solid #e2e8f0;border-radius:12px;background:#fcfdff" />
+    </div>` : "";
 
   // ── 포스트 테이블 ──
   const MEDIA_LABELS = { IMAGE: "사진", VIDEO: "영상", CAROUSEL_ALBUM: "슬라이드" };
@@ -759,7 +820,7 @@ function buildInstagramEmailHTML({ username, date, report }) {
       })()
     : "";
 
-  return `<!DOCTYPE html>
+  const html = `<!DOCTYPE html>
 <html lang="ko">
 <head>
   <meta charset="UTF-8">
@@ -802,6 +863,7 @@ function buildInstagramEmailHTML({ username, date, report }) {
   </div>
 </body>
 </html>`;
+  return { html, attachments };
 }
 
 module.exports = { sendEmailReport, appendToGoogleSheet, sendWeeklyEmailReport, sendInstagramEmailReport };

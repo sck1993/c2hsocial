@@ -1,6 +1,7 @@
     /* ── Config ── */
     const API = 'https://api-xsauyjh24q-du.a.run.app';
     const WS = 'ws_antigravity';
+    let _igPendingAccountSelection = null;
 
     /* ── Chip Input ── */
     let chipInputKo = null;
@@ -2119,6 +2120,7 @@
             </svg>
             계정 추가
           </button>
+          <div id="igCandidatePicker"></div>
           <div class="add-result" id="igAddResult"></div>
         </div>
         <div class="list-panel">
@@ -2215,17 +2217,6 @@
         <div class="settings-section">
           <div class="settings-section-title">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/></svg>
-            AI 반응 분석 지시문
-          </div>
-          <textarea class="settings-textarea" id="igReactionPrompt-${acc.docId}"
-            placeholder="예: 긍정/부정 반응 비율과 주요 키워드를 중심으로 분석해줘.">${escapeHtml(acc.reactionAnalysisPrompt || '')}</textarea>
-          <button class="btn-save-settings" id="igReactionSaveBtn-${acc.docId}" data-docid="${escapeHtml(acc.docId)}"
-                  onclick="saveIgReactionPrompt(this.dataset.docid)">저장</button>
-          <div class="add-result" id="igReactionPromptResult-${acc.docId}"></div>
-        </div>
-        <div class="settings-section">
-          <div class="settings-section-title">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/></svg>
             AI 성과 리뷰 지시문
           </div>
           <textarea class="settings-textarea" id="igPerformancePrompt-${acc.docId}"
@@ -2248,11 +2239,14 @@
       const appId     = document.getElementById('igAppIdInput').value.trim();
       const appSecret = document.getElementById('igAppSecretInput').value.trim();
       const token     = document.getElementById('igTokenInput').value.trim();
+      const $picker = document.getElementById('igCandidatePicker');
       const $result = document.getElementById('igAddResult');
       const $btn = document.getElementById('igAddBtn');
       if (!appId)     { $result.className = 'add-result err'; $result.textContent = '앱 ID를 입력해 주세요.'; return; }
       if (!appSecret) { $result.className = 'add-result err'; $result.textContent = '앱 시크릿을 입력해 주세요.'; return; }
       if (!token)     { $result.className = 'add-result err'; $result.textContent = '액세스 토큰을 입력해 주세요.'; return; }
+      _igPendingAccountSelection = null;
+      if ($picker) $picker.innerHTML = '';
       $btn.disabled = true;
       $btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="animation:spin .75s linear infinite"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg> 검증 중...`;
       $result.className = 'add-result'; $result.textContent = '';
@@ -2262,6 +2256,69 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ workspaceId: WS, accessToken: token, appId, appSecret }),
         });
+        if (res.requiresSelection && Array.isArray(res.candidates) && res.candidates.length) {
+          _igPendingAccountSelection = { appId, appSecret, token, candidates: res.candidates };
+          if ($picker) $picker.innerHTML = renderIgCandidatePicker(res.candidates);
+          $result.className = 'add-result';
+          $result.textContent = '연결된 Instagram 계정을 선택해 주세요.';
+          return;
+        }
+        $result.className = 'add-result ok';
+        $result.textContent = `@${res.username} 계정이 추가되었습니다.`;
+        document.getElementById('igAppIdInput').value = '';
+        document.getElementById('igAppSecretInput').value = '';
+        document.getElementById('igTokenInput').value = '';
+        if ($picker) $picker.innerHTML = '';
+        loadIgAccounts();
+      } catch (err) {
+        $result.className = 'add-result err';
+        $result.textContent = err.message;
+      } finally {
+        $btn.disabled = false;
+        $btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> 계정 추가`;
+      }
+    }
+
+    function renderIgCandidatePicker(candidates) {
+      return `
+        <div class="info-banner" style="margin-top:1rem;display:block">
+          <div style="font-weight:600;margin-bottom:.5rem">연결된 Instagram 계정 선택</div>
+          <div style="display:flex;flex-direction:column;gap:.5rem">
+            ${candidates.map((candidate) => `
+              <button type="button"
+                class="btn-save-settings"
+                style="text-align:left;display:flex;justify-content:space-between;align-items:center;padding:.75rem 1rem"
+                onclick="confirmIgAccountSelection('${escapeHtml(candidate.igUserId)}')">
+                <span>@${escapeHtml(candidate.username || candidate.igUserId)}</span>
+                <span style="font-size:.75rem;color:var(--text-3)">${escapeHtml(candidate.pageName || candidate.pageId || '')}</span>
+              </button>`).join('')}
+          </div>
+        </div>`;
+    }
+
+    async function confirmIgAccountSelection(igUserId) {
+      const pending = _igPendingAccountSelection;
+      const $result = document.getElementById('igAddResult');
+      const $picker = document.getElementById('igCandidatePicker');
+      const $btn = document.getElementById('igAddBtn');
+      if (!pending) return;
+
+      $btn.disabled = true;
+      $btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="animation:spin .75s linear infinite"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg> 추가 중...`;
+      try {
+        const res = await apiFetch('/instagram/accounts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            workspaceId: WS,
+            accessToken: pending.token,
+            appId: pending.appId,
+            appSecret: pending.appSecret,
+            igUserId,
+          }),
+        });
+        _igPendingAccountSelection = null;
+        if ($picker) $picker.innerHTML = '';
         $result.className = 'add-result ok';
         $result.textContent = `@${res.username} 계정이 추가되었습니다.`;
         document.getElementById('igAppIdInput').value = '';
@@ -2310,25 +2367,6 @@
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ deliveryConfig: { email: { isEnabled, recipients } } }),
-        });
-        if ($res) { $res.className = 'add-result ok'; $res.textContent = '저장되었습니다.'; setTimeout(() => { $res.textContent = ''; }, 2500); }
-      } catch (err) {
-        if ($res) { $res.className = 'add-result err'; $res.textContent = err.message; }
-      } finally {
-        if (btn) btn.disabled = false;
-      }
-    }
-
-    async function saveIgReactionPrompt(docId) {
-      const reactionAnalysisPrompt = document.getElementById(`igReactionPrompt-${docId}`)?.value || '';
-      const $res = document.getElementById(`igReactionPromptResult-${docId}`);
-      const btn = document.getElementById(`igReactionSaveBtn-${docId}`);
-      if (btn) btn.disabled = true;
-      try {
-        await apiFetch(`/instagram/accounts/settings?workspaceId=${WS}&docId=${encodeURIComponent(docId)}`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ reactionAnalysisPrompt }),
         });
         if ($res) { $res.className = 'add-result ok'; $res.textContent = '저장되었습니다.'; setTimeout(() => { $res.textContent = ''; }, 2500); }
       } catch (err) {
@@ -2649,7 +2687,7 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
             </svg>
-            <span>파이프라인이 매일 KST 09:45에 실행될 때 만료 7일 이내 토큰을 자동으로 갱신합니다.</span>
+            <span>파이프라인이 매일 KST 09:00에 실행될 때 만료 7일 이내 토큰을 자동으로 갱신합니다.</span>
           </div>
           <div style="overflow-x:auto">
             <table class="data-table">

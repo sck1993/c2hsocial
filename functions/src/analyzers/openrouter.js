@@ -267,53 +267,6 @@ JSON 형식:
 }
 
 /**
- * Instagram 최근 게시물에 대한 사용자 반응 AI 분석
- * @param {object} opts
- * @param {string} opts.username  - Instagram 계정명
- * @param {string|null} opts.caption  - 게시물 본문
- * @param {Array<{username, text}>} opts.comments - 댓글 목록 (최대 6개)
- * @returns {Promise<{analysis: string, usage: object}>}
- */
-async function analyzeInstagramLatestPost({ username, caption, comments, customPrompt }) {
-  const commentLines = (comments || [])
-    .map((c) => `  @${c.username}: ${c.text}`)
-    .join("\n");
-
-  const defaultSystemPrompt = `당신은 소셜 미디어 분석 전문가입니다.
-Instagram 게시물 본문과 댓글을 보고, 팔로워들이 이 게시물에 어떻게 반응하고 있는지 4~5문장으로 분석해주세요.
-반응 패턴(긍정·부정·질문 등), 댓글에서 드러나는 감정, 자주 언급되는 주요 키워드나 관심사를 구체적으로 서술해주세요.
-마크다운이나 HTML 없이 순수 텍스트로만 응답하세요.`;
-  const systemPrompt = (customPrompt && customPrompt.trim()) ? customPrompt.trim() : defaultSystemPrompt;
-
-  const userContent = `@${username}의 최근 게시물
-본문: ${caption ? caption.slice(0, 300) : "(없음)"}
-댓글:
-${commentLines || "  (댓글 없음)"}`;
-
-  const payload = {
-    model: process.env.OPENROUTER_MODEL,
-    messages: [
-      { role: "system", content: systemPrompt },
-      { role: "user", content: userContent },
-    ],
-  };
-
-  const { data } = await axios.post(OPENROUTER_API, payload, {
-    headers: {
-      Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
-      "Content-Type": "application/json",
-      "HTTP-Referer": "https://sociallistener-8efde.web.app",
-      "X-Title": "AI Social Listening",
-    },
-    timeout: 60000,
-  });
-
-  if (!data.choices || !data.choices.length) throw new Error("OpenRouter 응답에 choices가 없습니다");
-  const analysis = data.choices[0].message.content || "";
-  return { analysis: analysis.trim(), usage: data.usage };
-}
-
-/**
  * Instagram 최근 2주 게시물 전체 성과 리뷰 AI 분석
  * 잘된 점 / 아쉬운 점 / 개선 제안 3항목으로 출력
  *
@@ -395,4 +348,4 @@ ${postLines || "  (포스트 없음)"}`;
   return { review: review.trim(), usage: data.usage };
 }
 
-module.exports = { analyzeGuildMessages, analyzeWeeklySummary, analyzeInstagramLatestPost, analyzeInstagramPostPerformance };
+module.exports = { analyzeGuildMessages, analyzeWeeklySummary, analyzeInstagramPostPerformance };

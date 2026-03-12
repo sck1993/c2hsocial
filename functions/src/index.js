@@ -8,7 +8,11 @@ const { getChannelInfo, getGuildInfo } = require("./collectors/discord");
 const { sendEmailReport, appendToGoogleSheet } = require("./delivery");
 const { runInsightCollector } = require("./insightCollector");
 const { runWeeklyPipeline }   = require("./weeklyPipeline");
-const { verifyToken, refreshToken: refreshIgToken, debugToken: debugIgToken } = require("./collectors/instagram");
+const {
+  listConnectedInstagramAccounts,
+  refreshToken: refreshIgToken,
+  debugToken: debugIgToken,
+} = require("./collectors/instagram");
 const { runInstagramPipeline, runInstagramEmailSender } = require("./instagramPipeline");
 
 admin.initializeApp();
@@ -725,7 +729,6 @@ exports.api = onRequest(
             tokenExpiresAt: safeData.tokenExpiresAt?.toDate?.()?.toISOString() ?? null,
             tokenRefreshedAt: safeData.tokenRefreshedAt?.toDate?.()?.toISOString() ?? null,
             createdAt: safeData.createdAt?.toDate?.()?.toISOString() ?? null,
-            reactionAnalysisPrompt: safeData.reactionAnalysisPrompt || null,
             performanceReviewPrompt: safeData.performanceReviewPrompt || null,
           };
         });
@@ -739,19 +742,45 @@ exports.api = onRequest(
     if (req.method === "POST" && path === "/instagram/accounts") {
       try {
         const db = admin.firestore();
-        const { workspaceId: _wsId1, accessToken, appId, appSecret } = req.body;
+        const { workspaceId: _wsId1, accessToken, appId, appSecret, igUserId: selectedIgUserId } = req.body;
         const workspaceId = resolveWorkspaceId(_wsId1);
         if (!accessToken) return res.status(400).json({ error: "accessToken 필수" });
         if (!appId)       return res.status(400).json({ error: "appId 필수" });
         if (!appSecret)   return res.status(400).json({ error: "appSecret 필수" });
 
-        // 토큰 검증 + igUserId / username 조회
-        let igUserId, username;
+        // 토큰 검증 + 연결 가능한 IG 계정 조회
+        let candidates;
         try {
-          ({ igUserId, username } = await verifyToken(accessToken));
+          candidates = await listConnectedInstagramAccounts(accessToken);
         } catch (e) {
           return res.status(400).json({ error: `토큰 검증 실패: ${e.message}` });
         }
+        if (!candidates.length) {
+          return res.status(400).json({ error: "연결된 Instagram 비즈니스/크리에이터 계정을 찾을 수 없습니다." });
+        }
+
+        let selectedAccount = null;
+        if (selectedIgUserId) {
+          selectedAccount = candidates.find((c) => c.igUserId === selectedIgUserId) || null;
+          if (!selectedAccount) {
+            return res.status(400).json({ error: "선택한 Instagram 계정을 현재 토큰에서 찾을 수 없습니다." });
+          }
+        } else if (candidates.length === 1) {
+          selectedAccount = candidates[0];
+        } else {
+          return res.json({
+            success: false,
+            requiresSelection: true,
+            candidates: candidates.map((c) => ({
+              igUserId: c.igUserId,
+              username: c.username,
+              pageId: c.pageId,
+              pageName: c.pageName,
+            })),
+          });
+        }
+
+        const { igUserId, username } = selectedAccount;
 
         const docId = `instagram_${igUserId}`;
         const ref = db.collection("workspaces").doc(workspaceId).collection("instagram_accounts").doc(docId);
@@ -806,14 +835,14 @@ exports.api = onRequest(
       }
     }
 
-    // ── PATCH /instagram/accounts/settings ── deliveryConfig / 프롬프트 수정
+    // ── PATCH /instagram/accounts/settings ── deliveryConfig / 성과 리뷰 프롬프트 수정
     if (req.method === "PATCH" && path === "/instagram/accounts/settings") {
       try {
         const db = admin.firestore();
         const { workspaceId: _wsId, docId } = req.query;
         if (!docId) return res.status(400).json({ error: "docId 필수" });
         const workspaceId = resolveWorkspaceId(_wsId);
-        const { deliveryConfig, reactionAnalysisPrompt, performanceReviewPrompt } = req.body;
+        const { deliveryConfig, performanceReviewPrompt } = req.body;
 
         const updates = {};
         if (deliveryConfig !== undefined) {
@@ -822,7 +851,6 @@ exports.api = onRequest(
           }
           updates.deliveryConfig = deliveryConfig;
         }
-        if (reactionAnalysisPrompt !== undefined)   updates.reactionAnalysisPrompt   = reactionAnalysisPrompt  || null;
         if (performanceReviewPrompt !== undefined)  updates.performanceReviewPrompt  = performanceReviewPrompt || null;
 
         if (Object.keys(updates).length === 0) return res.status(400).json({ error: "변경할 필드 없음" });
