@@ -3,6 +3,40 @@
 const nodemailer = require("nodemailer");
 const { google } = require("googleapis");
 
+/** 일반 텍스트 필드의 HTML 특수문자 이스케이핑 */
+function escapeHtml(str) {
+  return String(str || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+/** AI 생성 HTML: <br>, <strong> 태그만 허용, 나머지 모두 제거 */
+function sanitizeReportHtml(html) {
+  if (!html || typeof html !== "string") return "";
+  return html.replace(/<(?!\/?(?:br|strong)\b)[^>]*>/gi, "");
+}
+
+/* ── HTML → 플레인 텍스트 변환 (구글 시트용) ── */
+function stripHtml(html) {
+  if (!html) return "";
+  return html
+    .replace(/<br\s*\/?>\s*<br\s*\/?>/gi, "\n\n")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .trim();
+}
+
+/* ── 구버전 [섹션명] 텍스트 → HTML 변환 ── */
+function formatSummaryHtml(text) {
+  if (!text) return "—";
+  if (text.includes("<br>") || text.includes("<strong>")) return text;
+  return text
+    .replace(/\[([^\]]+)\]/g, (_, label) => `<br><br><strong>[${label}]</strong>`)
+    .replace(/^<br><br>/, "");
+}
+
 /* ════════════════════════════════════════════
    이메일 발송 (Gmail SMTP + 앱 비밀번호)
 ════════════════════════════════════════════ */
@@ -30,13 +64,31 @@ function getTransporter() {
  * @param {string}   opts.date        YYYY-MM-DD
  * @param {object}   opts.report      길드 리포트 객체
  */
-async function sendEmailReport({ recipients, guildName, guildId = "", date, report }) {
-  const html = buildEmailHTML({ guildName, guildId, date, report });
+async function sendEmailReport({ recipients, guildName, guildId = "", date, report, lang = "ko" }) {
+  let html, subject;
+
+  if (lang === "en") {
+    // EN 섹션 생성 후, KO 섹션을 추가하여 영+한 합본 이메일 작성
+    const enHtml = buildEmailHTML({ guildName, guildId, date, report, lang: "en" });
+    const koHtml = buildEmailHTML({ guildName, guildId, date, report, lang: "ko" });
+    const koBodyMatch = koHtml.match(/<body[^>]*>([\s\S]*)<\/body>/i);
+    const koBodyContent = koBodyMatch ? koBodyMatch[1] : "";
+    const divider = `
+      <div style="margin:48px 24px 0;padding-top:36px;border-top:3px solid #e2e8f0;text-align:center">
+        <span style="display:inline-block;padding:6px 20px;background:#f1f5f9;border-radius:20px;font-size:12px;font-weight:700;color:#64748b;letter-spacing:.08em;">── 한국어 리포트 ──</span>
+      </div>
+      ${koBodyContent}`;
+    html = enHtml.replace(/<\/body>/i, divider + "\n</body>");
+    subject = `[AI Social Listening] ${guildName} - Discord Daily Report / 일일 리포트 (${date})`;
+  } else {
+    html    = buildEmailHTML({ guildName, guildId, date, report, lang: "ko" });
+    subject = `[AI Social Listening] ${guildName} - Discord 일일 리포트 (${date})`;
+  }
 
   await getTransporter().sendMail({
-    from:    `Social Listener <${process.env.GMAIL_USER}>`,
-    to:      recipients.join(", "),
-    subject: `[Social Listener] ${guildName} - Discord 일일 리포트 (${date})`,
+    from: `AI Social Listening <${process.env.GMAIL_USER}>`,
+    to:   recipients.join(", "),
+    subject,
     html,
   });
 }
@@ -103,7 +155,7 @@ async function appendToGoogleSheet({ spreadsheetUrl, guildName, date, report }) 
         s.negative          || 0,
         (report.keywords || []).join(", "),
         formatIssueCell(report.issues || []),
-        report.summary        || "",
+        stripHtml(report.summary || ""),
         report.isAlertTriggered ? "⚠️ 위기 감지" : "",
       ]],
     },
@@ -144,14 +196,57 @@ function hexToRgba(hex, alpha) {
 /** YYYY-MM-DD → 한국어 날짜 (예: 2026년 3월 3일 (월)) */
 function formatKSTDate(dateStr) {
   const days = ["일", "월", "화", "수", "목", "금", "토"];
-  const d = new Date(dateStr + "T00:00:00+09:00");
-  return `${d.getFullYear()}년 ${d.getMonth() + 1}월 ${d.getDate()}일 (${days[d.getDay()]})`;
+  const [year, month, day] = dateStr.split("-").map(Number);
+  // 03:00 UTC = 12:00 KST → UTC 기준으로도 동일 날짜가 보장됨 (Cloud Run은 UTC 런타임)
+  const d = new Date(Date.UTC(year, month - 1, day, 3, 0, 0));
+  return `${year}년 ${month}월 ${day}일 (${days[d.getUTCDay()]})`;
+}
+
+/** YYYY-MM-DD → English date (e.g., Monday, March 9, 2026) */
+function formatENDate(dateStr) {
+  const days   = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  const months = ["January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December"];
+  const [year, month, day] = dateStr.split("-").map(Number);
+  const d = new Date(Date.UTC(year, month - 1, day, 3, 0, 0));
+  return `${days[d.getUTCDay()]}, ${months[month - 1]} ${day}, ${year}`;
 }
 
 /* ════════════════════════════════════════════
    HTML 이메일 빌더 (길드 단위)
 ════════════════════════════════════════════ */
-function buildEmailHTML({ guildName, guildId = "", date, report }) {
+function buildEmailHTML({ guildName, guildId = "", date, report, lang = "ko" }) {
+  const isEN = lang === "en";
+  const L = isEN ? {
+    alertBadge:    "Crisis Alert — Trigger keyword detected",
+    sentimentLabel:"Sentiment Analysis",
+    posLabel:      "Positive", neuLabel: "Neutral", negLabel: "Negative",
+    msgCountLabel: "messages analyzed",
+    summaryLabel:  "Server Trend Summary",
+    keywordsLabel: "Key Keywords",
+    issuesLabel:   "Key Issues",
+    issueCountUnit:"mentions",
+    msgViewLink:   "View Message ↗",
+    channelsLabel: "Channel Summaries",
+    impHigh: "High", impNormal: "Normal", impLow: "Low",
+    msgUnit: "msgs",
+    footer:  "AI Social Listening by Strategy Team · This email is automatically sent",
+  } : {
+    alertBadge:    "위기 감지 — 트리거 키워드 감지",
+    sentimentLabel:"감성 분석",
+    posLabel:      "긍정", neuLabel: "중립", negLabel: "부정",
+    msgCountLabel: "건 분석",
+    summaryLabel:  "서버 동향 요약",
+    keywordsLabel: "주요 키워드",
+    issuesLabel:   "주요 이슈",
+    issueCountUnit:"회 언급",
+    msgViewLink:   "메시지 보기 ↗",
+    channelsLabel: "채널별 요약",
+    impHigh: "높음", impNormal: "보통", impLow: "낮음",
+    msgUnit: "건",
+    footer:  "AI Social Listening by 사업전략팀 · 이 메일은 자동 발송됩니다",
+  };
+
   const s   = report.sentiment || {};
   const pos = s.positive || 0;
   const neu = s.neutral  || 0;
@@ -166,30 +261,33 @@ function buildEmailHTML({ guildName, guildId = "", date, report }) {
       <div style="width:${neu}%;background:#94a3b8"></div>
       <div style="width:${neg}%;background:#dc2626"></div>
     </div>
-    <div style="display:flex;justify-content:space-between;font-size:13px">
-      <span style="color:#059669;font-weight:500">긍정 ${pos}%</span>
-      <span style="color:#94a3b8;font-weight:500">중립 ${neu}%</span>
-      <span style="color:#dc2626;font-weight:500">부정 ${neg}%</span>
+    <div style="display:flex;gap:16px;font-size:13px">
+      <span style="color:#059669;font-weight:500">${L.posLabel} ${pos}%</span>
+      <span style="color:#94a3b8;font-weight:500">${L.neuLabel} ${neu}%</span>
+      <span style="color:#dc2626;font-weight:500">${L.negLabel} ${neg}%</span>
     </div>`;
 
-  const keywords = (report.keywords || [])
-    .map(k => `<span style="display:inline-block;background:#ede9fe;color:#6366f1;border-radius:4px;padding:2px 8px;margin:2px 3px;font-size:13px">${k}</span>`)
+  const rawKeywords = isEN ? (report.keywords_en || report.keywords) : report.keywords;
+  const keywords = (rawKeywords || [])
+    .map(k => `<span style="display:inline-block;background:#ede9fe;color:#6366f1;border-radius:4px;padding:2px 8px;margin:2px 3px;font-size:13px">${escapeHtml(k)}</span>`)
     .join("");
 
   const issues = (report.issues || [])
     .map(i => {
       if (typeof i === "object" && i !== null) {
-        const channel  = i.channel ? `<span style="color:#6366f1;font-size:12px;margin-left:6px">#${i.channel}</span>` : "";
+        const title       = escapeHtml(isEN ? (i.title_en       || i.title       || "") : (i.title       || ""));
+        const description = escapeHtml(isEN ? (i.description_en || i.description || "") : (i.description || ""));
+        const channel  = i.channel ? `<span style="color:#6366f1;font-size:12px;margin-left:6px">#${escapeHtml(i.channel)}</span>` : "";
         const metaParts = [];
-        if (i.count) metaParts.push(`<span style="color:#94a3b8;font-size:12px">${i.count}회 언급</span>`);
+        if (i.count) metaParts.push(`<span style="color:#94a3b8;font-size:12px">${i.count} ${L.issueCountUnit}</span>`);
         const msgUrl = (guildId && i.channelId && i.messageId)
           ? `https://discord.com/channels/${guildId}/${i.channelId}/${i.messageId}`
           : null;
-        if (msgUrl) metaParts.push(`<a href="${msgUrl}" style="display:inline-block;font-size:11px;color:#6366f1;text-decoration:none;border:1px solid #c7d2fe;border-radius:4px;padding:1px 6px">메시지 보기 ↗</a>`);
+        if (msgUrl) metaParts.push(`<a href="${msgUrl}" style="display:inline-block;font-size:11px;color:#6366f1;text-decoration:none;border:1px solid #c7d2fe;border-radius:4px;padding:1px 6px">${L.msgViewLink}</a>`);
         const metaRow = metaParts.length ? `<div style="margin-top:3px">${metaParts.join("&nbsp;&nbsp;")}</div>` : "";
-        const desc    = i.description ? `<div style="color:#64748b;font-size:13px;margin-top:4px">${i.description}</div>` : "";
+        const desc    = description ? `<div style="color:#64748b;font-size:13px;margin-top:4px">${description}</div>` : "";
         return `<li style="margin-bottom:12px;color:#374151;font-size:14px;line-height:1.6">
-          <div><strong>${i.title || ""}</strong>${channel}</div>
+          <div><strong>${title}</strong>${channel}</div>
           ${metaRow}${desc}
         </li>`;
       }
@@ -199,44 +297,45 @@ function buildEmailHTML({ guildName, guildId = "", date, report }) {
 
   const alertBadge = report.isAlertTriggered
     ? `<div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:8px;padding:12px 16px;margin-bottom:20px;color:#dc2626;font-weight:600;font-size:14px">
-         ⚠️ 위기 감지 — 트리거 키워드 감지
+         ⚠️ ${L.alertBadge}
        </div>`
     : "";
 
   const keywordsSection = keywords
     ? `<div style="margin-bottom:20px">
-         <div style="${HEADING};margin-bottom:8px">주요 키워드</div>
+         <div style="${HEADING};margin-bottom:8px">${L.keywordsLabel}</div>
          <div>${keywords}</div>
        </div>`
     : "";
 
   const issuesSection = issues
     ? `<div style="margin-bottom:20px">
-         <div style="${HEADING};margin-bottom:8px">주요 이슈</div>
+         <div style="${HEADING};margin-bottom:8px">${L.issuesLabel}</div>
          <ul style="margin:0;padding-left:20px">${issues}</ul>
        </div>`
     : "";
 
   // 채널별 요약 섹션
-  const importanceLabelMap = { high: "높음", normal: "보통", low: "낮음" };
+  const importanceLabelMap = { high: L.impHigh, normal: L.impNormal, low: L.impLow };
   const importanceColorMap = { high: "#d97706", normal: "#6366f1", low: "#94a3b8" };
 
   const channelRows = (report.channels || []).map(ch => {
-    const imp      = ch.importance || "normal";
-    const impLabel = importanceLabelMap[imp] || "보통";
-    const impColor = importanceColorMap[imp] || "#6366f1";
-    const chPos    = ch.sentiment?.positive || 0;
-    const chNeg    = ch.sentiment?.negative || 0;
-    const chNeu    = ch.sentiment?.neutral  || 0;
+    const imp       = ch.importance || "normal";
+    const impLabel  = importanceLabelMap[imp] || L.impNormal;
+    const impColor  = importanceColorMap[imp] || "#6366f1";
+    const chPos     = ch.sentiment?.positive || 0;
+    const chNeg     = ch.sentiment?.negative || 0;
+    const chNeu     = ch.sentiment?.neutral  || 0;
+    const chSummary = isEN ? (ch.summary_en || ch.summary) : ch.summary;
     return `
       <div style="border:1px solid #e2e8f0;border-radius:10px;padding:14px 16px;margin-bottom:10px">
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
           <span style="font-size:11px;font-weight:700;color:${impColor};background:${hexToRgba(impColor, 0.1)};border:1px solid ${impColor}40;border-radius:100px;padding:2px 8px">${impLabel}</span>
-          <span style="font-size:14px;font-weight:600;color:#1e293b">#${ch.channelName}</span>
-          <span style="font-size:12px;color:#94a3b8;margin-left:auto">${ch.messageCount || 0}건</span>
-          <span style="font-size:12px;color:#059669">긍정 ${chPos}%</span>
+          <span style="font-size:14px;font-weight:600;color:#1e293b">#${escapeHtml(ch.channelName)}</span>
+          <span style="font-size:12px;color:#94a3b8;margin-left:auto">${ch.messageCount || 0}${L.msgUnit}</span>
+          <span style="font-size:12px;color:#059669">${L.posLabel} ${chPos}%</span>
         </div>
-        <div style="font-size:13px;color:#374151;line-height:1.6;margin-bottom:8px">${ch.summary || "—"}</div>
+        <div style="font-size:13px;color:#374151;line-height:1.6;margin-bottom:8px">${sanitizeReportHtml(chSummary) || "—"}</div>
         <div style="display:flex;height:6px;border-radius:3px;overflow:hidden">
           <div style="width:${chPos}%;background:#059669"></div>
           <div style="width:${chNeu}%;background:#94a3b8"></div>
@@ -247,29 +346,38 @@ function buildEmailHTML({ guildName, guildId = "", date, report }) {
 
   const channelsSection = channelRows
     ? `<div style="margin-bottom:20px">
-         <div style="${HEADING};margin-bottom:10px">채널별 요약</div>
+         <div style="${HEADING};margin-bottom:10px">${L.channelsLabel}</div>
          ${channelRows}
        </div>`
     : "";
 
-  const displayDate = formatKSTDate(date);
+  const displayDate  = isEN ? formatENDate(date) : formatKSTDate(date);
+  const summaryText  = isEN ? (report.summary_en || report.summary) : report.summary;
+  const msgCountText = isEN
+    ? `${report.messageCount || 0} ${L.msgCountLabel}`
+    : `총 메시지 ${report.messageCount || 0}${L.msgCountLabel}`;
 
   return `<!DOCTYPE html>
-<html lang="ko">
+<html lang="${lang}">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Daily Report - ${guildName} (${date})</title>
 </head>
 <body style="margin:0;padding:0;background:#f8fafc;font-family:-apple-system,'Malgun Gothic','맑은 고딕',sans-serif">
-  <div style="display:none;max-height:0;overflow:hidden;mso-hide:all">${guildName} Discord 서버의 ${displayDate} 일일 리포트입니다.</div>
+  <div style="display:none;max-height:0;overflow:hidden;mso-hide:all">${guildName} Discord ${displayDate}</div>
   <div style="max-width:600px;margin:32px auto;background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.1)">
 
     <!-- 헤더 -->
     <div style="background:linear-gradient(135deg,#6366f1 0%,#818cf8 100%);padding:28px 32px">
-      <div style="color:#c7d2fe;font-size:11px;letter-spacing:.08em;margin-bottom:6px">SOCIAL LISTENER · DAILY REPORT</div>
+      <div style="color:#c7d2fe;font-size:11px;letter-spacing:.08em;margin-bottom:6px">AI SOCIAL LISTENING · DAILY REPORT</div>
       <div style="color:#fff;font-size:22px;font-weight:700">${guildName} - Discord</div>
       <div style="color:#c7d2fe;font-size:14px;margin-top:6px">${displayDate}</div>
+    </div>
+
+    <!-- 주의사항 -->
+    <div style="background:#fffbeb;border-bottom:1px solid #fde68a;padding:10px 32px;font-size:12px;color:#92400e">
+      ⚠️ ${isEN ? "Due to the nature of AI, analysis may contain errors such as misinterpreting spoken text or misidentifying references to other games." : "AI 특성 상 발화 텍스트를 잘못 이해하거나, 타 게임 언급을 이해하지 못하는 등 오류가 있을 수 있습니다."}
     </div>
 
     <!-- 본문 -->
@@ -278,15 +386,15 @@ function buildEmailHTML({ guildName, guildId = "", date, report }) {
 
       <!-- 감성 분석 -->
       <div style="margin-bottom:24px">
-        <div style="${HEADING};margin-bottom:6px">감성 분석</div>
+        <div style="${HEADING};margin-bottom:6px">${L.sentimentLabel}</div>
         ${sentimentBar}
-        <div style="font-size:13px;color:#64748b;margin-top:8px">총 메시지 ${report.messageCount || 0}건 분석</div>
+        <div style="font-size:13px;color:#64748b;margin-top:8px">${msgCountText}</div>
       </div>
 
       <!-- 서버 동향 요약 -->
       <div style="margin-bottom:20px">
-        <div style="${HEADING};margin-bottom:8px">서버 동향 요약</div>
-        <div style="font-size:14px;color:#374151;line-height:1.7;background:#f8fafc;border-left:3px solid #6366f1;border-radius:0 8px 8px 0;padding:14px 16px">${report.summary || "—"}</div>
+        <div style="${HEADING};margin-bottom:8px">${L.summaryLabel}</div>
+        <div style="font-size:14px;color:#374151;line-height:1.7;background:#f8fafc;border-left:3px solid #6366f1;border-radius:0 8px 8px 0;padding:14px 16px">${sanitizeReportHtml(formatSummaryHtml(summaryText))}</div>
       </div>
 
       ${keywordsSection}
@@ -296,11 +404,404 @@ function buildEmailHTML({ guildName, guildId = "", date, report }) {
 
     <!-- 푸터 -->
     <div style="background:#f8fafc;padding:16px 32px;border-top:1px solid #e2e8f0;font-size:12px;color:#94a3b8;text-align:center">
-      Social Listener by 사업전략팀 &nbsp;·&nbsp; 이 메일은 자동 발송됩니다
+      ${L.footer}
+      <div style="margin-top:10px;padding-top:10px;border-top:1px solid #e2e8f0;font-size:11px;color:#b0b8c8;line-height:1.6">
+        ${isEN ? "To manage your report subscription, visit the link below." : "리포트 신청 및 수신인 설정은 아래 링크에서 진행해주세요."}<br>
+        <a href="https://docs.google.com/spreadsheets/d/1YmJrxHiUKbaFy3xLJTT_-k7-x1DLhsT6Ugo3N-kAYA8/edit?usp=sharing" style="color:#6366f1;text-decoration:none;font-weight:500">📋 ${isEN ? "Report Subscription Google Sheets ↗" : "리포트 신청 Google Sheets ↗"}</a>
+      </div>
     </div>
   </div>
 </body>
 </html>`;
 }
 
-module.exports = { sendEmailReport, appendToGoogleSheet };
+/**
+ * 주간 리포트 이메일 발송
+ * @param {Object} params
+ * @param {string[]} params.recipients
+ * @param {string}   params.guildName
+ * @param {string}   params.weekStart  YYYY-MM-DD
+ * @param {string}   params.weekEnd    YYYY-MM-DD
+ * @param {Object}   params.report     { aiSummary, insightsChart, sentimentChart, weeklyIssues }
+ */
+function buildWeeklyEmailHTML({ guildName, weekStart, weekEnd, report, lang }) {
+  const displayRange = `${weekStart} ~ ${weekEnd}`;
+  const isEN = lang === "en";
+  const L = isEN ? {
+    serverInsights: "Server Insights",
+    colDate: "Date", colMembers: "Members", colComm: "Comm.", colActive: "Active", colMsgs: "Messages",
+    sentimentTrend: "Sentiment Trend",
+    posShort: "P", neuShort: "N", negShort: "Ng",
+    weeklySummary:  "Weekly Trend Summary",
+    weeklyIssues:   "Key Issues",
+    countUnit:      "times",
+    footer: "AI Social Listening by Strategy Team · This email is automatically sent",
+  } : {
+    serverInsights: "서버 인사이트",
+    colDate: "날짜", colMembers: "총 멤버", colComm: "소통", colActive: "활성", colMsgs: "메시지",
+    sentimentTrend: "감정 분석 추이",
+    posShort: "긍", neuShort: "중", negShort: "부",
+    weeklySummary:  "주간 동향 요약",
+    weeklyIssues:   "주요 이슈",
+    countUnit:      "회",
+    footer: "AI Social Listening by 사업전략팀 · 이 메일은 자동 발송됩니다",
+  };
+
+  // 인사이트 테이블
+  const insightRows = (report.insightsChart || []).map((d, i, arr) => {
+    const prev = arr[i - 1];
+    let deltaHtml = "";
+    if (i > 0 && d.totalMembers != null && prev?.totalMembers != null) {
+      const delta = d.totalMembers - prev.totalMembers;
+      const sign  = delta >= 0 ? "+" : "";
+      const color = delta > 0 ? "#dc2626" : delta < 0 ? "#2563eb" : "#94a3b8";
+      deltaHtml = ` <span style="color:${color};font-size:11px">(∆ ${sign}${delta})</span>`;
+    }
+    return `<tr>
+      <td style="padding:6px 10px;border-bottom:1px solid #e2e8f0;color:#64748b">${d.date}</td>
+      <td style="padding:6px 10px;border-bottom:1px solid #e2e8f0;text-align:right">${d.totalMembers ?? "—"}${deltaHtml}</td>
+      <td style="padding:6px 10px;border-bottom:1px solid #e2e8f0;text-align:right">${d.communicatingMembers ?? "—"}</td>
+      <td style="padding:6px 10px;border-bottom:1px solid #e2e8f0;text-align:right">${d.activeMembers ?? "—"}</td>
+      <td style="padding:6px 10px;border-bottom:1px solid #e2e8f0;text-align:right">${d.messageCount ?? "—"}</td>
+    </tr>`;
+  }).join("");
+
+  const insightTable = `
+    <table style="width:100%;border-collapse:collapse;font-size:13px">
+      <thead>
+        <tr style="background:#f1f5f9">
+          <th style="padding:8px 10px;text-align:left;color:#475569">${L.colDate}</th>
+          <th style="padding:8px 10px;text-align:right;color:#475569">${L.colMembers}</th>
+          <th style="padding:8px 10px;text-align:right;color:#475569">${L.colComm}</th>
+          <th style="padding:8px 10px;text-align:right;color:#475569">${L.colActive}</th>
+          <th style="padding:8px 10px;text-align:right;color:#475569">${L.colMsgs}</th>
+        </tr>
+      </thead>
+      <tbody>${insightRows}</tbody>
+    </table>`;
+
+  // 감정 추이 바 (7일)
+  const sentimentRows = (report.sentimentChart || []).map(d => {
+    const pos = d.positive || 0, neu = d.neutral || 0, neg = d.negative || 0;
+    return `<tr>
+      <td style="padding:4px 10px;font-size:12px;color:#64748b;white-space:nowrap">${d.date}</td>
+      <td style="padding:4px 10px;width:100%">
+        <div style="display:flex;height:14px;border-radius:4px;overflow:hidden">
+          <div style="width:${pos}%;background:#22c55e"></div>
+          <div style="width:${neu}%;background:#94a3b8"></div>
+          <div style="width:${neg}%;background:#ef4444"></div>
+        </div>
+      </td>
+      <td style="padding:4px 10px;font-size:11px;color:#64748b;white-space:nowrap">${L.posShort}${pos}% ${L.neuShort}${neu}% ${L.negShort}${neg}%</td>
+    </tr>`;
+  }).join("");
+
+  const sentimentTable = `<table style="width:100%;border-collapse:collapse">${sentimentRows}</table>`;
+
+  // 주요 이슈
+  const issuesSection = (report.weeklyIssues || []).length === 0 ? "" : `
+    <div style="margin-bottom:20px">
+      <div style="font-size:11px;font-weight:700;letter-spacing:.08em;color:#64748b;text-transform:uppercase;margin-bottom:8px">${L.weeklyIssues}</div>
+      ${(report.weeklyIssues || []).map(i => {
+        const title       = escapeHtml(isEN ? (i.title_en       || i.title       || "") : (i.title       || ""));
+        const description = escapeHtml(isEN ? (i.description_en || i.description || "") : (i.description || ""));
+        const datePart = Array.isArray(i.dates) && i.dates.length
+          ? i.dates.map(d => d.slice(5)).join(" · ")
+          : (i.date ? i.date.slice(5) : "");
+        const countPart = i.count ? `${i.count}${L.countUnit}` : "";
+        const metaParts = [datePart, countPart].filter(Boolean).join(" / ");
+        return `
+        <div style="padding:10px 14px;background:#fef2f2;border-left:3px solid #ef4444;border-radius:0 8px 8px 0;margin-bottom:8px">
+          <div style="font-weight:600;color:#991b1b;font-size:13px">${title}${metaParts ? ` <span style="font-weight:400;color:#b91c1c;font-size:11px">(${metaParts})</span>` : ""}</div>
+          <div style="color:#7f1d1d;font-size:12px;margin-top:4px">${description}</div>
+        </div>`;
+      }).join("")}
+    </div>`;
+
+  const aiSummaryText = isEN ? (report.aiSummary_en || report.aiSummary) : report.aiSummary;
+
+  return `<!DOCTYPE html><html lang="${lang}"><head><meta charset="utf-8"></head><body style="margin:0;padding:0;background:#f1f5f9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">
+  <div style="max-width:640px;margin:32px auto;background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,.08)">
+    <div style="background:linear-gradient(135deg,#6366f1,#8b5cf6);padding:32px">
+      <div style="color:#c7d2fe;font-size:11px;letter-spacing:.08em;margin-bottom:6px">AI SOCIAL LISTENING · WEEKLY REPORT</div>
+      <div style="color:#fff;font-size:22px;font-weight:700">${guildName} - Discord</div>
+      <div style="color:#c7d2fe;font-size:14px;margin-top:6px">${displayRange}</div>
+    </div>
+    <!-- 주의사항 -->
+    <div style="background:#fffbeb;border-bottom:1px solid #fde68a;padding:10px 32px;font-size:12px;color:#92400e">
+      ⚠️ ${isEN ? "Due to the nature of AI, analysis may contain errors such as misinterpreting spoken text or misidentifying references to other games." : "AI 특성 상 발화 텍스트를 잘못 이해하거나, 타 게임 언급을 이해하지 못하는 등 오류가 있을 수 있습니다."}
+    </div>
+    <div style="padding:28px 32px">
+      <div style="margin-bottom:24px">
+        <div style="font-size:11px;font-weight:700;letter-spacing:.08em;color:#64748b;text-transform:uppercase;margin-bottom:10px">${L.serverInsights}</div>
+        ${insightTable}
+      </div>
+      <div style="margin-bottom:24px">
+        <div style="font-size:11px;font-weight:700;letter-spacing:.08em;color:#64748b;text-transform:uppercase;margin-bottom:10px">${L.sentimentTrend}</div>
+        ${sentimentTable}
+      </div>
+      <div style="margin-bottom:24px">
+        <div style="font-size:11px;font-weight:700;letter-spacing:.08em;color:#64748b;text-transform:uppercase;margin-bottom:8px">${L.weeklySummary}</div>
+        <div style="font-size:14px;color:#374151;line-height:1.7;background:#f8fafc;border-left:3px solid #6366f1;border-radius:0 8px 8px 0;padding:14px 16px">${sanitizeReportHtml(aiSummaryText) || "—"}</div>
+      </div>
+      ${issuesSection}
+    </div>
+    <div style="background:#f8fafc;padding:16px 32px;border-top:1px solid #e2e8f0;font-size:12px;color:#94a3b8;text-align:center">
+      ${L.footer}
+      <div style="margin-top:10px;padding-top:10px;border-top:1px solid #e2e8f0;font-size:11px;color:#b0b8c8;line-height:1.6">
+        ${isEN ? "To manage your report subscription, visit the link below." : "리포트 신청 및 수신인 설정은 아래 링크에서 진행해주세요."}<br>
+        <a href="https://docs.google.com/spreadsheets/d/1YmJrxHiUKbaFy3xLJTT_-k7-x1DLhsT6Ugo3N-kAYA8/edit?usp=sharing" style="color:#6366f1;text-decoration:none;font-weight:500">📋 ${isEN ? "Report Subscription Google Sheets ↗" : "리포트 신청 Google Sheets ↗"}</a>
+      </div>
+    </div>
+  </div>
+</body></html>`;
+}
+
+async function sendWeeklyEmailReport({ recipients, guildName, weekStart, weekEnd, report, lang = "ko" }) {
+  const transporter  = getTransporter();
+  const displayRange = `${weekStart} ~ ${weekEnd}`;
+
+  let html, subject;
+  if (lang === "en") {
+    // EN 섹션 + KO 섹션 합본
+    const enHtml = buildWeeklyEmailHTML({ guildName, weekStart, weekEnd, report, lang: "en" });
+    const koHtml = buildWeeklyEmailHTML({ guildName, weekStart, weekEnd, report, lang: "ko" });
+    const koBodyMatch = koHtml.match(/<body[^>]*>([\s\S]*)<\/body>/i);
+    const koBodyContent = koBodyMatch ? koBodyMatch[1] : "";
+    const divider = `
+      <div style="margin:48px 24px 0;padding-top:36px;border-top:3px solid #e2e8f0;text-align:center">
+        <span style="display:inline-block;padding:6px 20px;background:#f1f5f9;border-radius:20px;font-size:12px;font-weight:700;color:#64748b;letter-spacing:.08em;">── 한국어 리포트 ──</span>
+      </div>
+      ${koBodyContent}`;
+    html = enHtml.replace(/<\/body>/i, divider + "\n</body>");
+    subject = `[AI Social Listening] ${guildName} - Discord Weekly Report / 주간 리포트 (${displayRange})`;
+  } else {
+    html    = buildWeeklyEmailHTML({ guildName, weekStart, weekEnd, report, lang: "ko" });
+    subject = `[AI Social Listening] ${guildName} - Discord 주간 리포트 (${displayRange})`;
+  }
+
+  await transporter.sendMail({
+    from:    `"AI Social Listening" <${process.env.GMAIL_USER}>`,
+    to:      recipients.join(", "),
+    subject,
+    html,
+  });
+
+  console.log(`[sendWeeklyEmailReport] 발송 완료 → ${recipients.join(", ")}`);
+}
+
+/* ════════════════════════════════════════════
+   Instagram 일일 리포트 이메일 발송
+════════════════════════════════════════════ */
+
+/**
+ * Instagram 계정 일일 리포트 이메일 발송
+ * @param {object} opts
+ * @param {string[]} opts.recipients
+ * @param {string}   opts.username   Instagram @계정명
+ * @param {string}   opts.date       YYYY-MM-DD
+ * @param {object}   opts.report     instagramPipeline 저장 데이터
+ */
+async function sendInstagramEmailReport({ recipients, username, date, report }) {
+  const html = buildInstagramEmailHTML({ username, date, report });
+
+  await getTransporter().sendMail({
+    from:    `AI Social Listening <${process.env.GMAIL_USER}>`,
+    to:      recipients.join(", "),
+    subject: `[AI Social Listening] @${username} - Instagram 일일 리포트 (${date})`,
+    html,
+  });
+}
+
+function buildInstagramEmailHTML({ username, date, report }) {
+  const HEADING = "font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#6366f1";
+  const displayDate = formatKSTDate(date);
+
+  const fmtNum = (v) => v != null ? v.toLocaleString() : "—";
+
+  // ── 트렌드 차트 (팔로워 + 오가닉 조회, 최근 최대 14일) ──
+  const trendSection = (() => {
+    const td = report.trendData;
+    if (!td || td.length === 0) return "";
+
+    const MAX_H = 60;
+    const followerVals = td.map(d => d.followerCount).filter(v => v != null);
+    const viewsVals    = td.map(d => d.dailyViews).filter(v => v != null);
+    const maxF = followerVals.length > 0 ? Math.max(...followerVals) : 1;
+    const maxV = viewsVals.length    > 0 ? Math.max(...viewsVals)    : 1;
+    const isLast = (i) => i === td.length - 1;
+
+    const buildRow = (vals, maxVal, todayBg, otherBg) => td.map((d, i) => {
+      const val = vals[i];
+      const h   = val != null ? Math.max(2, Math.round(val / maxVal * MAX_H)) : 0;
+      const sp  = MAX_H - h;
+      const bg  = isLast(i) ? todayBg : otherBg;
+      const tip = val != null ? val.toLocaleString() : "—";
+      return `<td style="padding:0 2px;vertical-align:bottom">` +
+        `<div style="height:${sp}px"></div>` +
+        `<div title="${tip}" style="background:${bg};height:${h}px;border-radius:2px 2px 0 0"></div></td>`;
+    }).join("");
+
+    const followerRow = buildRow(td.map(d => d.followerCount), maxF, "#6366f1", "#a5b4fc");
+    const viewsRow    = buildRow(td.map(d => d.dailyViews),    maxV, "#10b981", "#6ee7b7");
+
+    const labelRow = td.map((d, i) => {
+      const parts = d.date.split("-");
+      const mm = +parts[1]; const dd = +parts[2];
+      const color = isLast(i) ? "#6366f1" : "#94a3b8";
+      const fw    = isLast(i) ? "700" : "400";
+      return `<td style="text-align:center;padding:4px 2px 0;font-size:10px;color:${color};font-weight:${fw}">${mm}/${dd}</td>`;
+    }).join("");
+
+    return `<div style="margin-bottom:24px">
+      <div style="${HEADING};margin-bottom:10px">팔로워 · 조회 트렌드 (최근 ${td.length}일)</div>
+      <table style="border-collapse:collapse;width:100%;table-layout:fixed"><tbody>
+        <tr>${followerRow}</tr>
+        <tr>${viewsRow}</tr>
+        <tr>${labelRow}</tr>
+      </tbody></table>
+      <div style="margin-top:8px;font-size:10px;color:#64748b">
+        <span style="margin-right:12px">&#9646;&nbsp;<span style="color:#6366f1">팔로워</span></span>
+        <span>&#9646;&nbsp;<span style="color:#10b981">오가닉 조회</span></span>
+      </div>
+    </div>`;
+  })();
+
+  // ── 포스트 테이블 ──
+  const MEDIA_LABELS = { IMAGE: "사진", VIDEO: "영상", CAROUSEL_ALBUM: "슬라이드" };
+  const DOW_KO = ["일","월","화","수","목","금","토"];
+
+  const postRows = (report.posts || []).map((p) => {
+    // KST 기준 날짜 + 요일
+    let dateStr = "—";
+    if (p.timestamp) {
+      const dtKST = new Date(new Date(p.timestamp).getTime() + 9 * 60 * 60 * 1000);
+      dateStr = `${dtKST.getUTCMonth()+1}/${dtKST.getUTCDate()}(${DOW_KO[dtKST.getUTCDay()]})`;
+    }
+
+    // 본문 (최대 20자 + permalink 링크)
+    const rawCap = p.caption ? p.caption.replace(/\s+/g, " ").trim() : null;
+    const capText = rawCap
+      ? escapeHtml(rawCap.length > 20 ? rawCap.slice(0, 20) + "…" : rawCap)
+      : "—";
+    const captionCell = (p.permalink && p.permalink.startsWith("https://"))
+      ? `<a href="${p.permalink}" target="_blank" rel="noopener noreferrer" style="color:#6366f1;text-decoration:none">${capText}</a>`
+      : capText;
+
+    const mediaLabel = MEDIA_LABELS[p.mediaType] || p.mediaType || "—";
+    const er = p.engagementRate || 0;
+    const erColor = er >= 5 ? "#059669" : er >= 2 ? "#d97706" : "#94a3b8";
+    const erText  = er > 0 ? `${er.toFixed(1)}%` : "—";
+    const views    = p.views            != null ? p.views.toLocaleString()            : "—";
+    const likes    = p.likes            != null ? p.likes.toLocaleString()            : "—";
+    const comments = p.comments         != null ? p.comments.toLocaleString()         : "—";
+    const shares   = p.shares           != null ? p.shares.toLocaleString()           : "—";
+    const saves    = p.saves            != null ? p.saves.toLocaleString()            : "—";
+    const pv       = p.profileVisits    != null ? p.profileVisits.toLocaleString()    : "—";
+    const follows  = (p.mediaType === "IMAGE" || p.mediaType === "CAROUSEL_ALBUM")
+      ? (p.follows != null ? p.follows.toLocaleString() : "—")
+      : "—";
+    const wt       = p.reelAvgWatchTime != null ? `${(p.reelAvgWatchTime / 1000).toFixed(1)}초` : "—";
+    const TD = "padding:6px 6px;border-bottom:1px solid #f1f5f9;font-size:11px";
+    return `<tr>
+      <td style="${TD};color:#64748b;white-space:nowrap">${dateStr}</td>
+      <td style="${TD};color:#334155;max-width:120px">${captionCell}</td>
+      <td style="${TD};color:#64748b">${mediaLabel}</td>
+      <td style="${TD};text-align:right">${views}</td>
+      <td style="${TD};text-align:right">${likes}</td>
+      <td style="${TD};text-align:right">${comments}</td>
+      <td style="${TD};text-align:right">${shares}</td>
+      <td style="${TD};text-align:right">${saves}</td>
+      <td style="${TD};text-align:right">${pv}</td>
+      <td style="${TD};text-align:right">${follows}</td>
+      <td style="${TD};text-align:right;color:#6366f1">${wt}</td>
+      <td style="${TD};text-align:right;font-weight:600;color:${erColor}">${erText}</td>
+    </tr>`;
+  }).join("");
+
+  const postTable = (report.posts || []).length > 0 ? `
+    <div style="margin-bottom:24px">
+      <div style="${HEADING};margin-bottom:10px">최근 2주 포스트</div>
+      <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:11px;min-width:680px">
+          <thead>
+            <tr style="background:#f8fafc">
+              <th style="padding:6px 6px;text-align:left;color:#475569;font-weight:600">날짜</th>
+              <th style="padding:6px 6px;text-align:left;color:#475569;font-weight:600">본문</th>
+              <th style="padding:6px 6px;text-align:left;color:#475569;font-weight:600">유형</th>
+              <th style="padding:6px 6px;text-align:right;color:#475569;font-weight:600">조회</th>
+              <th style="padding:6px 6px;text-align:right;color:#475569;font-weight:600">좋아요</th>
+              <th style="padding:6px 6px;text-align:right;color:#475569;font-weight:600">댓글</th>
+              <th style="padding:6px 6px;text-align:right;color:#475569;font-weight:600">공유</th>
+              <th style="padding:6px 6px;text-align:right;color:#475569;font-weight:600">저장</th>
+              <th style="padding:6px 6px;text-align:right;color:#475569;font-weight:600">프로필</th>
+              <th style="padding:6px 6px;text-align:right;color:#475569;font-weight:600">팔로우</th>
+              <th style="padding:6px 6px;text-align:right;color:#6366f1;font-weight:600">평균시청</th>
+              <th style="padding:6px 6px;text-align:right;color:#475569;font-weight:600">참여율</th>
+            </tr>
+          </thead>
+          <tbody>${postRows}</tbody>
+        </table>
+      </div>
+    </div>` : "";
+
+  // ── AI 성과 리뷰 (최근 2주 포스트 전체 분석) ──
+  const perfBlock = report.aiPerformanceReview
+    ? (() => {
+        const lines = report.aiPerformanceReview.split("\n").filter(l => l.trim());
+        const linesHtml = lines.map(l => `<div style="margin-bottom:5px">${sanitizeReportHtml(l)}</div>`).join("");
+        return `<div style="margin-bottom:24px">
+          <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:16px">
+            <span style="font-size:11px;font-weight:700;color:#475569;display:block;margin-bottom:8px">AI 성과 리뷰 — 최근 2주 포스트 종합</span>
+            <div style="font-size:13px;color:#374151;line-height:1.6">${linesHtml}</div>
+          </div>
+        </div>`;
+      })()
+    : "";
+
+  return `<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Instagram 리포트 - @${username} (${date})</title>
+</head>
+<body style="margin:0;padding:0;background:#f8fafc;font-family:-apple-system,'Malgun Gothic','맑은 고딕',sans-serif">
+  <div style="display:none;max-height:0;overflow:hidden;mso-hide:all">@${username} Instagram ${displayDate} 일일 리포트입니다.</div>
+  <div style="max-width:600px;margin:32px auto;background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.1)">
+
+    <!-- 헤더 -->
+    <div style="background:linear-gradient(135deg,#6366f1 0%,#818cf8 100%);padding:28px 32px">
+      <div style="color:#c7d2fe;font-size:11px;letter-spacing:.08em;margin-bottom:6px">AI SOCIAL LISTENING · DAILY REPORT</div>
+      <div style="color:#fff;font-size:22px;font-weight:700">@${username} - Instagram</div>
+      <div style="color:#c7d2fe;font-size:14px;margin-top:6px">${displayDate}</div>
+    </div>
+
+    <!-- 본문 -->
+    <div style="padding:28px 32px">
+
+      <!-- 트렌드 차트 -->
+      ${trendSection}
+
+      ${postTable}
+      ${perfBlock}
+
+      ${(report.model || report.totalTokens) ? `
+      <div style="margin-top:16px;padding-top:12px;border-top:1px dashed #e2e8f0;font-size:11px;color:#94a3b8;text-align:right">
+        ${report.model ? `<span style="margin-right:10px;font-weight:500">${escapeHtml(report.model)}</span>` : ""}
+        ${report.totalTokens ? `<span style="margin-right:10px">입력 ${(report.promptTokens || 0).toLocaleString()} / 출력 ${(report.completionTokens || 0).toLocaleString()} / 합계 ${(report.totalTokens || 0).toLocaleString()} 토큰</span>` : ""}
+        ${report.cost != null ? `<span>비용 $${Number(report.cost).toFixed(4)}</span>` : ""}
+      </div>` : ""}
+
+    </div>
+
+    <!-- 푸터 -->
+    <div style="background:#f8fafc;padding:16px 32px;border-top:1px solid #e2e8f0;font-size:12px;color:#94a3b8;text-align:center">
+      AI Social Listening by 사업전략팀 &nbsp;·&nbsp; 이 메일은 자동 발송됩니다
+    </div>
+  </div>
+</body>
+</html>`;
+}
+
+module.exports = { sendEmailReport, appendToGoogleSheet, sendWeeklyEmailReport, sendInstagramEmailReport };

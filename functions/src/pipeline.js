@@ -3,6 +3,7 @@
 const admin = require("firebase-admin");
 const { analyzeGuildMessages }               = require("./analyzers/openrouter");
 const { sendEmailReport, appendToGoogleSheet } = require("./delivery");
+const { getKSTYesterdayString } = require("./utils/kst");
 
 /**
  * 전체 파이프라인 실행.
@@ -13,7 +14,7 @@ const { sendEmailReport, appendToGoogleSheet } = require("./delivery");
  * @returns {Promise<{processed, skipped, errors}>}
  */
 // AI 분석 전 채널별 메시지 상한 (토큰/비용 제어)
-const MAX_MESSAGES_PER_CHANNEL = 5000;
+const MAX_MESSAGES_PER_CHANNEL = 2000;
 
 /**
  * 메시지 배열을 maxCount 이하로 균등 분산 샘플링.
@@ -25,14 +26,82 @@ function sampleMessages(messages, maxCount) {
   return Array.from({ length: maxCount }, (_, i) => messages[Math.floor(i * step)]);
 }
 
-// KST(UTC+9) 기준 어제 날짜 문자열 반환 (오늘 09:00 KST에 전일 리포트 생성)
-function getKSTYesterdayString() {
-  return new Date(Date.now() + 9 * 60 * 60 * 1000 - 24 * 60 * 60 * 1000).toISOString().split("T")[0];
+/**
+ * AI가 반환한 이슈의 messageId를 messageQuote 교차 검증으로 교정.
+ * AI가 messageQuote(메시지 원문 앞 40자)를 함께 반환할 때,
+ * 실제 수집된 messages 배열에서 quote 텍스트를 검색하여 ID 불일치를 자동 수정.
+ *
+ * @param {Array} issues - AI 분석 결과의 issues 배열
+ * @param {Array} channelsWithMessages - 채널별 messages 포함 배열
+ * @returns {Array} 교정된 issues 배열
+ */
+function resolveIssueMessageIds(issues, channelsWithMessages) {
+  // 모든 채널 메시지를 flat하게 수집 (channelId 태깅 포함)
+  const allMessages = [];
+  for (const ch of channelsWithMessages) {
+    for (const m of ch.messages || []) {
+      allMessages.push({ ...m, _channelId: ch.discordChannelId });
+    }
+  }
+
+  return (issues || []).map(issue => {
+    const quote = issue.messageQuote;
+    if (!quote) return issue; // quote 없으면 AI messageId 그대로 사용
+
+    // quote 앞 30자로 실제 메시지 검색 (대소문자 무관)
+    const searchStr = quote.substring(0, 30).toLowerCase();
+    const matched = allMessages.find(m =>
+      m.content && m.content.toLowerCase().includes(searchStr)
+    );
+
+    if (matched) {
+      // 매칭 성공 → 실제 ID + channelId로 교정
+      if (matched.id !== issue.messageId || matched._channelId !== issue.channelId) {
+        console.log(`[resolveIssueMessageIds] 교정: "${issue.title}" messageId ${issue.messageId} → ${matched.id}`);
+      }
+      return { ...issue, messageId: matched.id, channelId: matched._channelId };
+    }
+
+    // 매칭 실패 → AI가 반환한 값 그대로 사용 (폴백)
+    return issue;
+  });
+}
+
+/**
+ * 이메일 발송 블록 (KO/EN 수신자 분리, 오류 격리).
+ * runPipeline 과 reDeliver 양쪽에서 공유.
+ */
+async function dispatchEmailForGuild(emailCfg, { guildName, guildId, date, report, label }) {
+  if (!emailCfg.isEnabled) return;
+  const recipientsKo = emailCfg.recipientsKo || emailCfg.recipients || [];
+  const recipientsEn = emailCfg.recipientsEn || [];
+  if (recipientsKo.length === 0 && recipientsEn.length === 0) {
+    console.log(`${label} 이메일 수신자 없음 — 발송 생략`);
+    return;
+  }
+  if (recipientsKo.length > 0) {
+    try {
+      await sendEmailReport({ recipients: recipientsKo, guildName, guildId, date, report, lang: "ko" });
+      console.log(`${label} 이메일(KO) 발송 완료 (${recipientsKo.length}명)`);
+    } catch (emailErr) {
+      console.error(`${label} 이메일(KO) 발송 실패:`, emailErr.message);
+    }
+  }
+  if (recipientsEn.length > 0) {
+    try {
+      await sendEmailReport({ recipients: recipientsEn, guildName, guildId, date, report, lang: "en" });
+      console.log(`${label} 이메일(EN) 발송 완료 (${recipientsEn.length}명)`);
+    } catch (emailErr) {
+      console.error(`${label} 이메일(EN) 발송 실패:`, emailErr.message);
+    }
+  }
 }
 
 async function runPipeline(filterWorkspaceId = null) {
   const db = admin.firestore();
   const today = getKSTYesterdayString(); // YYYY-MM-DD (KST 전일) — 전일 리포트 대상 날짜
+  const dayStartMs = new Date(today + "T00:00:00+09:00").getTime(); // KST 00:00:00 (UTC ms)
+  const dayEndMs   = dayStartMs + 24 * 60 * 60 * 1000;             // KST 다음날 00:00:00 (exclusive)
   const results = { processed: 0, skipped: 0, errors: 0 };
 
   console.log(`[pipeline] 시작 — ${today}${filterWorkspaceId ? ` (워크스페이스: ${filterWorkspaceId})` : ""}`);
@@ -96,12 +165,13 @@ async function runPipeline(filterWorkspaceId = null) {
 
       const ch = guild.channels.get(channelDocId);
 
-      // 메시지 ID 기준 중복 제거
+      // 메시지 ID 기준 중복 제거 + 대상 날짜(KST) 범위 필터링
       for (const m of messages) {
-        if (m.id && !ch.seenIds.has(m.id)) {
-          ch.seenIds.add(m.id);
-          ch.messages.push(m);
-        }
+        if (!m.id || ch.seenIds.has(m.id)) continue;
+        const ts = new Date(m.timestamp).getTime();
+        if (isNaN(ts) || ts < dayStartMs || ts >= dayEndMs) continue; // 유효하지 않거나 대상 날짜 외 메시지 제외
+        ch.seenIds.add(m.id);
+        ch.messages.push(m);
       }
 
       if (alertTriggered) ch.alertTriggered = true;
@@ -162,6 +232,9 @@ async function runPipeline(filterWorkspaceId = null) {
         const { report, usage } = await analyzeGuildMessages(channelsWithMessages, guildName, guildId, summaryPrompt);
         console.log(`${guildLabel} AI 분석 완료 (tokens: ${usage?.total_tokens ?? 0})`);
 
+        // ── 이슈 messageId 교차 검증 (messageQuote → 실제 메시지 ID 교정) ──
+        const resolvedIssues = resolveIssueMessageIds(report.issues || [], channelsWithMessages);
+
         // ── 채널별 요약 보강 ────────────────────────────────────
         const channelSummaries = (report.channels || []).map((rc) => {
           const matched = channelsWithMessages.find((c) => c.channelDocId === rc.channelDocId);
@@ -170,11 +243,23 @@ async function runPipeline(filterWorkspaceId = null) {
             channelName:   matched?.channelName || rc.channelDocId,
             importance:    matched?.importance  || "normal",
             messageCount:  matched?.originalMessageCount ?? matched?.messages.length ?? 0,
-            summary:       rc.summary   || "",
-            sentiment:     rc.sentiment || {},
-            keywords:      rc.keywords  || [],
+            summary:       rc.summary    || "",
+            summary_en:    rc.summary_en || "",
+            sentiment:     rc.sentiment  || {},
+            keywords:      rc.keywords   || [],
           };
         });
+
+        // ── 길드 감정: 채널별 메시지 수 가중 평균 (채널 중요도 무관) ──
+        const _totalMsgCount = channelSummaries.reduce((s, c) => s + (c.messageCount || 0), 0);
+        const guildSentiment = _totalMsgCount > 0
+          ? (() => {
+              const pos = Math.round(channelSummaries.reduce((s, c) => s + (c.sentiment?.positive || 0) * (c.messageCount || 0), 0) / _totalMsgCount);
+              const neu = Math.round(channelSummaries.reduce((s, c) => s + (c.sentiment?.neutral  || 0) * (c.messageCount || 0), 0) / _totalMsgCount);
+              const neg = 100 - pos - neu; // 합산이 정확히 100이 되도록 보정
+              return { positive: pos, neutral: neu, negative: neg };
+            })()
+          : (report.sentiment || {});
 
         // ── 길드 리포트 저장 ────────────────────────────────────
         const reportRef = db
@@ -186,10 +271,12 @@ async function runPipeline(filterWorkspaceId = null) {
           discordGuildId:   guildId,
           guildName,
           messageCount:     totalMessages,
-          summary:          report.summary   || "",
-          sentiment:        report.sentiment || {},
-          keywords:         report.keywords  || [],
-          issues:           report.issues    || [],
+          summary:          report.summary    || "",
+          summary_en:       report.summary_en || "",
+          sentiment:        guildSentiment,
+          keywords:         report.keywords   || [],
+          keywords_en:      report.keywords_en || [],
+          issues:           resolvedIssues,
           channels:         channelSummaries,
           isAlertTriggered,
           model:            process.env.OPENROUTER_MODEL || "",
@@ -224,28 +311,18 @@ async function runPipeline(filterWorkspaceId = null) {
         const sheetsCfg = guildDelivery.googleSheets || {};
 
         const reportPayload = {
-          summary:         report.summary   || "",
-          sentiment:       report.sentiment || {},
-          keywords:        report.keywords  || [],
-          issues:          report.issues    || [],
+          summary:         report.summary    || "",
+          summary_en:      report.summary_en || "",
+          sentiment:       guildSentiment,
+          keywords:        report.keywords   || [],
+          keywords_en:     report.keywords_en || [],
+          issues:          resolvedIssues,
           channels:        channelSummaries,
           messageCount:    totalMessages,
           isAlertTriggered,
         };
 
-        if (emailCfg.isEnabled) {
-          const recipients = emailCfg.recipients || [];
-          if (recipients.length > 0) {
-            try {
-              await sendEmailReport({ recipients, guildName, guildId, date: today, report: reportPayload });
-              console.log(`${guildLabel} 이메일 발송 완료 (${recipients.length}명)`);
-            } catch (emailErr) {
-              console.error(`${guildLabel} 이메일 발송 실패:`, emailErr.message);
-            }
-          } else {
-            console.log(`${guildLabel} 이메일 수신자 없음 — 발송 생략`);
-          }
-        }
+        await dispatchEmailForGuild(emailCfg, { guildName, guildId, date: today, report: reportPayload, label: guildLabel });
 
         if (sheetsCfg.isEnabled && sheetsCfg.spreadsheetUrl) {
           try {
@@ -319,25 +396,17 @@ async function reDeliver(workspaceId, date) {
 
       const reportPayload = {
         summary:          r.summary          || "",
-        sentiment:        r.sentiment         || {},
-        keywords:         r.keywords          || [],
-        issues:           r.issues            || [],
-        channels:         r.channels          || [],
-        messageCount:     r.messageCount      || 0,
-        isAlertTriggered: r.isAlertTriggered  || false,
+        summary_en:       r.summary_en       || "",
+        sentiment:        r.sentiment        || {},
+        keywords:         r.keywords         || [],
+        keywords_en:      r.keywords_en      || [],
+        issues:           r.issues           || [],
+        channels:         r.channels         || [],
+        messageCount:     r.messageCount     || 0,
+        isAlertTriggered: r.isAlertTriggered || false,
       };
 
-      if (emailCfg.isEnabled) {
-        const recipients = emailCfg.recipients || [];
-        if (recipients.length > 0) {
-          try {
-            await sendEmailReport({ recipients, guildName: r.guildName, guildId: r.discordGuildId || "", date, report: reportPayload });
-            console.log(`${guildLabel} [reDeliver] 이메일 발송 완료`);
-          } catch (emailErr) {
-            console.error(`${guildLabel} [reDeliver] 이메일 발송 실패:`, emailErr.message);
-          }
-        }
-      }
+      await dispatchEmailForGuild(emailCfg, { guildName: r.guildName, guildId: r.discordGuildId || "", date, report: reportPayload, label: `${guildLabel} [reDeliver]` });
 
       if (sheetsCfg.isEnabled && sheetsCfg.spreadsheetUrl) {
         try {

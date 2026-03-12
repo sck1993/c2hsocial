@@ -190,7 +190,7 @@ async function getChannelInfo(channelId) {
     `${DISCORD_API}/channels/${channelId}`,
     { headers: authHeader() }
   );
-  return { name: data.name, guildId: data.guild_id };
+  return { name: data.name, guildId: data.guild_id, type: data.type };
 }
 
 /**
@@ -205,4 +205,150 @@ async function getGuildInfo(guildId) {
   return { id: data.id, name: data.name };
 }
 
-module.exports = { fetchChannelMessages, getChannelInfo, getGuildInfo };
+/**
+ * Discord 포럼 채널(type=15)에서 메시지 수집.
+ * - 활성 스레드: GET /guilds/{guildId}/threads/active → parent_id + last_message_id 타임스탬프 필터
+ * - 아카이브 스레드: GET /channels/{forumId}/threads/archived/public → archive_timestamp 필터
+ * - 각 스레드 메시지에 "[스레드: {이름}]" prefix 삽입
+ *
+ * @param {string} forumChannelId   - 포럼 채널 ID
+ * @param {string} guildId          - Discord 서버(길드) ID
+ * @param {number} afterTimestampMs - 이 시각 이후 메시지만 수집 (ms)
+ * @param {number} [deadlineMs]     - 이 시각 이후 스레드 처리 중단 (wall-clock 예산용, 기본값 Infinity)
+ * @returns {Promise<{ messages: Array, hitMaxPages: boolean, lastRawId: null, hitTimeLimit: boolean }>}
+ */
+async function fetchForumMessages(forumChannelId, guildId, afterTimestampMs, deadlineMs = Infinity) {
+  const afterSnowflake = timestampToSnowflake(afterTimestampMs);
+
+  // ── 1. 활성 스레드 조회 ──────────────────────────────────────────────────
+  let activeThreads = [];
+  try {
+    const { data } = await discordGet(
+      `${DISCORD_API}/guilds/${guildId}/threads/active`,
+      { headers: authHeader() }
+    );
+    activeThreads = (data.threads || []).filter((t) => {
+      if (t.parent_id !== forumChannelId) return false;
+      // 마지막 메시지 타임스탬프가 afterTimestampMs 이후인 스레드만 포함
+      // last_message_id가 없으면 신규 메시지 여부 불명 → 포함하여 안전하게 처리
+      if (!t.last_message_id) return true;
+      const lastMsgMs = Number((BigInt(t.last_message_id) >> 22n) + 1420070400000n);
+      return lastMsgMs > afterTimestampMs;
+    });
+  } catch (err) {
+    console.warn(`[discord] 활성 스레드 조회 실패 (무시): ${err.message}`);
+  }
+
+  // ── 2. 아카이브 스레드 조회 ──────────────────────────────────────────────
+  let archivedThreads = [];
+  try {
+    const { data } = await discordGet(
+      `${DISCORD_API}/channels/${forumChannelId}/threads/archived/public`,
+      { headers: authHeader(), params: { limit: 100 } }
+    );
+    archivedThreads = (data.threads || []).filter((t) => {
+      const archiveTs = new Date(t.thread_metadata?.archive_timestamp || 0).getTime();
+      return archiveTs > afterTimestampMs;
+    });
+  } catch (err) {
+    console.warn(`[discord] 아카이브 스레드 조회 실패 (무시): ${err.message}`);
+  }
+
+  // ── 3. 중복 제거 ──────────────────────────────────────────────────────────
+  const seen = new Set();
+  const threads = [];
+  for (const t of [...activeThreads, ...archivedThreads]) {
+    if (!seen.has(t.id)) {
+      seen.add(t.id);
+      threads.push(t);
+    }
+  }
+
+  console.log(
+    `[discord] 포럼 ${forumChannelId} — 스레드 ${threads.length}개 (활성 ${activeThreads.length}, 아카이브 ${archivedThreads.length})`
+  );
+
+  if (threads.length === 0) {
+    return { messages: [], hitMaxPages: false, lastRawId: null, hitTimeLimit: false };
+  }
+
+  // ── 4. 스레드별 메시지 수집 ───────────────────────────────────────────────
+  const allMessages = [];
+
+  for (let ti = 0; ti < threads.length; ti++) {
+    // wall-clock 예산 초과 시 남은 스레드 중단 — 다음 실행에서 lastForumSyncAt 기준 재처리
+    if (Date.now() >= deadlineMs) {
+      const remaining = threads.length - ti;
+      console.warn(
+        `[discord] 포럼 ${forumChannelId} — wall-clock 초과로 ${remaining}개 스레드 미처리 (처리 완료: ${ti}개)`
+      );
+      console.log(`[discord] 포럼 ${forumChannelId} — 총 ${allMessages.length}개 메시지 수집 (일부 스레드 미처리)`);
+      return { messages: allMessages, hitMaxPages: false, lastRawId: null, hitTimeLimit: true };
+    }
+
+    const thread = threads[ti];
+    await sleep(MIN_PAGE_DELAY_MS);
+
+    let threadMessages = [];
+    let lastId = afterSnowflake;
+    let pageCount = 0;
+
+    while (true) {
+      if (pageCount > 0) await sleep(MIN_PAGE_DELAY_MS);
+      pageCount++;
+
+      if (pageCount > MAX_PAGES) {
+        console.warn(`[discord] 스레드 ${thread.id} (${thread.name}) MAX_PAGES 도달 — 이후 메시지 생략`);
+        break;
+      }
+
+      let data;
+      try {
+        const response = await discordGet(
+          `${DISCORD_API}/channels/${thread.id}/messages`,
+          { headers: authHeader(), params: { limit: 100, after: lastId } }
+        );
+        data = response.data;
+      } catch (err) {
+        console.warn(`[discord] 스레드 ${thread.id} 메시지 수집 실패 (무시): ${err.message}`);
+        break;
+      }
+
+      if (!data || data.length === 0) break;
+
+      data.sort((a, b) => {
+        const idA = BigInt(a.id), idB = BigInt(b.id);
+        return idA < idB ? -1 : idA > idB ? 1 : 0;
+      });
+
+      threadMessages = threadMessages.concat(data);
+      if (data.length < 100) break;
+      lastId = data[data.length - 1].id;
+    }
+
+    // 봇 메시지 제외 + 노이즈 필터 + 스레드 이름 prefix
+    const filtered = threadMessages
+      .filter((m) => !m.author?.bot)
+      .filter((m) => {
+        const text = (m.content || "").trim();
+        if (!text) return false;
+        const stripped = text.replace(/<a?:[a-zA-Z0-9_]+:\d+>/g, "").trim();
+        if (!stripped) return false;
+        if (/^https?:\/\/\S+$/.test(stripped)) return false;
+        return true;
+      })
+      .map((m) => ({
+        id:        m.id,
+        author:    m.author.username,
+        content:   `[스레드: ${thread.name}] ${m.content}`,
+        timestamp: m.timestamp,
+      }));
+
+    allMessages.push(...filtered);
+  }
+
+  console.log(`[discord] 포럼 ${forumChannelId} — 총 ${allMessages.length}개 메시지 수집`);
+  return { messages: allMessages, hitMaxPages: false, lastRawId: null, hitTimeLimit: false };
+}
+
+module.exports = { fetchChannelMessages, fetchForumMessages, getChannelInfo, getGuildInfo };

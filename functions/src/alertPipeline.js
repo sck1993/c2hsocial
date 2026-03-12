@@ -2,11 +2,18 @@
 
 const admin = require("firebase-admin");
 const axios  = require("axios");
-const { fetchChannelMessages } = require("./collectors/discord");
+const { fetchChannelMessages, fetchForumMessages } = require("./collectors/discord");
+const { getKSTDateString, getKSTMidnightMs, getKSTDateFromMs } = require("./utils/kst");
 
 const ALERT_COOLDOWN_MS = 4 * 60 * 60 * 1000;  // 4시간
 const CHUNK_TTL_MS      = 48 * 60 * 60 * 1000; // 48시간
 const MAX_BATCHES       = 30; // 배치당 최대 50페이지 × 최대 30배치 = 채널당 최대 150,000개
+
+// Discord Snowflake ID → UTC 타임스탬프(ms) 변환
+function snowflakeToMs(snowflake) {
+  const DISCORD_EPOCH = 1420070400000n;
+  return Number((BigInt(snowflake) >> 22n) + DISCORD_EPOCH);
+}
 
 /**
  * 2시간마다 실행되는 증분 수집 파이프라인.
@@ -19,26 +26,13 @@ const MAX_BATCHES       = 30; // 배치당 최대 50페이지 × 최대 30배치
  * @param {string|null} filterGuildId     - 지정 시 해당 길드만 처리
  * @returns {Promise<{collected, alerted, errors}>}
  */
-// KST(UTC+9) 기준 오늘 날짜 문자열 반환
-function getKSTDateString() {
-  return new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().split("T")[0];
-}
-
-// KST 기준 오늘 자정(00:00 KST)의 UTC 타임스탬프(ms) 반환
-function getKSTMidnightMs(kstDateStr) {
-  return new Date(kstDateStr + "T00:00:00+09:00").getTime();
-}
-
-// UTC 타임스탬프(ms)를 KST 날짜 문자열(YYYY-MM-DD)로 변환
-function getKSTDateFromMs(ms) {
-  return new Date(ms + 9 * 60 * 60 * 1000).toISOString().split("T")[0];
-}
-
 async function runAlertPipeline(filterWorkspaceId = null, filterGuildId = null) {
   const db = admin.firestore();
   const today = getKSTDateString(); // YYYY-MM-DD (KST)
   const runId = new Date().toISOString(); // 이번 실행 식별자 (collection_logs 그룹핑용)
   const results = { collected: 0, alerted: 0, errors: 0 };
+  const PIPELINE_TIMEOUT_MS = 240_000; // 4분 (함수 timeout 300s 전 여유)
+  const pipelineStart = Date.now();
 
   console.log(`[alertPipeline] 시작 — ${new Date().toISOString()}${filterWorkspaceId ? ` (워크스페이스: ${filterWorkspaceId})` : ""}${filterGuildId ? ` (길드: ${filterGuildId})` : ""}`);
 
@@ -77,11 +71,17 @@ async function runAlertPipeline(filterWorkspaceId = null, filterGuildId = null) 
 
       try {
         // 초기 설정: lastCollectedSnowflake 이후 증분 수집, 최초엔 KST 자정부터
-        const isInitial      = !ch.lastCollectedSnowflake; // 로그 type 판별용 (배치 전 캡처)
+        const isForumChannel = ch.channelType === 15;
+        const isInitial      = isForumChannel ? !ch.lastForumSyncAt : !ch.lastCollectedSnowflake;
         let currentSnowflake = ch.lastCollectedSnowflake || null;
         let hoursBack = 2; // afterSnowflake가 있을 때는 fetchChannelMessages 내부에서 무시됨
 
-        if (!currentSnowflake) {
+        if (isForumChannel) {
+          const label = ch.lastForumSyncAt
+            ? `증분 — ${ch.lastForumSyncAt}`
+            : `최초 — KST 자정부터`;
+          console.log(`${chLabel} 포럼 채널 수집 시작 (${label})`);
+        } else if (!currentSnowflake) {
           const kstMidnightMs = getKSTMidnightMs(today);
           hoursBack = (Date.now() - kstMidnightMs) / (60 * 60 * 1000);
           console.log(`${chLabel} 수집 시작 (최초 — KST 자정부터 ${hoursBack.toFixed(1)}시간치)`);
@@ -95,19 +95,42 @@ async function runAlertPipeline(filterWorkspaceId = null, filterGuildId = null) 
 
         // ── 배치 루프: hitMaxPages=true이면 다음 배치 즉시 수집 ──────────────
         for (let batchIdx = 0; batchIdx < MAX_BATCHES; batchIdx++) {
+          if (Date.now() - pipelineStart > PIPELINE_TIMEOUT_MS) {
+            console.warn(`[alertPipeline] wall-clock 예산 초과 — 남은 배치 중단 (${chLabel})`);
+            break;
+          }
           let fetchResult;
           try {
-            fetchResult = await fetchChannelMessages(ch.discordChannelId, hoursBack, currentSnowflake);
+            if (isForumChannel) {
+              const afterMs = ch.lastForumSyncAt
+                ? new Date(ch.lastForumSyncAt).getTime()
+                : getKSTMidnightMs(today);
+              const deadlineMs = pipelineStart + PIPELINE_TIMEOUT_MS;
+              fetchResult = await fetchForumMessages(ch.discordChannelId, ch.discordGuildId, afterMs, deadlineMs);
+            } else {
+              fetchResult = await fetchChannelMessages(ch.discordChannelId, hoursBack, currentSnowflake);
+            }
           } catch (fetchErr) {
             console.error(`${chLabel} 수집 실패 (배치 ${batchIdx + 1}):`, fetchErr.message);
-            if (!channelCollected) results.errors++;
+            results.errors++;
             break;
           }
 
-          const { messages, hitMaxPages, lastRawId } = fetchResult;
+          const { messages, hitMaxPages, lastRawId, hitTimeLimit } = fetchResult;
+
+          if (hitTimeLimit) {
+            console.warn(`${chLabel} 포럼 채널 wall-clock 초과 — 일부 스레드 미처리. 다음 실행에서 재처리됩니다.`);
+          }
 
           if (messages.length === 0) {
-            if (batchIdx === 0) console.log(`${chLabel} 새 메시지 없음`);
+            if (batchIdx === 0) {
+              console.log(`${chLabel} 새 메시지 없음`);
+              // 봇 전용 페이지를 통과했다면 커서를 전진시켜 다음 실행에서 재수집 방지
+              if (lastRawId) {
+                await chDoc.ref.update({ lastCollectedSnowflake: lastRawId });
+                console.log(`${chLabel} 봇 전용 페이지 감지 — 커서 전진 (${lastRawId})`);
+              }
+            }
             break;
           }
 
@@ -128,9 +151,10 @@ async function runAlertPipeline(filterWorkspaceId = null, filterGuildId = null) 
           const chunkDocId = `${channelDocId}_${now}`;
 
           // windowStart를 ms로 계산 → 메시지가 속하는 KST 날짜 파생
+          // 증분: 배치 시작 snowflake → 정확한 타임스탬프 추출 (multi-batch 오차 없음)
           const windowStartMs = currentSnowflake
-            ? now - 2 * 60 * 60 * 1000  // 증분: 약 2시간 전
-            : getKSTMidnightMs(today);   // 최초: KST 자정
+            ? snowflakeToMs(currentSnowflake)  // 배치 커서 기준 실제 타임스탬프
+            : getKSTMidnightMs(today);          // 최초: KST 자정
           const windowStart = new Date(windowStartMs).toISOString();
           const chunkDate   = getKSTDateFromMs(windowStartMs); // 메시지 기준 KST 날짜
 
@@ -155,11 +179,18 @@ async function runAlertPipeline(filterWorkspaceId = null, filterGuildId = null) 
               expireAt,
             });
 
-          // lastCollectedSnowflake 업데이트 (오름차순 반환이라 마지막이 최신)
-          const latestId = messages[messages.length - 1].id;
-          await chDoc.ref.update({ lastCollectedSnowflake: latestId });
+          // 커서 업데이트: 포럼 → lastForumSyncAt(ISO), 일반 → lastCollectedSnowflake(snowflake)
+          if (isForumChannel) {
+            await chDoc.ref.update({ lastForumSyncAt: new Date().toISOString() });
+          } else {
+            const latestId = messages[messages.length - 1].id;
+            await chDoc.ref.update({ lastCollectedSnowflake: latestId });
+          }
 
-          console.log(`${chLabel}${batchSuffix} 청크 저장 완료 (lastSnowflake: ${latestId})`);
+          const cursorInfo = isForumChannel
+            ? `lastForumSyncAt: ${new Date().toISOString()}`
+            : `lastSnowflake: ${messages[messages.length - 1].id}`;
+          console.log(`${chLabel}${batchSuffix} 청크 저장 완료 (${cursorInfo})`);
 
           if (!channelCollected) {
             results.collected++;
