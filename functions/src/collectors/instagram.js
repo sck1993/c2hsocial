@@ -327,6 +327,84 @@ async function fetchPostInsights(mediaId, accessToken, mediaObj = {}) {
   };
 }
 
+function normalizeCommentText(text) {
+  if (!text) return "";
+  return String(text)
+    .replace(/[\u0000-\u0008\u000B-\u001F\u007F]/g, " ")
+    .replace(/[\u200B-\u200D\uFEFF]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+async function fetchPostComments(mediaId, accessToken, maxComments = 100) {
+  const targetLimit = Math.max(1, Math.min(100, Number(maxComments) || 100));
+
+  async function readAll(includeOrder) {
+    const out = [];
+    let nextUrl = null;
+    let isFirst = true;
+
+    while (out.length < targetLimit) {
+      let resp;
+      if (isFirst) {
+        const params = {
+          fields: "text,username,timestamp,like_count",
+          limit: Math.min(50, targetLimit),
+          access_token: accessToken,
+        };
+        if (includeOrder) params.order = "reverse_chronological";
+        resp = await axios.get(`${IG_API}/${mediaId}/comments`, {
+          params,
+          timeout: 15000,
+        });
+        isFirst = false;
+      } else if (nextUrl) {
+        resp = await axios.get(nextUrl, { timeout: 15000 });
+      } else {
+        break;
+      }
+
+      const items = resp.data?.data || [];
+      for (const item of items) {
+        if (out.length >= targetLimit) break;
+        out.push({
+          id: item.id || null,
+          text: normalizeCommentText(item.text || ""),
+          username: item.username || null,
+          timestamp: item.timestamp || null,
+          likeCount: item.like_count ?? 0,
+        });
+      }
+
+      nextUrl = resp.data?.paging?.next || null;
+      if (!nextUrl || !items.length) break;
+    }
+
+    return out
+      .filter((item) => item.text || item.username || item.timestamp)
+      .sort((a, b) => {
+        const at = a.timestamp ? new Date(a.timestamp).getTime() : 0;
+        const bt = b.timestamp ? new Date(b.timestamp).getTime() : 0;
+        return bt - at;
+      })
+      .slice(0, targetLimit);
+  }
+
+  try {
+    return await readAll(true);
+  } catch (err) {
+    const detail = err.response?.data ? JSON.stringify(err.response.data).substring(0, 300) : "";
+    console.warn(`[instagram] 댓글 수집 재시도 (${mediaId}): ${err.message}${detail ? " — " + detail : ""}`);
+    try {
+      return await readAll(false);
+    } catch (retryErr) {
+      const retryDetail = retryErr.response?.data ? JSON.stringify(retryErr.response.data).substring(0, 300) : "";
+      console.warn(`[instagram] 댓글 수집 실패 (${mediaId}): ${retryErr.message}${retryDetail ? " — " + retryDetail : ""}`);
+      return [];
+    }
+  }
+}
+
 /**
  * debug_token API로 실제 토큰 만료 시각 조회
  * @param {string} inputToken - 검사할 액세스 토큰
@@ -359,5 +437,6 @@ module.exports = {
   fetchAccountMetrics,
   fetchRecentPosts,
   fetchPostInsights,
+  fetchPostComments,
   sleep,
 };

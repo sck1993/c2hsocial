@@ -2,8 +2,19 @@
     const API = 'https://api-xsauyjh24q-du.a.run.app';
     const WS = 'ws_antigravity';
     let _igPendingAccountSelection = null;
+    const DEFAULT_IG_POST_COMMENT_PROMPT = `당신은 Instagram 콘텐츠 분석가입니다.
+이메일 리포트의 게시물 표 아래에 붙일 아주 짧은 코멘트 1~2문장만 작성하세요.
+반드시 아래 원칙을 지키세요.
+- 게시물 내용, 실제 댓글 반응, 성과 지표를 함께 반영
+- 최근 2주 전체 게시물 맥락과 비교해 상대적인 위치를 짚어도 좋습니다
+- 과장하거나 단정하지 말고 관찰 기반으로 작성
+- 댓글이 거의 없으면 댓글 반응이 아직 제한적이라는 점을 자연스럽게 언급
+- 표에 이미 숫자가 나오므로 조회수, 댓글수, 참여율 같은 구체적인 숫자를 반복해서 쓰지 마세요
+- 대신 이번 기간 중 상위권 반응, 평균 대비 강함/약함, 저장/공유 중심, 댓글 대화 중심 같은 비교형 표현을 우선 사용하세요
+- 마크다운, HTML, 이모지, 따옴표 없이 순수 텍스트만 출력
+    - 120자 안팎의 짧은 한국어 코멘트로 작성`;
     const IG_PERFORMANCE_MODELS = [
-      { value: 'openai/gpt-5-mini', label: 'GPT-5 mini (medium)' },
+      { value: 'openai/gpt-5-mini', label: 'GPT-5 mini' },
       { value: 'google/gemini-3-flash-preview', label: 'Gemini Flash 3' },
     ];
 
@@ -2053,7 +2064,7 @@
     /* ─── Confirm Modal ─────────────────────────────── */
     let _confirmResolve = () => {};
 
-    function showConfirm({ platform = 'discord', icon = '', title = '', badge = '', sub = '', desc = '', confirmLabel = '실행', color = '#6366f1' }) {
+    function showConfirm({ platform = 'discord', icon = '', title = '', badge = '', sub = '', desc = '', confirmLabel = '실행', color = '#6366f1', extraHtml = '' }) {
       return new Promise(resolve => {
         _confirmResolve = (val) => {
           document.getElementById('confirmOverlay').classList.add('hidden');
@@ -2068,6 +2079,11 @@
         document.getElementById('confirmBadge').style.color = color;
         document.getElementById('confirmSub').textContent = sub;
         document.getElementById('confirmDesc').textContent = desc;
+        const extraEl = document.getElementById('confirmExtra');
+        if (extraEl) {
+          extraEl.innerHTML = extraHtml || '';
+          extraEl.classList.toggle('hidden', !extraHtml);
+        }
         const okBtn = document.getElementById('confirmOkBtn');
         okBtn.textContent = confirmLabel;
         okBtn.style.background = color;
@@ -2158,6 +2174,7 @@
       const selectedModel = IG_PERFORMANCE_MODELS.some(m => m.value === acc.performanceReviewModel)
         ? acc.performanceReviewModel
         : IG_PERFORMANCE_MODELS[0].value;
+      const postCommentPrompt = acc.postCommentPrompt || DEFAULT_IG_POST_COMMENT_PROMPT;
 
       return `
       <div class="ch-row ${isActive ? '' : 'inactive'}" id="ig-row-${acc.docId}">
@@ -2239,6 +2256,17 @@
           <button class="btn-save-settings" id="igPerfSaveBtn-${acc.docId}" data-docid="${escapeHtml(acc.docId)}"
                   onclick="saveIgPerformancePrompt(this.dataset.docid)">저장</button>
           <div class="add-result" id="igPerformancePromptResult-${acc.docId}"></div>
+        </div>
+        <div class="settings-section">
+          <div class="settings-section-title">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M8 10h8M8 14h5"/></svg>
+            AI 게시물 코멘트 지시문
+          </div>
+          <textarea class="settings-textarea" id="igPostCommentPrompt-${acc.docId}"
+            placeholder="예: 댓글 반응 톤과 최근 2주 포스트 대비 상대 성과를 중심으로 짧게 코멘트해줘.">${escapeHtml(postCommentPrompt)}</textarea>
+          <button class="btn-save-settings" id="igPostCommentSaveBtn-${acc.docId}" data-docid="${escapeHtml(acc.docId)}"
+                  onclick="saveIgPostCommentPrompt(this.dataset.docid)">저장</button>
+          <div class="add-result" id="igPostCommentPromptResult-${acc.docId}"></div>
         </div>
       </div>`;
     }
@@ -2411,6 +2439,25 @@
       }
     }
 
+    async function saveIgPostCommentPrompt(docId) {
+      const postCommentPrompt = document.getElementById(`igPostCommentPrompt-${docId}`)?.value || DEFAULT_IG_POST_COMMENT_PROMPT;
+      const $res = document.getElementById(`igPostCommentPromptResult-${docId}`);
+      const btn = document.getElementById(`igPostCommentSaveBtn-${docId}`);
+      if (btn) btn.disabled = true;
+      try {
+        await apiFetch(`/instagram/accounts/settings?workspaceId=${WS}&docId=${encodeURIComponent(docId)}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ postCommentPrompt }),
+        });
+        if ($res) { $res.className = 'add-result ok'; $res.textContent = '저장되었습니다.'; setTimeout(() => { $res.textContent = ''; }, 2500); }
+      } catch (err) {
+        if ($res) { $res.className = 'add-result err'; $res.textContent = err.message; }
+      } finally {
+        if (btn) btn.disabled = false;
+      }
+    }
+
     /* ══════════════════════════════════════
        INSTAGRAM — 리포트
     ══════════════════════════════════════ */
@@ -2427,9 +2474,18 @@
         sub: '재실행 — 기존 리포트 덮어쓰기',
         badge: date,
         desc: 'Instagram 데이터를 다시 수집하고 리포트를 재생성합니다.',
+        extraHtml: `
+          <label style="display:flex;align-items:flex-start;gap:.625rem;margin-top:.25rem;padding:.85rem .95rem;border:1px solid rgba(99,102,241,.18);border-radius:12px;background:#f8faff;cursor:pointer">
+            <input type="checkbox" id="confirmForceIgComments" style="margin-top:.15rem">
+            <span style="font-size:.875rem;line-height:1.5;color:var(--text)">
+              <strong style="color:var(--brand)">AI 코멘트 다시 생성</strong><br>
+              현재 날짜 리포트에 저장된 게시물별 AI 코멘트를 무시하고, 현재 모델/프롬프트 기준으로 다시 생성합니다.
+            </span>
+          </label>`,
         confirmLabel: '실행',
       });
       if (!ok) return;
+      const forceRegenerateComments = !!document.getElementById('confirmForceIgComments')?.checked;
 
       const $btn = document.getElementById('igTriggerBtn');
       const $msg = document.getElementById('igTriggerMsg');
@@ -2443,7 +2499,7 @@
         const r = await apiFetch('/instagram/pipeline/trigger', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ workspaceId: WS, date }),
+          body: JSON.stringify({ workspaceId: WS, date, forceRegenerateComments }),
         });
 
         const detail = `완료 (처리: ${r.result?.processed ?? 0}, 오류: ${r.result?.errors ?? 0})`;
@@ -2622,6 +2678,31 @@
       </div>` : ''}`;
     }
 
+    function buildIgPostCommentHTML(post) {
+      if (!post) return '';
+      if (post.aiCommentStatus === 'waiting_1d') {
+        return `<tr>
+          <td colspan="12" style="padding:0 8px 12px 8px;border-bottom:1px solid var(--border)">
+            <div style="margin:8px 0 0 24px;padding:10px 12px;border-radius:12px;background:#fff7ed;border:1px solid #fdba74">
+              <div style="font-size:.625rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#c2410c;margin-bottom:6px">분석 대기</div>
+              <div style="font-size:.75rem;line-height:1.65;color:#9a3412">1일 대기 중. 게시 후 하루가 지난 다음 리포트에서 댓글 반응과 성과를 함께 분석합니다.</div>
+            </div>
+          </td>
+        </tr>`;
+      }
+      if (post.aiCommentStatus === 'commented' && post.aiComment) {
+        return `<tr>
+          <td colspan="12" style="padding:0 8px 12px 8px;border-bottom:1px solid var(--border)">
+            <div style="margin:8px 0 0 24px;padding:10px 12px;border-radius:12px;background:#f5f7ff;border:1px solid #c7d2fe">
+              <div style="font-size:.625rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#6366f1;margin-bottom:6px">AI 코멘트</div>
+              <div style="font-size:.75rem;line-height:1.7;color:var(--text)">${escapeHtml(post.aiComment)}</div>
+            </div>
+          </td>
+        </tr>`;
+      }
+      return '';
+    }
+
     function igPostTableHTML(posts) {
       if (!posts || !posts.length) return '<div style="color:var(--text-2);font-size:.875rem;padding:.5rem 0">포스트 없음</div>';
       const MEDIA_LABELS = { IMAGE: '사진', VIDEO: '영상', REELS: '영상', CAROUSEL_ALBUM: '슬라이드' };
@@ -2661,7 +2742,7 @@
 
         const wt = p.reelAvgWatchTime != null ? `${(p.reelAvgWatchTime / 1000).toFixed(1)}초` : '—';
 
-        return `<tr>
+        const baseRow = `<tr>
           <td style="white-space:nowrap">${dateStr}</td>
           <td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.75rem" title="${p.caption ? escapeHtml(p.caption) : ''}">${captionCell}</td>
           <td><span style="font-size:.6875rem;padding:2px 5px;border-radius:4px;background:var(--surface-2);color:var(--text-2)">${typeLabel}</span></td>
@@ -2675,6 +2756,7 @@
           <td style="color:#6366f1">${wt}</td>
           <td style="color:${erColor};font-weight:600">${er}%</td>
         </tr>`;
+        return baseRow + buildIgPostCommentHTML(p);
       }).join('');
       return `<div style="overflow-x:auto;margin-top:.75rem">
         <table class="data-table" style="font-size:.75rem">

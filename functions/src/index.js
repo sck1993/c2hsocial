@@ -34,6 +34,17 @@ const IG_PERFORMANCE_REVIEW_MODELS = new Set([
   "openai/gpt-5-mini",
 ]);
 const DEFAULT_IG_PERFORMANCE_REVIEW_MODEL = "openai/gpt-5-mini";
+const DEFAULT_IG_POST_COMMENT_PROMPT = `당신은 Instagram 콘텐츠 분석가입니다.
+이메일 리포트의 게시물 표 아래에 붙일 아주 짧은 코멘트 1~2문장만 작성하세요.
+반드시 아래 원칙을 지키세요.
+- 게시물 내용, 실제 댓글 반응, 성과 지표를 함께 반영
+- 최근 2주 전체 게시물 맥락과 비교해 상대적인 위치를 짚어도 좋습니다
+- 과장하거나 단정하지 말고 관찰 기반으로 작성
+- 댓글이 거의 없으면 댓글 반응이 아직 제한적이라는 점을 자연스럽게 언급
+- 표에 이미 숫자가 나오므로 조회수, 댓글수, 참여율 같은 구체적인 숫자를 반복해서 쓰지 마세요
+- 대신 이번 기간 중 상위권 반응, 평균 대비 강함/약함, 저장/공유 중심, 댓글 대화 중심 같은 비교형 표현을 우선 사용하세요
+- 마크다운, HTML, 이모지, 따옴표 없이 순수 텍스트만 출력
+- 120자 안팎의 짧은 한국어 코멘트로 작성`;
 
 // ═══════════════════════════════════════════════════════
 //  HTTP API  —  /api/*
@@ -737,6 +748,7 @@ exports.api = onRequest(
             createdAt: safeData.createdAt?.toDate?.()?.toISOString() ?? null,
             performanceReviewPrompt: safeData.performanceReviewPrompt || null,
             performanceReviewModel: safeData.performanceReviewModel || DEFAULT_IG_PERFORMANCE_REVIEW_MODEL,
+            postCommentPrompt: safeData.postCommentPrompt || safeData.reactionAnalysisPrompt || DEFAULT_IG_POST_COMMENT_PROMPT,
           };
         });
         return res.json({ accounts });
@@ -816,6 +828,7 @@ exports.api = onRequest(
           isActive: true,
           deliveryConfig: { email: { isEnabled: false, recipients: [] } },
           performanceReviewModel: DEFAULT_IG_PERFORMANCE_REVIEW_MODEL,
+          postCommentPrompt: DEFAULT_IG_POST_COMMENT_PROMPT,
           createdAt: admin.firestore.FieldValue.serverTimestamp(),
         });
 
@@ -843,14 +856,14 @@ exports.api = onRequest(
       }
     }
 
-    // ── PATCH /instagram/accounts/settings ── deliveryConfig / 성과 리뷰 프롬프트 수정
+    // ── PATCH /instagram/accounts/settings ── deliveryConfig / 프롬프트 수정
     if (req.method === "PATCH" && path === "/instagram/accounts/settings") {
       try {
         const db = admin.firestore();
         const { workspaceId: _wsId, docId } = req.query;
         if (!docId) return res.status(400).json({ error: "docId 필수" });
         const workspaceId = resolveWorkspaceId(_wsId);
-        const { deliveryConfig, performanceReviewPrompt, performanceReviewModel } = req.body;
+        const { deliveryConfig, performanceReviewPrompt, performanceReviewModel, postCommentPrompt } = req.body;
 
         const updates = {};
         if (deliveryConfig !== undefined) {
@@ -860,6 +873,7 @@ exports.api = onRequest(
           updates.deliveryConfig = deliveryConfig;
         }
         if (performanceReviewPrompt !== undefined)  updates.performanceReviewPrompt  = performanceReviewPrompt || null;
+        if (postCommentPrompt !== undefined) updates.postCommentPrompt = postCommentPrompt || DEFAULT_IG_POST_COMMENT_PROMPT;
         if (performanceReviewModel !== undefined) {
           if (!IG_PERFORMANCE_REVIEW_MODELS.has(performanceReviewModel)) {
             return res.status(400).json({ error: "지원하지 않는 AI 모델입니다" });
@@ -955,11 +969,14 @@ exports.api = onRequest(
     // ── POST /instagram/pipeline/trigger ── 수동 파이프라인 실행 (리포트 생성만, 이메일 미발송)
     if (req.method === "POST" && path === "/instagram/pipeline/trigger") {
       try {
-        const { workspaceId, date, skipEmail } = req.body || {};
+        const { workspaceId, date, skipEmail, forceRegenerateComments } = req.body || {};
         const result = await runInstagramPipeline(
           workspaceId || null,
           date || null,
-          { skipEmail: skipEmail !== false }  // 기본 true (생성만), skipEmail:false 명시 시만 이메일 발송
+          {
+            skipEmail: skipEmail !== false,  // 기본 true (생성만), skipEmail:false 명시 시만 이메일 발송
+            forceRegenerateComments: Boolean(forceRegenerateComments),
+          }
         );
         return res.json({ success: true, result });
       } catch (err) {

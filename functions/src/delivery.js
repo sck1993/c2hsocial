@@ -753,6 +753,36 @@ function buildInstagramTrendChartHtml(report = {}) {
     </div>`;
 }
 
+function buildInstagramPostCommentRow(post) {
+  if (!post) return "";
+
+  if (post.aiCommentStatus === "waiting_1d") {
+    return `
+      <tr>
+        <td colspan="12" style="padding:0 6px 12px 6px;border-bottom:1px solid #e2e8f0">
+          <div style="margin:8px 0 0 28px;padding:10px 12px;border-radius:12px;background:#fff7ed;border:1px solid #fdba74">
+            <div style="font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#c2410c;margin-bottom:6px">분석 대기</div>
+            <div style="font-size:12px;line-height:1.65;color:#9a3412">1일 대기 중. 게시 후 하루가 지난 다음 리포트에서 댓글 반응과 성과를 함께 분석합니다.</div>
+          </div>
+        </td>
+      </tr>`;
+  }
+
+  if (post.aiCommentStatus === "commented" && post.aiComment) {
+    return `
+      <tr>
+        <td colspan="12" style="padding:0 6px 12px 6px;border-bottom:1px solid #e2e8f0">
+          <div style="margin:8px 0 0 28px;padding:10px 12px;border-radius:12px;background:#f5f7ff;border:1px solid #c7d2fe">
+            <div style="font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#6366f1;margin-bottom:6px">AI 코멘트</div>
+            <div style="font-size:12px;line-height:1.65;color:#334155">${escapeHtml(post.aiComment)}</div>
+          </div>
+        </td>
+      </tr>`;
+  }
+
+  return "";
+}
+
 function buildInstagramEmailHTML({ username, date, report }) {
   const HEADING = "font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#6366f1";
   const displayDate = formatKSTDate(date);
@@ -801,7 +831,7 @@ function buildInstagramEmailHTML({ username, date, report }) {
       : "—";
     const wt       = p.reelAvgWatchTime != null ? `${(p.reelAvgWatchTime / 1000).toFixed(1)}초` : "—";
     const TD = "padding:6px 6px;border-bottom:1px solid #f1f5f9;font-size:11px";
-    return `<tr>
+    const baseRow = `<tr>
       <td style="${TD};color:#64748b;white-space:nowrap">${dateStr}</td>
       <td style="${TD};color:#334155;width:96px;max-width:96px;line-height:1.35;word-break:break-word">${captionCell}</td>
       <td style="${TD};color:#64748b">${mediaLabel}</td>
@@ -815,6 +845,7 @@ function buildInstagramEmailHTML({ username, date, report }) {
       <td style="${TD};text-align:right;color:#6366f1">${wt}</td>
       <td style="${TD};text-align:right;font-weight:600;color:${erColor}">${erText}</td>
     </tr>`;
+    return baseRow + buildInstagramPostCommentRow(p);
   }).join("");
 
   const postTable = (report.posts || []).length > 0 ? `

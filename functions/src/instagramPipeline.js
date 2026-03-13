@@ -7,9 +7,14 @@ const {
   fetchAccountMetrics,
   fetchRecentPosts,
   fetchPostInsights,
+  fetchPostComments,
   sleep,
 } = require("./collectors/instagram");
-const { analyzeInstagramPostPerformance } = require("./analyzers/openrouter");
+const {
+  analyzeInstagramPostPerformance,
+  analyzeInstagramPostComment,
+  DEFAULT_IG_POST_COMMENT_PROMPT,
+} = require("./analyzers/openrouter");
 const { sendInstagramEmailReport } = require("./delivery");
 
 // KST(UTC+9) 기준 어제 날짜 문자열 반환
@@ -35,6 +40,62 @@ function getDateDaysAgo(dateStr, days) {
   return new Date(Date.UTC(y, m - 1, d - days)).toISOString().split("T")[0];
 }
 
+function getKSTDateString(timestamp) {
+  if (!timestamp) return null;
+  const ms = new Date(timestamp).getTime();
+  if (!Number.isFinite(ms)) return null;
+  return new Date(ms + 9 * 60 * 60 * 1000).toISOString().split("T")[0];
+}
+
+function mapPostsById(posts) {
+  return new Map((Array.isArray(posts) ? posts : [])
+    .filter((post) => post?.id)
+    .map((post) => [post.id, post]));
+}
+
+function buildPostCommentPeriodContext(targetPost, allPosts) {
+  const posts = (Array.isArray(allPosts) ? allPosts : []).filter((post) => post?.id);
+  const targetId = targetPost?.id;
+  if (!targetId || !posts.length) return "";
+
+  const sortedBy = (selector) => [...posts]
+    .filter((post) => selector(post) != null)
+    .sort((a, b) => (selector(b) || 0) - (selector(a) || 0));
+
+  const getRankText = (selector, label, reverseLow = false) => {
+    const ranked = sortedBy(selector);
+    const index = ranked.findIndex((post) => post.id === targetId);
+    if (index < 0 || !ranked.length) return null;
+    const rank = index + 1;
+    if (rank === 1) return `${label} 최상위권`;
+    if (rank <= Math.ceil(ranked.length / 3)) return `${label} 상위권`;
+    if (rank >= ranked.length && ranked.length >= 3) return reverseLow ? `${label} 하위권` : `${label} 낮은 편`;
+    if (rank > Math.floor((ranked.length * 2) / 3)) return reverseLow ? `${label} 하위권` : `${label} 낮은 편`;
+    return `${label} 중간권`;
+  };
+
+  const parts = [
+    `최근 2주 분석 포스트 수 ${posts.length}건`,
+    getRankText((post) => post.engagementRate, "참여 반응"),
+    getRankText((post) => post.comments, "댓글 대화량"),
+    getRankText((post) => post.saves, "저장 반응"),
+    getRankText((post) => post.shares, "공유 반응"),
+  ].filter(Boolean);
+
+  if (targetPost?.mediaType) {
+    const sameTypePosts = posts.filter((post) => post.mediaType === targetPost.mediaType);
+    if (sameTypePosts.length >= 2) {
+      const rankedWithinType = [...sameTypePosts]
+        .sort((a, b) => (b.engagementRate || 0) - (a.engagementRate || 0));
+      const typeRank = rankedWithinType.findIndex((post) => post.id === targetId) + 1;
+      if (typeRank === 1) parts.push(`동일 유형 내 반응 최상위권`);
+      else if (typeRank > 0 && typeRank <= Math.ceil(rankedWithinType.length / 2)) parts.push(`동일 유형 내 반응 상위권`);
+    }
+  }
+
+  return parts.join(", ");
+}
+
 /**
  * Instagram 일별 파이프라인 (리포트 생성 + Firestore 저장, 선택적으로 이메일 발송)
  * 현재 운영 스케줄은 매일 KST 09:00이며, 기본 대상 날짜는 KST 어제입니다.
@@ -43,10 +104,11 @@ function getDateDaysAgo(dateStr, days) {
  * @param {string|null} targetDate - 지정 시 해당 날짜 리포트 생성 (기본: KST 어제)
  * @param {object} options
  * @param {boolean} options.skipEmail - true이면 이메일 발송 건너뜀 (기본: false)
+ * @param {boolean} options.forceRegenerateComments - true이면 기존 게시물 AI 코멘트 재생성
  * @returns {Promise<{processed: number, skipped: number, errors: number}>}
  */
 async function runInstagramPipeline(filterWorkspaceId = null, targetDate = null, options = {}) {
-  const { skipEmail = false } = options;
+  const { skipEmail = false, forceRegenerateComments = false } = options;
   const db   = admin.firestore();
   const date = targetDate || getKSTYesterdayString();
   const results = { processed: 0, skipped: 0, errors: 0 };
@@ -80,6 +142,7 @@ async function runInstagramPipeline(filterWorkspaceId = null, targetDate = null,
         let { accessToken, igUserId, username, appId, appSecret } = acc;
         const performanceReviewPrompt = acc.performanceReviewPrompt || null;
         const performanceReviewModel = acc.performanceReviewModel || "openai/gpt-5-mini";
+        const postCommentPrompt = acc.postCommentPrompt || acc.reactionAnalysisPrompt || DEFAULT_IG_POST_COMMENT_PROMPT;
 
         // ── AI usage 누산 ──
         let totalPromptTokens = 0;
@@ -130,12 +193,14 @@ async function runInstagramPipeline(filterWorkspaceId = null, targetDate = null,
         let sharesDelta = null;
         let savesDelta = null;
         let profileViewsDelta = null;
+        let prevReportData = null;
         try {
           const prevSnap = await db.collection("workspaces").doc(workspaceId)
             .collection("instagram_reports").doc(prevDate)
             .collection("accounts").doc(docId).get();
           if (prevSnap.exists) {
             const prev = prevSnap.data();
+            prevReportData = prev;
             const diff = (cur, p) => (cur != null && p != null) ? cur - p : null;
             followerDelta    = diff(accountMetrics.followerCount, prev.followerCount);
             reachDelta       = diff(accountMetrics.dailyReach,    prev.dailyReach);
@@ -179,6 +244,18 @@ async function runInstagramPipeline(filterWorkspaceId = null, targetDate = null,
         const since14Days = new Date(`${getDateDaysAgo(date, 13)}T00:00:00Z`);
         const recentPosts = await fetchRecentPosts(igUserId, accessToken, since14Days);
         console.log(`[instagramPipeline] ${workspaceId}/${docId}: 포스트 ${recentPosts.length}개`);
+
+        const reportDateRef = db.collection("workspaces").doc(workspaceId)
+          .collection("instagram_reports").doc(date);
+        let currentReportData = null;
+        try {
+          const currentSnap = await reportDateRef.collection("accounts").doc(docId).get();
+          if (currentSnap.exists) currentReportData = currentSnap.data();
+        } catch (currentErr) {
+          console.warn(`[instagramPipeline] 기존 동일 날짜 리포트 조회 실패 — ${docId}: ${currentErr.message}`);
+        }
+        const prevPostsMap = mapPostsById(prevReportData?.posts);
+        const currentPostsMap = mapPostsById(currentReportData?.posts);
 
         // ── d. 포스트별 인사이트 순차 수집 (500ms 간격) ──
         const postsWithInsights = [];
@@ -252,6 +329,66 @@ async function runInstagramPipeline(filterWorkspaceId = null, targetDate = null,
           }
         }
 
+        const postsWithComments = [];
+        for (const post of postsWithInsights) {
+          const existingCurrentPost = currentPostsMap.get(post.id);
+          if (!forceRegenerateComments && existingCurrentPost?.aiComment) {
+            postsWithComments.push({
+              ...post,
+              aiComment: existingCurrentPost.aiComment,
+              aiCommentStatus: existingCurrentPost.aiCommentStatus || "commented",
+              aiCommentedAt: existingCurrentPost.aiCommentedAt || new Date().toISOString(),
+              aiCommentSourceCommentsCount: existingCurrentPost.aiCommentSourceCommentsCount ?? null,
+            });
+            continue;
+          }
+
+          const prevPost = prevPostsMap.get(post.id);
+          if (prevPost?.aiComment) {
+            postsWithComments.push({
+              ...post,
+              aiCommentStatus: "hidden_existing",
+            });
+            continue;
+          }
+
+          const postKSTDate = getKSTDateString(post.timestamp);
+          if (postKSTDate === date) {
+            postsWithComments.push({
+              ...post,
+              aiCommentStatus: "waiting_1d",
+            });
+            continue;
+          }
+
+          try {
+            const latestComments = await fetchPostComments(post.id, accessToken, 100);
+            const periodContext = buildPostCommentPeriodContext(post, postsWithInsights);
+            const { comment, usage } = await analyzeInstagramPostComment({
+              username,
+              post,
+              comments: latestComments,
+              periodContext,
+              model: performanceReviewModel,
+              customPrompt: postCommentPrompt,
+            });
+            totalPromptTokens     += usage?.prompt_tokens || 0;
+            totalCompletionTokens += usage?.completion_tokens || 0;
+            totalCost             += usage?.cost || 0;
+
+            postsWithComments.push({
+              ...post,
+              aiComment: comment || "",
+              aiCommentStatus: comment ? "commented" : null,
+              aiCommentedAt: comment ? new Date().toISOString() : null,
+              aiCommentSourceCommentsCount: latestComments.length,
+            });
+          } catch (commentErr) {
+            console.warn(`[instagramPipeline] 게시물 AI 코멘트 실패 (${post.id}): ${commentErr.message}`);
+            postsWithComments.push(post);
+          }
+        }
+
         // ── f. Firestore 저장 ──
         const reportData = {
           igUserId,
@@ -276,8 +413,8 @@ async function runInstagramPipeline(filterWorkspaceId = null, targetDate = null,
           reelAvgWatchTime,
           reelTotalWatchTime,
           reelCount,
-          posts: postsWithInsights,
-          postCount: postsWithInsights.length,
+          posts: postsWithComments,
+          postCount: postsWithComments.length,
           avgEngagementRate,
           trendData,
           aiPerformanceReview,
@@ -289,9 +426,6 @@ async function runInstagramPipeline(filterWorkspaceId = null, targetDate = null,
           collectedAt: admin.firestore.FieldValue.serverTimestamp(),
           createdAt: admin.firestore.FieldValue.serverTimestamp(),
         };
-
-        const reportDateRef = db.collection("workspaces").doc(workspaceId)
-          .collection("instagram_reports").doc(date);
 
         // 부모 문서 생성/갱신 (available-dates 엔드포인트에서 조회 가능하도록)
         await reportDateRef.set({ updatedAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });

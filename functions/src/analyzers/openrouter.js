@@ -334,13 +334,6 @@ ${postLines || "  (포스트 없음)"}`;
     ],
   };
 
-  if (resolvedModel === "openai/gpt-5-mini") {
-    payload.reasoning = {
-      effort: "medium",
-      exclude: true,
-    };
-  }
-
   const { data } = await axios.post(OPENROUTER_API, payload, {
     headers: {
       Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
@@ -356,4 +349,98 @@ ${postLines || "  (포스트 없음)"}`;
   return { review: review.trim(), usage: data.usage };
 }
 
-module.exports = { analyzeGuildMessages, analyzeWeeklySummary, analyzeInstagramPostPerformance };
+const DEFAULT_IG_POST_COMMENT_PROMPT = `당신은 Instagram 콘텐츠 분석가입니다.
+이메일 리포트의 게시물 표 아래에 붙일 아주 짧은 코멘트 1~2문장만 작성하세요.
+반드시 아래 원칙을 지키세요.
+- 게시물 내용, 실제 댓글 반응, 성과 지표를 함께 반영
+- 최근 2주 전체 게시물 맥락과 비교해 상대적인 위치를 짚어도 좋습니다
+- 과장하거나 단정하지 말고 관찰 기반으로 작성
+- 댓글이 거의 없으면 댓글 반응이 아직 제한적이라는 점을 자연스럽게 언급
+- 표에 이미 숫자가 나오므로 조회수, 댓글수, 참여율 같은 구체적인 숫자를 반복해서 쓰지 마세요
+- 대신 이번 기간 중 상위권 반응, 평균 대비 강함/약함, 저장/공유 중심, 댓글 대화 중심 같은 비교형 표현을 우선 사용하세요
+- 마크다운, HTML, 이모지, 따옴표 없이 순수 텍스트만 출력
+- 120자 안팎의 짧은 한국어 코멘트로 작성`;
+
+async function analyzeInstagramPostComment({ username, post, comments, periodContext, model, customPrompt }) {
+  const resolvedModel = model || process.env.OPENROUTER_MODEL;
+  const MEDIA_LABELS = { IMAGE: "사진", VIDEO: "영상", CAROUSEL_ALBUM: "슬라이드" };
+  const DOW = ["일", "월", "화", "수", "목", "금", "토"];
+
+  let dateLabel = "—";
+  if (post?.timestamp) {
+    const dt = new Date(new Date(post.timestamp).getTime() + 9 * 60 * 60 * 1000);
+    dateLabel = `${dt.getUTCMonth() + 1}/${dt.getUTCDate()}(${DOW[dt.getUTCDay()]})`;
+  }
+
+  const caption = post?.caption
+    ? String(post.caption).replace(/\s+/g, " ").trim()
+    : "";
+  const captionSnippet = caption
+    ? (caption.length > 60 ? `${caption.slice(0, 60)}…` : caption)
+    : "캡션 없음";
+
+  const commentLines = (comments || []).slice(0, 100).map((comment, idx) => {
+    const text = String(comment?.text || "").replace(/\s+/g, " ").trim();
+    const trimmed = text.length > 160 ? `${text.slice(0, 160)}…` : text;
+    const usernameLabel = comment?.username ? `@${comment.username}` : "익명";
+    const likeLabel = comment?.likeCount ? `, 좋아요 ${comment.likeCount}` : "";
+    return `[${idx + 1}] ${usernameLabel}${likeLabel}: ${trimmed || "(내용 없음)"}`;
+  }).join("\n");
+
+  const metrics = [
+    `유형 ${MEDIA_LABELS[post?.mediaType] || post?.mediaType || "—"}`,
+    `조회 ${post?.views != null ? Number(post.views).toLocaleString() : "—"}`,
+    `도달 ${post?.reach != null ? Number(post.reach).toLocaleString() : "—"}`,
+    `좋아요 ${post?.likes != null ? Number(post.likes).toLocaleString() : "—"}`,
+    `댓글 ${post?.comments != null ? Number(post.comments).toLocaleString() : "—"}`,
+    `공유 ${post?.shares != null ? Number(post.shares).toLocaleString() : "—"}`,
+    `저장 ${post?.saves != null ? Number(post.saves).toLocaleString() : "—"}`,
+    `참여율 ${post?.engagementRate != null ? `${post.engagementRate}%` : "—"}`,
+  ];
+  if (post?.profileVisits != null) metrics.push(`프로필방문 ${Number(post.profileVisits).toLocaleString()}`);
+  if (post?.follows != null) metrics.push(`팔로우 ${Number(post.follows).toLocaleString()}`);
+  if (post?.reelAvgWatchTime != null) metrics.push(`평균시청 ${(post.reelAvgWatchTime / 1000).toFixed(1)}초`);
+
+  const systemPrompt = (customPrompt && customPrompt.trim())
+    ? customPrompt.trim()
+    : DEFAULT_IG_POST_COMMENT_PROMPT;
+
+  const userContent = `계정: @${username}
+게시물: ${dateLabel}
+캡션: ${captionSnippet}
+지표: ${metrics.join(", ")}
+최근 2주 전체 포스트 비교 맥락:
+${periodContext || "(비교 맥락 없음)"}
+수집한 최신 댓글 ${Math.min((comments || []).length, 100)}개:
+${commentLines || "(댓글 없음)"}`;
+
+  const payload = {
+    model: resolvedModel,
+    messages: [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userContent },
+    ],
+  };
+
+  const { data } = await axios.post(OPENROUTER_API, payload, {
+    headers: {
+      Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+      "Content-Type": "application/json",
+      "HTTP-Referer": "https://sociallistener-8efde.web.app",
+      "X-Title": "AI Social Listening",
+    },
+    timeout: 60000,
+  });
+
+  if (!data.choices || !data.choices.length) throw new Error("OpenRouter 응답에 choices가 없습니다");
+  const comment = (data.choices[0].message.content || "").trim();
+  return { comment, usage: data.usage };
+}
+
+module.exports = {
+  analyzeGuildMessages,
+  analyzeWeeklySummary,
+  analyzeInstagramPostPerformance,
+  analyzeInstagramPostComment,
+  DEFAULT_IG_POST_COMMENT_PROMPT,
+};
