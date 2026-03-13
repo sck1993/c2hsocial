@@ -277,7 +277,8 @@ JSON 형식:
  * @param {number|null} opts.followerCount            - 팔로워 수
  * @returns {Promise<{review: string, usage: object}>}
  */
-async function analyzeInstagramPostPerformance({ username, posts, accountAvgEngagementRate, followerCount, customPrompt }) {
+async function analyzeInstagramPostPerformance({ username, posts, accountAvgEngagementRate, followerCount, customPrompt, model }) {
+  const resolvedModel = model || process.env.OPENROUTER_MODEL;
   const MEDIA_LABELS = { IMAGE: "사진", VIDEO: "영상", CAROUSEL_ALBUM: "슬라이드" };
   const DOW = ["일", "월", "화", "수", "목", "금", "토"];
   const postLines = (posts || []).map((p, i) => {
@@ -326,12 +327,19 @@ async function analyzeInstagramPostPerformance({ username, posts, accountAvgEnga
 ${postLines || "  (포스트 없음)"}`;
 
   const payload = {
-    model: process.env.OPENROUTER_MODEL,
+    model: resolvedModel,
     messages: [
       { role: "system", content: systemPrompt },
       { role: "user", content: userContent },
     ],
   };
+
+  if (resolvedModel === "openai/gpt-5-mini") {
+    payload.reasoning = {
+      effort: "medium",
+      exclude: true,
+    };
+  }
 
   const { data } = await axios.post(OPENROUTER_API, payload, {
     headers: {

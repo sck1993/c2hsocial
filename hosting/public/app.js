@@ -2,6 +2,10 @@
     const API = 'https://api-xsauyjh24q-du.a.run.app';
     const WS = 'ws_antigravity';
     let _igPendingAccountSelection = null;
+    const IG_PERFORMANCE_MODELS = [
+      { value: 'openai/gpt-5-mini', label: 'GPT-5 mini (medium)' },
+      { value: 'google/gemini-3-flash-preview', label: 'Gemini Flash 3' },
+    ];
 
     /* ── Chip Input ── */
     let chipInputKo = null;
@@ -2151,6 +2155,9 @@
       const panelId = `ig-settings-${acc.docId}`;
       const recipients = (acc.deliveryConfig?.email?.recipients || []).join(', ');
       const emailEnabled = acc.deliveryConfig?.email?.isEnabled || false;
+      const selectedModel = IG_PERFORMANCE_MODELS.some(m => m.value === acc.performanceReviewModel)
+        ? acc.performanceReviewModel
+        : IG_PERFORMANCE_MODELS[0].value;
 
       return `
       <div class="ch-row ${isActive ? '' : 'inactive'}" id="ig-row-${acc.docId}">
@@ -2219,6 +2226,14 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/></svg>
             AI 성과 리뷰 지시문
           </div>
+          <label class="settings-field-label" for="igPerformanceModel-${acc.docId}">AI 모델</label>
+          <select class="settings-select" id="igPerformanceModel-${acc.docId}">
+            ${IG_PERFORMANCE_MODELS.map(model => `
+              <option value="${escapeHtml(model.value)}" ${selectedModel === model.value ? 'selected' : ''}>
+                ${escapeHtml(model.label)}
+              </option>
+            `).join('')}
+          </select>
           <textarea class="settings-textarea" id="igPerformancePrompt-${acc.docId}"
             placeholder="예: 릴스 위주로 성과를 분석하고 다음 콘텐츠 방향을 제안해줘.">${escapeHtml(acc.performanceReviewPrompt || '')}</textarea>
           <button class="btn-save-settings" id="igPerfSaveBtn-${acc.docId}" data-docid="${escapeHtml(acc.docId)}"
@@ -2378,6 +2393,7 @@
 
     async function saveIgPerformancePrompt(docId) {
       const performanceReviewPrompt = document.getElementById(`igPerformancePrompt-${docId}`)?.value || '';
+      const performanceReviewModel = document.getElementById(`igPerformanceModel-${docId}`)?.value || IG_PERFORMANCE_MODELS[0].value;
       const $res = document.getElementById(`igPerformancePromptResult-${docId}`);
       const btn = document.getElementById(`igPerfSaveBtn-${docId}`);
       if (btn) btn.disabled = true;
@@ -2385,7 +2401,7 @@
         await apiFetch(`/instagram/accounts/settings?workspaceId=${WS}&docId=${encodeURIComponent(docId)}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ performanceReviewPrompt }),
+          body: JSON.stringify({ performanceReviewPrompt, performanceReviewModel }),
         });
         if ($res) { $res.className = 'add-result ok'; $res.textContent = '저장되었습니다.'; setTimeout(() => { $res.textContent = ''; }, 2500); }
       } catch (err) {
@@ -2511,9 +2527,11 @@
         },
         options: {
           responsive: true,
+          maintainAspectRatio: false,
           interaction: { mode: 'index', intersect: false },
+          layout: { padding: { top: 4, right: 4, bottom: 0, left: 0 } },
           plugins: {
-            legend: { position: 'top', labels: { boxWidth: 12, font: { size: 11 } } },
+            legend: { position: 'top', align: 'start', labels: { boxWidth: 10, usePointStyle: true, pointStyle: 'circle', font: { size: 11 } } },
             tooltip: { bodyFont: { size: 11 }, titleFont: { size: 11 } }
           },
           scales: {
@@ -2522,21 +2540,27 @@
               title: { display: true, text: '조회', font: { size: 10 } },
               ticks: {
                 font: { size: 10 },
+                maxTicksLimit: 5,
                 precision: 0,
                 callback: (value) => Number(value).toLocaleString()
-              }
+              },
+              grid: { color: 'rgba(148,163,184,0.14)' }
             },
             y2: {
               position: 'right',
               title: { display: true, text: '팔로워', font: { size: 10 } },
               ticks: {
                 font: { size: 10 },
+                maxTicksLimit: 5,
                 precision: 0,
                 callback: (value) => Number(value).toLocaleString()
               },
               grid: { drawOnChartArea: false }
             },
-            x: { ticks: { font: { size: 10 } } }
+            x: {
+              ticks: { font: { size: 10 }, maxRotation: 0, autoSkipPadding: 12 },
+              grid: { display: false }
+            }
           }
         }
       });
@@ -2549,13 +2573,6 @@
     const SVG_GRID = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>`;
     const SVG_TRENDING = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>`;
     const SVG_AWARD = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="7"/><polyline points="8.21 13.89 7 23 12 20 17 23 15.79 13.88"/></svg>`;
-
-    function igDeltaHTML(delta) {
-      if (delta == null) return `<span style="font-size:.75rem;font-weight:600;color:var(--text-3);align-self:flex-end;padding-bottom:.15rem">(—)</span>`;
-      const color = delta > 0 ? '#ef4444' : delta < 0 ? '#3b82f6' : 'var(--text-3)';
-      const sign  = delta > 0 ? '△ +' : delta < 0 ? '▽ ' : '';
-      return `<span style="font-size:.75rem;font-weight:600;color:${color};align-self:flex-end;padding-bottom:.15rem">(${sign}${Math.abs(delta).toLocaleString()})</span>`;
-    }
 
     function igAccountReportHTML(acc) {
       const posts = acc.posts || [];
@@ -2584,7 +2601,9 @@
       <div class="scard anim d2">
         <div class="slabel"><div class="slabel-dot"></div>${SVG_TRENDING}팔로워 · 조회 트렌드</div>
         ${(acc.trendData && acc.trendData.length > 0)
-          ? `<canvas id="ig-trend-${escapeHtml(String(acc.igUserId || acc.username))}" height="200"></canvas>`
+          ? `<div class="ig-trend-chart-shell">
+              <canvas id="ig-trend-${escapeHtml(String(acc.igUserId || acc.username))}"></canvas>
+            </div>`
           : '<div style="font-size:.875rem;color:var(--text-3);padding:.5rem 0">트렌드 데이터 수집 중...</div>'}
       </div>
 

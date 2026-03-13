@@ -29,6 +29,12 @@ function resolveWorkspaceId(value, fallback = "ws_antigravity") {
   return value;
 }
 
+const IG_PERFORMANCE_REVIEW_MODELS = new Set([
+  "google/gemini-3-flash-preview",
+  "openai/gpt-5-mini",
+]);
+const DEFAULT_IG_PERFORMANCE_REVIEW_MODEL = "openai/gpt-5-mini";
+
 // ═══════════════════════════════════════════════════════
 //  HTTP API  —  /api/*
 //  모든 관리 엔드포인트를 단일 함수로 묶어 Cold Start 최소화
@@ -730,6 +736,7 @@ exports.api = onRequest(
             tokenRefreshedAt: safeData.tokenRefreshedAt?.toDate?.()?.toISOString() ?? null,
             createdAt: safeData.createdAt?.toDate?.()?.toISOString() ?? null,
             performanceReviewPrompt: safeData.performanceReviewPrompt || null,
+            performanceReviewModel: safeData.performanceReviewModel || DEFAULT_IG_PERFORMANCE_REVIEW_MODEL,
           };
         });
         return res.json({ accounts });
@@ -808,6 +815,7 @@ exports.api = onRequest(
           tokenRefreshedAt: admin.firestore.Timestamp.fromDate(new Date()),
           isActive: true,
           deliveryConfig: { email: { isEnabled: false, recipients: [] } },
+          performanceReviewModel: DEFAULT_IG_PERFORMANCE_REVIEW_MODEL,
           createdAt: admin.firestore.FieldValue.serverTimestamp(),
         });
 
@@ -842,7 +850,7 @@ exports.api = onRequest(
         const { workspaceId: _wsId, docId } = req.query;
         if (!docId) return res.status(400).json({ error: "docId 필수" });
         const workspaceId = resolveWorkspaceId(_wsId);
-        const { deliveryConfig, performanceReviewPrompt } = req.body;
+        const { deliveryConfig, performanceReviewPrompt, performanceReviewModel } = req.body;
 
         const updates = {};
         if (deliveryConfig !== undefined) {
@@ -852,6 +860,12 @@ exports.api = onRequest(
           updates.deliveryConfig = deliveryConfig;
         }
         if (performanceReviewPrompt !== undefined)  updates.performanceReviewPrompt  = performanceReviewPrompt || null;
+        if (performanceReviewModel !== undefined) {
+          if (!IG_PERFORMANCE_REVIEW_MODELS.has(performanceReviewModel)) {
+            return res.status(400).json({ error: "지원하지 않는 AI 모델입니다" });
+          }
+          updates.performanceReviewModel = performanceReviewModel;
+        }
 
         if (Object.keys(updates).length === 0) return res.status(400).json({ error: "변경할 필드 없음" });
 

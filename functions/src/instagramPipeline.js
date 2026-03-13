@@ -79,6 +79,7 @@ async function runInstagramPipeline(filterWorkspaceId = null, targetDate = null,
       try {
         let { accessToken, igUserId, username, appId, appSecret } = acc;
         const performanceReviewPrompt = acc.performanceReviewPrompt || null;
+        const performanceReviewModel = acc.performanceReviewModel || "openai/gpt-5-mini";
 
         // ── AI usage 누산 ──
         let totalPromptTokens = 0;
@@ -240,6 +241,7 @@ async function runInstagramPipeline(filterWorkspaceId = null, targetDate = null,
               accountAvgEngagementRate: avgEngagementRate,
               followerCount:            accountMetrics.followerCount,
               customPrompt:             performanceReviewPrompt,
+              model:                    performanceReviewModel,
             });
             aiPerformanceReview = review;
             totalPromptTokens     += perfUsage?.prompt_tokens     || 0;
@@ -279,7 +281,7 @@ async function runInstagramPipeline(filterWorkspaceId = null, targetDate = null,
           avgEngagementRate,
           trendData,
           aiPerformanceReview,
-          model:            process.env.OPENROUTER_MODEL || "",
+          model:            performanceReviewModel,
           promptTokens:     totalPromptTokens,
           completionTokens: totalCompletionTokens,
           totalTokens:      totalPromptTokens + totalCompletionTokens,
