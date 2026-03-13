@@ -157,14 +157,12 @@ async function runInstagramPipeline(filterWorkspaceId = null, targetDate = null,
             const trendSnap = await db.collection("workspaces").doc(workspaceId)
               .collection("instagram_reports").doc(trendDate)
               .collection("accounts").doc(docId).get();
-            if (trendSnap.exists) {
-              const td = trendSnap.data();
-              trendData.push({
-                date: trendDate,
-                followerCount: toIntOrNull(td.followerCount),
-                dailyViews:    toIntOrNull(td.dailyViews),
-              });
-            }
+            const td = trendSnap.exists ? trendSnap.data() : null;
+            trendData.push({
+              date: trendDate,
+              followerCount: toIntOrNull(td?.followerCount),
+              dailyViews:    toIntOrNull(td?.dailyViews),
+            });
           }
           // 오늘(현재 수집) 데이터를 맨 끝에 추가
           trendData.push({

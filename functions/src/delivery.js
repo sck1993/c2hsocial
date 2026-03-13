@@ -12,10 +12,48 @@ function escapeHtml(str) {
     .replace(/"/g, "&quot;");
 }
 
+function normalizeCaptionText(text) {
+  if (!text) return "";
+  return String(text)
+    .replace(/[\u0000-\u0008\u000B-\u001F\u007F]/g, " ")
+    .replace(/[\u200B-\u200D\uFEFF]/g, "")
+    .replace(/\uFFFD+/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 /** AI 생성 HTML: <br>, <strong> 태그만 허용, 나머지 모두 제거 */
 function sanitizeReportHtml(html) {
   if (!html || typeof html !== "string") return "";
   return html.replace(/<(?!\/?(?:br|strong)\b)[^>]*>/gi, "");
+}
+
+function formatReviewText(text) {
+  if (!text) return "";
+  const escaped = escapeHtml(text);
+  const withBold = escaped.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+  return sanitizeReportHtml(withBold);
+}
+
+function formatReviewLine(line) {
+  const trimmed = String(line || "").trim();
+  const labelSpecs = [
+    { prefix: "✅ 잘된 점", text: "잘된 점", badgeBg: "#dcfce7", badgeColor: "#166534", bodyColor: "#166534" },
+    { prefix: "⚠️ 아쉬운 점", text: "아쉬운 점", badgeBg: "#fef3c7", badgeColor: "#92400e", bodyColor: "#7c2d12" },
+    { prefix: "💡 개선 제안", text: "개선 제안", badgeBg: "#dbeafe", badgeColor: "#1d4ed8", bodyColor: "#1e3a8a" },
+  ];
+
+  const matched = labelSpecs.find((spec) => trimmed.startsWith(spec.prefix));
+  if (!matched) {
+    return `<div style="margin-bottom:10px;font-size:13px;color:#374151;line-height:1.7">${formatReviewText(trimmed)}</div>`;
+  }
+
+  const content = trimmed.slice(matched.prefix.length).trim().replace(/^[:：-]\s*/, "");
+  return `
+    <div style="margin-bottom:12px;padding:12px 13px;border:1px solid #e2e8f0;border-radius:10px;background:#ffffff">
+      <span style="display:inline-block;padding:3px 8px;border-radius:999px;background:${matched.badgeBg};color:${matched.badgeColor};font-size:11px;font-weight:700;margin-bottom:7px">${matched.text}</span>
+      <div style="font-size:13px;color:${matched.bodyColor};line-height:1.7">${formatReviewText(content)}</div>
+    </div>`;
 }
 
 /* ── HTML → 플레인 텍스트 변환 (구글 시트용) ── */
@@ -605,127 +643,126 @@ async function sendWeeklyEmailReport({ recipients, guildName, weekStart, weekEnd
 async function sendInstagramEmailReport({ recipients, username, date, report }) {
   const { html, attachments } = buildInstagramEmailHTML({ username, date, report });
 
-  await getTransporter().sendMail({
+  const mailOptions = {
     from:    `AI Social Listening <${process.env.GMAIL_USER}>`,
     to:      recipients.join(", "),
     subject: `[AI Social Listening] @${username} - Instagram 일일 리포트 (${date})`,
     html,
-    attachments,
-  });
+  };
+
+  if (attachments?.length) mailOptions.attachments = attachments;
+
+  await getTransporter().sendMail(mailOptions);
 }
 
-function buildInstagramTrendChartSvg(report = {}) {
+function buildInstagramTrendChartHtml(report = {}) {
   const td = Array.isArray(report.trendData) ? report.trendData.filter((d) => d && d.date) : [];
   if (!td.length) return "";
 
-  const W = 1120;
-  const H = 360;
-  const padL = 84;
-  const padR = 86;
-  const padT = 34;
-  const padB = 54;
-  const innerW = W - padL - padR;
-  const innerH = H - padT - padB;
+  const chartHeight = 88;
+  const formatDateLabel = (dateStr) => {
+    const parts = String(dateStr || "").split("-");
+    return parts.length === 3 ? `${+parts[1]}/${+parts[2]}` : escapeHtml(dateStr || "—");
+  };
 
-  const viewsVals = td.map((d) => Number(d.dailyViews)).map((v) => Number.isFinite(v) ? Math.max(0, v) : null);
-  const followerVals = td.map((d) => Number(d.followerCount)).map((v) => Number.isFinite(v) ? Math.max(0, v) : null);
+  const buildMiniChart = ({ title, series, tone }) => {
+    const values = series.map((item) => item.value).filter((value) => value != null);
+    if (!values.length) return "";
 
-  const maxViews = Math.max(...viewsVals.filter((v) => v != null), 1);
-  const minFollower = Math.min(...followerVals.filter((v) => v != null));
-  const maxFollower = Math.max(...followerVals.filter((v) => v != null));
-  const followerRangeRaw = Math.max(maxFollower - minFollower, 1);
-  const followerPad = Math.max(Math.round(followerRangeRaw * 0.15), 10);
-  const followerMinAxis = Math.max(0, minFollower - followerPad);
-  const followerMaxAxis = maxFollower + followerPad;
-  const followerRange = Math.max(followerMaxAxis - followerMinAxis, 1);
+    const minValue = Math.min(...values);
+    const maxValue = Math.max(...values);
+    const range = Math.max(maxValue - minValue, 1);
+    const baseHeight = values.length === 1 ? Math.round(chartHeight * 0.72) : 18;
 
-  const step = td.length > 1 ? innerW / (td.length - 1) : innerW / 2;
-  const barW = Math.max(18, Math.min(40, Math.round(innerW / Math.max(td.length * 2, 10))));
+    const rows = series.map((item, index) => {
+      const isCurrent = index === series.length - 1;
+      const valueText = item.value != null ? item.value.toLocaleString() : "—";
+      const normalized = item.value == null ? 0 : ((item.value - minValue) / range);
+      const barHeight = item.value == null
+        ? 12
+        : Math.max(baseHeight, Math.round(baseHeight + normalized * (chartHeight - baseHeight)));
+      const barColor = isCurrent ? tone.barStrong : tone.bar;
+      const valueColor = isCurrent ? tone.valueStrong : tone.value;
+      const dateColor = isCurrent ? tone.valueStrong : "#94a3b8";
+      const dateWeight = isCurrent ? "700" : "500";
 
-  const xAt = (i) => padL + (td.length === 1 ? innerW / 2 : i * step);
-  const yForViews = (v) => padT + innerH - ((v / maxViews) * innerH);
-  const yForFollower = (v) => padT + innerH - (((v - followerMinAxis) / followerRange) * innerH);
+      return `
+        <td style="padding:0 3px;vertical-align:bottom;text-align:center">
+          <div style="font-size:10px;line-height:1.2;color:${valueColor};font-weight:${isCurrent ? 800 : 700};margin-bottom:8px;user-select:text">${valueText}</div>
+          <div style="height:${chartHeight}px;display:flex;align-items:flex-end;justify-content:center;background:linear-gradient(180deg,#ffffff 0%,#f8fafc 100%);border-radius:10px 10px 6px 6px;padding-bottom:0">
+            <div style="width:26px;height:${barHeight}px;background:${barColor};border-radius:8px 8px 0 0;border:${isCurrent ? `1px solid ${tone.barStrongBorder}` : "none"};box-sizing:border-box"></div>
+          </div>
+          <div style="font-size:10px;line-height:1.2;color:${dateColor};font-weight:${dateWeight};margin-top:7px;user-select:text">${formatDateLabel(item.date)}</div>
+        </td>`;
+    }).join("");
 
-  const gridLines = [0, 0.33, 0.66, 1].map((ratio) => {
-    const y = padT + innerH - Math.round(innerH * ratio);
-    const viewsLabel = Math.round(maxViews * ratio).toLocaleString();
-    const followerLabel = Math.round(followerMinAxis + followerRange * ratio).toLocaleString();
     return `
-      <line x1="${padL}" y1="${y}" x2="${W - padR}" y2="${y}" stroke="${ratio === 0 ? "#CBD5E1" : "#E2E8F0"}" stroke-width="${ratio === 0 ? 2 : 1}"/>
-      <text x="${padL - 14}" y="${y + 5}" text-anchor="end" fill="#94A3B8" font-size="12" font-family="Arial, sans-serif">${viewsLabel}</text>
-      <text x="${W - padR + 14}" y="${y + 5}" fill="#94A3B8" font-size="12" font-family="Arial, sans-serif">${followerLabel}</text>`;
-  }).join("");
+      <div style="margin-bottom:14px">
+        <div style="font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:${tone.heading};margin-bottom:8px">${title}</div>
+        <div style="border:1px solid ${tone.border};border-radius:12px;background:${tone.panel};padding:12px 10px 10px">
+          <table role="presentation" style="width:100%;border-collapse:collapse;table-layout:fixed">
+            <tbody>
+              <tr>${rows}</tr>
+            </tbody>
+          </table>
+        </div>
+      </div>`;
+  };
 
-  const bars = td.map((d, i) => {
-    const v = viewsVals[i];
-    if (v == null) return "";
-    const x = Math.round(xAt(i) - barW / 2);
-    const y = Math.round(yForViews(v));
-    const h = Math.max(4, Math.round(padT + innerH - y));
-    const fill = i === td.length - 1 ? "#059669" : "#6EE7B7";
-    const labelFill = i === td.length - 1 ? "#065F46" : "#047857";
-    return `
-      <rect x="${x}" y="${y}" width="${barW}" height="${h}" rx="6" fill="${fill}"/>
-      <text x="${Math.round(xAt(i))}" y="${y - 10}" text-anchor="middle" fill="${labelFill}" font-size="12" font-family="Arial, sans-serif" font-weight="${i === td.length - 1 ? 700 : 600}">${v.toLocaleString()}</text>`;
-  }).join("");
+  const followerChart = buildMiniChart({
+    title: "팔로워 추이",
+    series: td.map((item) => ({
+      date: item.date,
+      value: Number.isFinite(Number(item.followerCount)) ? Math.max(0, Number(item.followerCount)) : null,
+    })),
+    tone: {
+      heading: "#4f46e5",
+      panel: "#f8faff",
+      border: "#c7d2fe",
+      bar: "#a5b4fc",
+      barStrong: "#4f46e5",
+      barStrongBorder: "#3730a3",
+      value: "#6366f1",
+      valueStrong: "#4338ca",
+    },
+  });
 
-  const linePoints = td.map((d, i) => {
-    const v = followerVals[i];
-    if (v == null) return null;
-    return `${Math.round(xAt(i))},${Math.round(yForFollower(v))}`;
-  }).filter(Boolean);
+  const viewsChart = buildMiniChart({
+    title: "오가닉 조회 추이",
+    series: td.map((item) => ({
+      date: item.date,
+      value: Number.isFinite(Number(item.dailyViews)) ? Math.max(0, Number(item.dailyViews)) : null,
+    })),
+    tone: {
+      heading: "#047857",
+      panel: "#f6fefb",
+      border: "#a7f3d0",
+      bar: "#6ee7b7",
+      barStrong: "#059669",
+      barStrongBorder: "#047857",
+      value: "#059669",
+      valueStrong: "#065f46",
+    },
+  });
 
-  const points = td.map((d, i) => {
-    const v = followerVals[i];
-    if (v == null) return "";
-    const x = Math.round(xAt(i));
-    const y = Math.round(yForFollower(v));
-    const fill = i === td.length - 1 ? "#4338CA" : "#6366F1";
-    const radius = i === td.length - 1 ? 7 : 6;
-    return `
-      <circle cx="${x}" cy="${y}" r="${radius}" fill="${fill}" stroke="#FFFFFF" stroke-width="3"/>
-      <text x="${x}" y="${y - 14}" text-anchor="middle" fill="${fill}" font-size="12" font-family="Arial, sans-serif" font-weight="${i === td.length - 1 ? 700 : 600}">${v.toLocaleString()}</text>`;
-  }).join("");
-
-  const labels = td.map((d, i) => {
-    const parts = String(d.date || "").split("-");
-    const label = parts.length === 3 ? `${+parts[1]}/${+parts[2]}` : String(d.date || "");
-    const fill = i === td.length - 1 ? "#4338CA" : "#64748B";
-    const weight = i === td.length - 1 ? 700 : 400;
-    return `<text x="${Math.round(xAt(i))}" y="${H - 16}" text-anchor="middle" fill="${fill}" font-size="13" font-family="Arial, sans-serif" font-weight="${weight}">${label}</text>`;
-  }).join("");
-
-  return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="팔로워 및 오가닉 조회 추이">
-    <rect width="${W}" height="${H}" rx="18" fill="#FCFDFF"/>
-    <rect x="0.5" y="0.5" width="${W - 1}" height="${H - 1}" rx="17.5" stroke="#E2E8F0"/>
-    ${gridLines}
-    ${bars}
-    ${linePoints.length > 1 ? `<polyline points="${linePoints.join(" ")}" fill="none" stroke="#6366F1" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>` : ""}
-    ${points}
-    ${labels}
-    <circle cx="24" cy="${H - 28}" r="6" fill="#6366F1"/>
-    <text x="38" y="${H - 23}" fill="#475569" font-size="13" font-family="Arial, sans-serif">팔로워</text>
-    <rect x="104" y="${H - 34}" width="12" height="12" rx="3" fill="#10B981"/>
-    <text x="126" y="${H - 23}" fill="#475569" font-size="13" font-family="Arial, sans-serif">오가닉 조회</text>
-  </svg>`;
+  return `
+    <div style="border:1px solid #e2e8f0;border-radius:14px;background:#fcfdff;padding:14px 14px 4px">
+      <div style="font-size:12px;line-height:1.5;color:#64748b;margin-bottom:12px">이미지 차트 대신 메일 안에서 바로 읽고 복사할 수 있는 HTML 차트 형식으로 표시했습니다.</div>
+      ${followerChart}
+      ${viewsChart}
+    </div>`;
 }
 
 function buildInstagramEmailHTML({ username, date, report }) {
   const HEADING = "font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#6366f1";
   const displayDate = formatKSTDate(date);
-  const chartCid = "instagram-trend-chart";
-  const chartSvg = buildInstagramTrendChartSvg(report);
-  const attachments = chartSvg ? [{
-    filename: `instagram-trend-${date}.svg`,
-    content: Buffer.from(chartSvg, "utf8"),
-    contentType: "image/svg+xml",
-    cid: chartCid,
-  }] : [];
+  const chartHtml = buildInstagramTrendChartHtml(report);
+  const attachments = [];
 
-  const trendSection = chartSvg ? `
+  const trendSection = chartHtml ? `
     <div style="margin-bottom:24px">
-      <div style="${HEADING};margin-bottom:10px">팔로워 · 조회 트렌드 (${(report.trendData || []).length}일)</div>
-      <img src="cid:${chartCid}" alt="팔로워 및 오가닉 조회 추이 차트" style="display:block;width:100%;height:auto;border:1px solid #e2e8f0;border-radius:12px;background:#fcfdff" />
+      <div style="${HEADING};margin-bottom:10px">팔로워 · 조회 트렌드 (최근 14일)</div>
+      ${chartHtml}
     </div>` : "";
 
   // ── 포스트 테이블 ──
@@ -741,7 +778,7 @@ function buildInstagramEmailHTML({ username, date, report }) {
     }
 
     // 본문 (최대 20자 + permalink 링크)
-    const rawCap = p.caption ? p.caption.replace(/\s+/g, " ").trim() : null;
+    const rawCap = p.caption ? normalizeCaptionText(p.caption) : null;
     const capText = rawCap
       ? escapeHtml(rawCap.length > 20 ? rawCap.slice(0, 20) + "…" : rawCap)
       : "—";
@@ -766,7 +803,7 @@ function buildInstagramEmailHTML({ username, date, report }) {
     const TD = "padding:6px 6px;border-bottom:1px solid #f1f5f9;font-size:11px";
     return `<tr>
       <td style="${TD};color:#64748b;white-space:nowrap">${dateStr}</td>
-      <td style="${TD};color:#334155;max-width:120px">${captionCell}</td>
+      <td style="${TD};color:#334155;width:96px;max-width:96px;line-height:1.35;word-break:break-word">${captionCell}</td>
       <td style="${TD};color:#64748b">${mediaLabel}</td>
       <td style="${TD};text-align:right">${views}</td>
       <td style="${TD};text-align:right">${likes}</td>
@@ -788,7 +825,7 @@ function buildInstagramEmailHTML({ username, date, report }) {
           <thead>
             <tr style="background:#f8fafc">
               <th style="padding:6px 6px;text-align:left;color:#475569;font-weight:600">날짜</th>
-              <th style="padding:6px 6px;text-align:left;color:#475569;font-weight:600">본문</th>
+              <th style="padding:6px 6px;text-align:left;color:#475569;font-weight:600;width:96px">본문</th>
               <th style="padding:6px 6px;text-align:left;color:#475569;font-weight:600">유형</th>
               <th style="padding:6px 6px;text-align:right;color:#475569;font-weight:600">조회</th>
               <th style="padding:6px 6px;text-align:right;color:#475569;font-weight:600">좋아요</th>
@@ -810,7 +847,7 @@ function buildInstagramEmailHTML({ username, date, report }) {
   const perfBlock = report.aiPerformanceReview
     ? (() => {
         const lines = report.aiPerformanceReview.split("\n").filter(l => l.trim());
-        const linesHtml = lines.map(l => `<div style="margin-bottom:5px">${sanitizeReportHtml(l)}</div>`).join("");
+        const linesHtml = lines.map((line) => formatReviewLine(line)).join("");
         return `<div style="margin-bottom:24px">
           <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:16px">
             <span style="font-size:11px;font-weight:700;color:#475569;display:block;margin-bottom:8px">AI 성과 리뷰 — 최근 2주 포스트 종합</span>
