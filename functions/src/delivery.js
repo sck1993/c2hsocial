@@ -56,6 +56,32 @@ function formatReviewLine(line) {
     </div>`;
 }
 
+function toChartNumber(value) {
+  if (value == null || value === "") return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function trimLeadingNullSeries(series) {
+  const firstRealIndex = series.findIndex((item) => item && item.value != null);
+  if (firstRealIndex <= 0) return series;
+  return series.map((item, index) => (
+    index < firstRealIndex ? { ...item, value: null } : item
+  ));
+}
+
+function computeChartScale(values, { minVisualRange = 1, paddingRatio = 0.12 } = {}) {
+  const minValue = Math.min(...values);
+  const maxValue = Math.max(...values);
+  const rawRange = maxValue - minValue;
+  const paddedRange = Math.max(rawRange, minVisualRange);
+  const padding = Math.max(1, Math.round(paddedRange * paddingRatio));
+  return {
+    min: minValue - padding,
+    max: maxValue + padding,
+  };
+}
+
 /* ── HTML → 플레인 텍스트 변환 (구글 시트용) ── */
 function stripHtml(html) {
   if (!html) return "";
@@ -665,33 +691,41 @@ function buildInstagramTrendChartHtml(report = {}) {
     return parts.length === 3 ? `${+parts[1]}/${+parts[2]}` : escapeHtml(dateStr || "—");
   };
 
-  const buildMiniChart = ({ title, series, tone }) => {
-    const values = series.map((item) => item.value).filter((value) => value != null);
+  const buildMiniChart = ({ title, series, tone, minVisualRange = 1 }) => {
+    const normalizedSeries = trimLeadingNullSeries(series);
+    const values = normalizedSeries.map((item) => item.value).filter((value) => value != null);
     if (!values.length) return "";
 
-    const minValue = Math.min(...values);
-    const maxValue = Math.max(...values);
-    const range = Math.max(maxValue - minValue, 1);
-    const baseHeight = values.length === 1 ? Math.round(chartHeight * 0.72) : 18;
+    const scale = computeChartScale(values, { minVisualRange });
+    const range = Math.max(scale.max - scale.min, 1);
+    const baseHeight = values.length === 1 ? Math.round(chartHeight * 0.72) : 14;
 
-    const rows = series.map((item, index) => {
-      const isCurrent = index === series.length - 1;
+    const rows = normalizedSeries.map((item, index) => {
+      const isCurrent = index === normalizedSeries.length - 1;
       const valueText = item.value != null ? item.value.toLocaleString() : "—";
-      const normalized = item.value == null ? 0 : ((item.value - minValue) / range);
+      const normalized = item.value == null ? 0 : ((item.value - scale.min) / range);
       const barHeight = item.value == null
-        ? 12
+        ? 0
         : Math.max(baseHeight, Math.round(baseHeight + normalized * (chartHeight - baseHeight)));
       const barColor = isCurrent ? tone.barStrong : tone.bar;
       const valueColor = isCurrent ? tone.valueStrong : tone.value;
       const dateColor = isCurrent ? tone.valueStrong : "#94a3b8";
       const dateWeight = isCurrent ? "700" : "500";
+      const topGap = Math.max(chartHeight - barHeight, 0);
 
       return `
         <td style="padding:0 3px;vertical-align:bottom;text-align:center">
           <div style="font-size:10px;line-height:1.2;color:${valueColor};font-weight:${isCurrent ? 800 : 700};margin-bottom:8px;user-select:text">${valueText}</div>
-          <div style="height:${chartHeight}px;display:flex;align-items:flex-end;justify-content:center;background:linear-gradient(180deg,#ffffff 0%,#f8fafc 100%);border-radius:10px 10px 6px 6px;padding-bottom:0">
-            <div style="width:26px;height:${barHeight}px;background:${barColor};border-radius:8px 8px 0 0;border:${isCurrent ? `1px solid ${tone.barStrongBorder}` : "none"};box-sizing:border-box"></div>
-          </div>
+          <table role="presentation" style="width:32px;height:${chartHeight}px;margin:0 auto;border-collapse:collapse;background:linear-gradient(180deg,#ffffff 0%,#f8fafc 100%);border-radius:10px 10px 6px 6px">
+            <tbody>
+              <tr><td style="height:${topGap}px;padding:0"></td></tr>
+              <tr>
+                <td style="padding:0;vertical-align:bottom">
+                  ${item.value == null ? "" : `<div style="width:26px;height:${barHeight}px;margin:0 auto;background:${barColor};border-radius:8px 8px 0 0;border:${isCurrent ? `1px solid ${tone.barStrongBorder}` : "none"};box-sizing:border-box"></div>`}
+                </td>
+              </tr>
+            </tbody>
+          </table>
           <div style="font-size:10px;line-height:1.2;color:${dateColor};font-weight:${dateWeight};margin-top:7px;user-select:text">${formatDateLabel(item.date)}</div>
         </td>`;
     }).join("");
@@ -713,8 +747,13 @@ function buildInstagramTrendChartHtml(report = {}) {
     title: "팔로워 추이",
     series: td.map((item) => ({
       date: item.date,
-      value: Number.isFinite(Number(item.followerCount)) ? Math.max(0, Number(item.followerCount)) : null,
+      // 팔로워 0은 실측값보다 누락값일 가능성이 높아서 축 계산에서 제외한다.
+      value: (() => {
+        const n = toChartNumber(item.followerCount);
+        return n != null && n > 0 ? n : null;
+      })(),
     })),
+    minVisualRange: 12,
     tone: {
       heading: "#4f46e5",
       panel: "#f8faff",
@@ -731,8 +770,12 @@ function buildInstagramTrendChartHtml(report = {}) {
     title: "오가닉 조회 추이",
     series: td.map((item) => ({
       date: item.date,
-      value: Number.isFinite(Number(item.dailyViews)) ? Math.max(0, Number(item.dailyViews)) : null,
+      value: (() => {
+        const n = toChartNumber(item.dailyViews);
+        return n != null && n > 0 ? n : null;
+      })(),
     })),
+    minVisualRange: 200,
     tone: {
       heading: "#047857",
       panel: "#f6fefb",
