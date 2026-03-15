@@ -690,6 +690,14 @@ function buildInstagramTrendChartHtml(report = {}) {
     const parts = String(dateStr || "").split("-");
     return parts.length === 3 ? `${+parts[1]}/${+parts[2]}` : escapeHtml(dateStr || "—");
   };
+  const formatMetricLabel = (value, { isCurrent = false } = {}) => {
+    if (value == null) return "—";
+    if (isCurrent) return Number(value).toLocaleString();
+    return new Intl.NumberFormat("en-US", {
+      notation: "compact",
+      maximumFractionDigits: 1,
+    }).format(Number(value));
+  };
 
   const buildMiniChart = ({ title, series, tone, minVisualRange = 1 }) => {
     const normalizedSeries = trimLeadingNullSeries(series);
@@ -700,43 +708,51 @@ function buildInstagramTrendChartHtml(report = {}) {
     const range = Math.max(scale.max - scale.min, 1);
     const baseHeight = values.length === 1 ? Math.round(chartHeight * 0.72) : 14;
 
-    const rows = normalizedSeries.map((item, index) => {
+    const barCells = normalizedSeries.map((item, index) => {
       const isCurrent = index === normalizedSeries.length - 1;
-      const valueText = item.value != null ? item.value.toLocaleString() : "—";
       const normalized = item.value == null ? 0 : ((item.value - scale.min) / range);
       const barHeight = item.value == null
         ? 0
         : Math.max(baseHeight, Math.round(baseHeight + normalized * (chartHeight - baseHeight)));
-      const barColor = isCurrent ? tone.barStrong : tone.bar;
-      const valueColor = isCurrent ? tone.valueStrong : tone.value;
-      const dateColor = isCurrent ? tone.valueStrong : "#94a3b8";
-      const dateWeight = isCurrent ? "700" : "500";
-      const topGap = Math.max(chartHeight - barHeight, 0);
 
       return `
-        <td style="padding:0 3px;vertical-align:bottom;text-align:center">
-          <div style="font-size:10px;line-height:1.2;color:${valueColor};font-weight:${isCurrent ? 800 : 700};margin-bottom:8px;user-select:text">${valueText}</div>
-          <table role="presentation" style="width:32px;height:${chartHeight}px;margin:0 auto;border-collapse:collapse;background:linear-gradient(180deg,#ffffff 0%,#f8fafc 100%);border-radius:10px 10px 6px 6px">
-            <tbody>
-              <tr><td style="height:${topGap}px;padding:0"></td></tr>
-              <tr>
-                <td style="padding:0;vertical-align:bottom">
-                  ${item.value == null ? "" : `<div style="width:26px;height:${barHeight}px;margin:0 auto;background:${barColor};border-radius:8px 8px 0 0;border:${isCurrent ? `1px solid ${tone.barStrongBorder}` : "none"};box-sizing:border-box"></div>`}
-                </td>
-              </tr>
-            </tbody>
-          </table>
-          <div style="font-size:10px;line-height:1.2;color:${dateColor};font-weight:${dateWeight};margin-top:7px;user-select:text">${formatDateLabel(item.date)}</div>
+        <td style="padding:0 2px 10px 2px;vertical-align:bottom;text-align:center">
+          <div style="height:${chartHeight}px;display:flex;align-items:flex-end;justify-content:center;background:linear-gradient(180deg,#ffffff 0%,#f8fafc 100%);border-radius:10px 10px 6px 6px">
+            ${item.value == null ? "" : `<div style="width:24px;height:${barHeight}px;background:${isCurrent ? tone.barStrong : tone.bar};border-radius:8px 8px 0 0;border:${isCurrent ? `1px solid ${tone.barStrongBorder}` : "none"};box-sizing:border-box"></div>`}
+          </div>
+        </td>`;
+    }).join("");
+
+    const dateCells = normalizedSeries.map((item) => `
+      <td style="padding:6px 2px;text-align:center;font-size:10px;color:#64748b">${formatDateLabel(item.date)}</td>
+    `).join("");
+
+    const metricCells = normalizedSeries.map((item, index) => {
+      const isCurrent = index === normalizedSeries.length - 1;
+      return `
+        <td style="padding:6px 2px;text-align:center;font-size:10px;font-weight:${isCurrent ? 700 : 600};color:${isCurrent ? tone.valueStrong : "#374151"};user-select:text">
+          ${formatMetricLabel(item.value, { isCurrent })}
         </td>`;
     }).join("");
 
     return `
       <div style="margin-bottom:14px">
         <div style="font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:${tone.heading};margin-bottom:8px">${title}</div>
-        <div style="border:1px solid ${tone.border};border-radius:12px;background:${tone.panel};padding:12px 10px 10px">
+        <div style="border:1px solid ${tone.border};border-radius:12px;background:${tone.panel};padding:12px 10px 12px">
           <table role="presentation" style="width:100%;border-collapse:collapse;table-layout:fixed">
             <tbody>
-              <tr>${rows}</tr>
+              <tr>
+                <td style="width:44px;padding:0 4px 10px 4px"></td>
+                ${barCells}
+              </tr>
+              <tr>
+                <td style="width:44px;padding:6px 4px;font-size:10px;font-weight:700;color:${tone.valueStrong};background:${tone.labelBg};border-radius:6px">일자</td>
+                ${dateCells}
+              </tr>
+              <tr>
+                <td style="width:44px;padding:6px 4px;font-size:10px;font-weight:700;color:${tone.valueStrong};background:${tone.labelBg};border-radius:6px">지표</td>
+                ${metricCells}
+              </tr>
             </tbody>
           </table>
         </div>
@@ -761,8 +777,8 @@ function buildInstagramTrendChartHtml(report = {}) {
       bar: "#a5b4fc",
       barStrong: "#4f46e5",
       barStrongBorder: "#3730a3",
-      value: "#6366f1",
       valueStrong: "#4338ca",
+      labelBg: "#eef2ff",
     },
   });
 
@@ -783,14 +799,13 @@ function buildInstagramTrendChartHtml(report = {}) {
       bar: "#6ee7b7",
       barStrong: "#059669",
       barStrongBorder: "#047857",
-      value: "#059669",
       valueStrong: "#065f46",
+      labelBg: "#e8fff6",
     },
   });
 
   return `
     <div style="border:1px solid #e2e8f0;border-radius:14px;background:#fcfdff;padding:14px 14px 4px">
-      <div style="font-size:12px;line-height:1.5;color:#64748b;margin-bottom:12px">이미지 차트 대신 메일 안에서 바로 읽고 복사할 수 있는 HTML 차트 형식으로 표시했습니다.</div>
       ${followerChart}
       ${viewsChart}
     </div>`;

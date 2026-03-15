@@ -215,6 +215,7 @@ async function runInstagramPipeline(filterWorkspaceId = null, targetDate = null,
 
         // ── b-3. 최근 14일 트렌드 데이터 수집 (Firestore 기존 리포트 조회) ──
         const trendData = [];
+        const historicallyCommentedPostIds = new Set();
         try {
           const [dy, dm, dd_] = date.split("-").map(Number);
           const baseDateMs = Date.UTC(dy, dm - 1, dd_);
@@ -229,6 +230,9 @@ async function runInstagramPipeline(filterWorkspaceId = null, targetDate = null,
               followerCount: toIntOrNull(td?.followerCount),
               dailyViews:    toIntOrNull(td?.dailyViews),
             });
+            for (const oldPost of Array.isArray(td?.posts) ? td.posts : []) {
+              if (oldPost?.id && oldPost.aiComment) historicallyCommentedPostIds.add(oldPost.id);
+            }
           }
           // 오늘(현재 수집) 데이터를 맨 끝에 추가
           trendData.push({
@@ -254,7 +258,6 @@ async function runInstagramPipeline(filterWorkspaceId = null, targetDate = null,
         } catch (currentErr) {
           console.warn(`[instagramPipeline] 기존 동일 날짜 리포트 조회 실패 — ${docId}: ${currentErr.message}`);
         }
-        const prevPostsMap = mapPostsById(prevReportData?.posts);
         const currentPostsMap = mapPostsById(currentReportData?.posts);
 
         // ── d. 포스트별 인사이트 순차 수집 (500ms 간격) ──
@@ -343,8 +346,7 @@ async function runInstagramPipeline(filterWorkspaceId = null, targetDate = null,
             continue;
           }
 
-          const prevPost = prevPostsMap.get(post.id);
-          if (prevPost?.aiComment) {
+          if (!forceRegenerateComments && historicallyCommentedPostIds.has(post.id)) {
             postsWithComments.push({
               ...post,
               aiCommentStatus: "hidden_existing",
