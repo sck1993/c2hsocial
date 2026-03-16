@@ -692,11 +692,7 @@ function buildInstagramTrendChartHtml(report = {}) {
   };
   const formatMetricLabel = (value, { isCurrent = false } = {}) => {
     if (value == null) return "—";
-    if (isCurrent) return Number(value).toLocaleString();
-    return new Intl.NumberFormat("en-US", {
-      notation: "compact",
-      maximumFractionDigits: 1,
-    }).format(Number(value));
+    return Number(value).toLocaleString();
   };
 
   const buildMiniChart = ({ title, series, tone, minVisualRange = 1 }) => {
@@ -714,12 +710,22 @@ function buildInstagramTrendChartHtml(report = {}) {
       const barHeight = item.value == null
         ? 0
         : Math.max(baseHeight, Math.round(baseHeight + normalized * (chartHeight - baseHeight)));
+      const topSpacerHeight = Math.max(chartHeight - barHeight, 0);
 
       return `
         <td style="padding:0 2px 10px 2px;vertical-align:bottom;text-align:center">
-          <div style="height:${chartHeight}px;display:flex;align-items:flex-end;justify-content:center;background:linear-gradient(180deg,#ffffff 0%,#f8fafc 100%);border-radius:10px 10px 6px 6px">
-            ${item.value == null ? "" : `<div style="width:24px;height:${barHeight}px;background:${isCurrent ? tone.barStrong : tone.bar};border-radius:8px 8px 0 0;border:${isCurrent ? `1px solid ${tone.barStrongBorder}` : "none"};box-sizing:border-box"></div>`}
-          </div>
+          <table role="presentation" style="width:24px;height:${chartHeight}px;margin:0 auto;border-collapse:collapse;border-radius:10px 10px 6px 6px">
+            <tbody>
+              <tr>
+                <td style="height:${topSpacerHeight}px;padding:0"></td>
+              </tr>
+              <tr>
+                <td style="padding:0;vertical-align:bottom">
+                  ${item.value == null ? "" : `<div style="width:24px;height:${barHeight}px;background:${isCurrent ? tone.barStrong : tone.bar};border-radius:8px 8px 0 0;border:${isCurrent ? `1px solid ${tone.barStrongBorder}` : "none"};box-sizing:border-box"></div>`}
+                </td>
+              </tr>
+            </tbody>
+          </table>
         </td>`;
     }).join("");
 
@@ -908,7 +914,7 @@ function buildInstagramEmailHTML({ username, date, report }) {
 
   const postTable = (report.posts || []).length > 0 ? `
     <div style="margin-bottom:24px">
-      <div style="${HEADING};margin-bottom:10px">최근 2주 포스트</div>
+      <div style="${HEADING};margin-bottom:10px">최근 1주 포스트</div>
       <div style="overflow-x:auto">
         <table style="width:100%;border-collapse:collapse;font-size:11px;min-width:680px">
           <thead>
@@ -932,14 +938,14 @@ function buildInstagramEmailHTML({ username, date, report }) {
       </div>
     </div>` : "";
 
-  // ── AI 성과 리뷰 (최근 2주 포스트 전체 분석) ──
+  // ── AI 성과 리뷰 (최근 1주 포스트 전체 분석) ──
   const perfBlock = report.aiPerformanceReview
     ? (() => {
         const lines = report.aiPerformanceReview.split("\n").filter(l => l.trim());
         const linesHtml = lines.map((line) => formatReviewLine(line)).join("");
         return `<div style="margin-bottom:24px">
           <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:16px">
-            <span style="font-size:11px;font-weight:700;color:#475569;display:block;margin-bottom:8px">AI 성과 리뷰 — 최근 2주 포스트 종합</span>
+            <span style="font-size:11px;font-weight:700;color:#475569;display:block;margin-bottom:8px">AI 성과 리뷰 — 최근 1주 포스트 종합</span>
             <div style="font-size:13px;color:#374151;line-height:1.6">${linesHtml}</div>
           </div>
         </div>`;

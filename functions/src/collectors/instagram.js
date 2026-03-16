@@ -201,10 +201,10 @@ async function fetchAccountMetrics(igUserId, accessToken, date) {
 }
 
 /**
- * 최근 14일 이내 포스트 목록 조회
+ * 지정 기간 이내 포스트 목록 조회
  * @param {string} igUserId
  * @param {string} accessToken
- * @param {Date} since - 14일 전 Date 객체
+ * @param {Date} since - 조회 시작 시점 Date 객체
  * @returns {Promise<Array>}
  */
 async function fetchRecentPosts(igUserId, accessToken, since) {
@@ -218,13 +218,13 @@ async function fetchRecentPosts(igUserId, accessToken, since) {
   });
 
   const allMedia = resp.data?.data || [];
-  // limit:50이 최대값 — 14일 내 포스트가 50개를 초과하면 누락될 수 있음 (고빈도 계정 주의)
+  // limit:50이 최대값 — 조회 기간 내 포스트가 50개를 초과하면 누락될 수 있음 (고빈도 계정 주의)
   if (allMedia.length === 50) {
     console.warn(`[instagram] fetchRecentPosts: 포스트 50개 상한 도달 (igUserId=${igUserId}) — 일부 누락 가능`);
   }
   const sinceMs  = since instanceof Date ? since.getTime() : new Date(since).getTime();
 
-  // 14일 이내 포스트만 필터
+  // 조회 시작 시점 이후 포스트만 필터
   return allMedia.filter((m) => {
     const ts = m.timestamp ? new Date(m.timestamp).getTime() : 0;
     return ts >= sinceMs;

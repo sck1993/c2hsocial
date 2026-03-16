@@ -6,7 +6,7 @@
 이메일 리포트의 게시물 표 아래에 붙일 아주 짧은 코멘트 1~2문장만 작성하세요.
 반드시 아래 원칙을 지키세요.
 - 게시물 내용, 실제 댓글 반응, 성과 지표를 함께 반영
-- 최근 2주 전체 게시물 맥락과 비교해 상대적인 위치를 짚어도 좋습니다
+- 최근 1주 전체 게시물 맥락과 비교해 상대적인 위치를 짚어도 좋습니다
 - 과장하거나 단정하지 말고 관찰 기반으로 작성
 - 댓글이 거의 없으면 댓글 반응이 아직 제한적이라는 점을 자연스럽게 언급
 - 표에 이미 숫자가 나오므로 조회수, 댓글수, 참여율 같은 구체적인 숫자를 반복해서 쓰지 마세요
@@ -2263,7 +2263,7 @@
             AI 게시물 코멘트 지시문
           </div>
           <textarea class="settings-textarea" id="igPostCommentPrompt-${acc.docId}"
-            placeholder="예: 댓글 반응 톤과 최근 2주 포스트 대비 상대 성과를 중심으로 짧게 코멘트해줘.">${escapeHtml(postCommentPrompt)}</textarea>
+            placeholder="예: 댓글 반응 톤과 최근 1주 포스트 대비 상대 성과를 중심으로 짧게 코멘트해줘.">${escapeHtml(postCommentPrompt)}</textarea>
           <button class="btn-save-settings" id="igPostCommentSaveBtn-${acc.docId}" data-docid="${escapeHtml(acc.docId)}"
                   onclick="saveIgPostCommentPrompt(this.dataset.docid)">저장</button>
           <div class="add-result" id="igPostCommentPromptResult-${acc.docId}"></div>
@@ -2639,7 +2639,7 @@
             const lines = acc.aiPerformanceReview.split('\n').filter(l => l.trim());
             const linesHtml = lines.map(l => `<div style="margin-bottom:4px">${sanitizeReportHtml(l)}</div>`).join('');
             return `<div class="scard anim d5">
-              <div class="slabel"><div class="slabel-dot"></div>${SVG_GRID}AI 성과 리뷰 <span style="color:var(--text-3);margin-left:.25rem;font-weight:400;letter-spacing:0">최근 2주 포스트 종합</span></div>
+              <div class="slabel"><div class="slabel-dot"></div>${SVG_GRID}AI 성과 리뷰 <span style="color:var(--text-3);margin-left:.25rem;font-weight:400;letter-spacing:0">최근 1주 포스트 종합</span></div>
               <div style="font-size:.8125rem;color:var(--text);line-height:1.6">${linesHtml}</div>
             </div>`;
           })()
@@ -2650,7 +2650,7 @@
         <div class="ch-platform-icon" style="color:#E1306C">${SVG_IG}</div>
         <div>
           <div class="ch-name">@${escapeHtml(acc.username || acc.igUserId)}</div>
-          <div class="ch-id">Instagram &middot; 최근 14일 포스트 ${posts.length}개</div>
+          <div class="ch-id">Instagram &middot; 최근 7일 포스트 ${posts.length}개</div>
         </div>
       </div>
 

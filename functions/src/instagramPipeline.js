@@ -53,6 +53,8 @@ function mapPostsById(posts) {
     .map((post) => [post.id, post]));
 }
 
+const IG_REPORT_POST_WINDOW_DAYS = 7;
+
 function buildPostCommentPeriodContext(targetPost, allPosts) {
   const posts = (Array.isArray(allPosts) ? allPosts : []).filter((post) => post?.id);
   const targetId = targetPost?.id;
@@ -75,7 +77,7 @@ function buildPostCommentPeriodContext(targetPost, allPosts) {
   };
 
   const parts = [
-    `최근 2주 분석 포스트 수 ${posts.length}건`,
+    `최근 1주 분석 포스트 수 ${posts.length}건`,
     getRankText((post) => post.engagementRate, "참여 반응"),
     getRankText((post) => post.comments, "댓글 대화량"),
     getRankText((post) => post.saves, "저장 반응"),
@@ -244,9 +246,9 @@ async function runInstagramPipeline(filterWorkspaceId = null, targetDate = null,
           console.warn(`[instagramPipeline] trendData 수집 실패 — ${docId}: ${trendErr.message}`);
         }
 
-        // ── c. 최근 14일 포스트 목록 ──
-        const since14Days = new Date(`${getDateDaysAgo(date, 13)}T00:00:00Z`);
-        const recentPosts = await fetchRecentPosts(igUserId, accessToken, since14Days);
+        // ── c. 최근 7일 포스트 목록 ──
+        const sinceRecentWindow = new Date(`${getDateDaysAgo(date, IG_REPORT_POST_WINDOW_DAYS - 1)}T00:00:00Z`);
+        const recentPosts = await fetchRecentPosts(igUserId, accessToken, sinceRecentWindow);
         console.log(`[instagramPipeline] ${workspaceId}/${docId}: 포스트 ${recentPosts.length}개`);
 
         const reportDateRef = db.collection("workspaces").doc(workspaceId)
@@ -296,7 +298,7 @@ async function runInstagramPipeline(filterWorkspaceId = null, targetDate = null,
           ? +(validPosts.reduce((sum, p) => sum + p.engagementRate, 0) / validPosts.length).toFixed(2)
           : 0;
 
-        // 14일 포스트 shares / saves 합산 (참고용 — 카드에는 account-level dailyShares/dailySaves 사용)
+        // 최근 7일 포스트 shares / saves 합산 (참고용 — 카드에는 account-level dailyShares/dailySaves 사용)
         const totalShares14d = postsWithInsights.reduce((s, p) => s + (p.shares ?? 0), 0) || null;
         const totalSaves14d  = postsWithInsights.reduce((s, p) => s + (p.saves  ?? 0), 0) || null;
 
@@ -311,7 +313,7 @@ async function runInstagramPipeline(filterWorkspaceId = null, targetDate = null,
           ? Math.round(reelPosts.reduce((s, p) => s + p.reelAvgWatchTime * (p.reach || 0), 0))
           : null;
 
-        // ── e-2. 최근 2주 전체 포스트 성과 리뷰 ──
+        // ── e-2. 최근 1주 전체 포스트 성과 리뷰 ──
         let aiPerformanceReview = null;
         if (postsWithInsights.length > 0) {
           try {
