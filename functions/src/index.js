@@ -1957,17 +1957,39 @@ exports.api = onRequest(
       }
     }
 
-    // ── PATCH /naver/session ── 쿠키 JSON 저장
+    // ── PATCH /naver/session ── 요청 세션 저장
     if (req.method === "PATCH" && path === "/naver/session") {
       try {
         const db = admin.firestore();
-        const { workspaceId: _wsId, cookies, userAgent } = req.body || {};
-        if (!cookies || !Array.isArray(cookies)) {
-          return res.status(400).json({ error: "cookies 배열 필수" });
+        const {
+          workspaceId: _wsId,
+          cookieHeader,
+          deviceId,
+          userAgent,
+          referer,
+        } = req.body || {};
+        if (!String(cookieHeader || "").trim()) {
+          return res.status(400).json({ error: "cookieHeader 필수" });
+        }
+        if (!String(deviceId || "").trim()) {
+          return res.status(400).json({ error: "deviceId 필수" });
+        }
+        if (!String(userAgent || "").trim()) {
+          return res.status(400).json({ error: "userAgent 필수" });
         }
         const workspaceId = resolveWorkspaceId(_wsId);
-        await saveNlSession(db, workspaceId, { cookies, userAgent: userAgent || "" });
-        return res.json({ success: true, cookieCount: cookies.length });
+        await saveNlSession(db, workspaceId, {
+          cookieHeader,
+          deviceId,
+          userAgent,
+          referer: String(referer || "").trim(),
+        });
+        const cookieCount = String(cookieHeader)
+          .split(";")
+          .map((part) => part.trim())
+          .filter(Boolean)
+          .length;
+        return res.json({ success: true, cookieCount });
       } catch (err) {
         console.error("[PATCH /naver/session] 오류:", err.message);
         return res.status(500).json({ error: err.message });
@@ -1984,7 +2006,11 @@ exports.api = onRequest(
         return res.json({
           exists: true,
           isValid: session.isValid ?? false,
+          hasRequestProfile: Boolean(session.cookieHeader && session.deviceId && session.userAgent),
           cookieCount: (session.cookies || []).length,
+          deviceId: session.deviceId || "",
+          referer: session.referer || "",
+          userAgent: session.userAgent || "",
           savedAt: session.savedAt?.toDate?.()?.toISOString() ?? null,
           lastValidatedAt: session.lastValidatedAt?.toDate?.()?.toISOString() ?? null,
         });
@@ -2169,6 +2195,19 @@ exports.facebookGroupPipeline = onSchedule(
     console.log("[facebookGroupPipeline] 스케줄 실행 시작 (KST 09:00)");
     await runFacebookGroupPipeline(null, null, { skipEmail: false });
     console.log("[facebookGroupPipeline] 스케줄 실행 완료");
+  }
+);
+
+// ══════════════════════════════════════════════════════
+//  Cloud Scheduler — 매일 KST 09:10 (네이버 라운지 수집 + 리포트 생성 + 이메일 발송)
+//  UTC 00:10 = KST 09:10 | 다른 09시 작업과 겹침 완화
+// ══════════════════════════════════════════════════════
+exports.naverLoungePipeline = onSchedule(
+  { schedule: "10 0 * * *", timeoutSeconds: 800, memory: "512MiB" },
+  async () => {
+    console.log("[naverLoungePipeline] 스케줄 실행 시작 (KST 09:10)");
+    await runNaverLoungePipeline(null, null, { skipEmail: false });
+    console.log("[naverLoungePipeline] 스케줄 실행 완료");
   }
 );
 

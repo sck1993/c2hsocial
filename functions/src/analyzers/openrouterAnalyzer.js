@@ -450,10 +450,12 @@ ${commentLines || "(댓글 없음)"}`;
  *   각 post: { postUrl, authorName, text, publishedAt, reactions, commentCount, comments[] }
  * @param {string}   [opts.customPrompt] - 사용자 커스텀 분석 지시사항
  * @param {string}   [opts.model]        - 사용할 모델 (기본: OPENROUTER_MODEL)
+ * @param {string}   [opts.platform]     - facebook | naver_lounge
  * @returns {Promise<{ summary, sentiment, keywords, issues, usage }>}
  */
-async function analyzeFacebookGroupPosts({ groupName, date, posts, customPrompt, model }) {
+async function analyzeFacebookGroupPosts({ groupName, date, posts, customPrompt, model, platform = "facebook" }) {
   const resolvedModel = model || process.env.OPENROUTER_MODEL;
+  const isNaverLounge = platform === "naver_lounge";
 
   // 게시글 텍스트 구성 (본문 200자 + 댓글 최대 20개)
   const postsText = (posts || [])
@@ -472,7 +474,19 @@ async function analyzeFacebookGroupPosts({ groupName, date, posts, customPrompt,
     })
     .join("\n\n");
 
-  const summaryFormatGuide = `
+  const summaryFormatGuide = isNaverLounge ? `
+[summary 필드 HTML 형식 규칙]
+- summary 값은 HTML 태그가 포함된 문자열입니다.
+- 각 섹션은 이모지 + <strong>섹션명</strong>으로 시작하세요.
+- 섹션 사이는 <br><br>로 구분하세요.
+- 중요한 표현·수치·키워드는 <strong>굵게</strong> 처리하세요.
+- 사용할 섹션 (내용이 없으면 해당 섹션 생략):
+  📊 <strong>전체 동향</strong> — 오늘 라운지의 핵심 흐름 2-3문장
+  🎮 <strong>게임/콘텐츠 반응</strong> — 업데이트, 이벤트, 콘텐츠 관련 반응
+  💬 <strong>전반 감정</strong> — 유저 분위기와 감정 흐름
+  📢 <strong>주요 의견/건의</strong> — 개선 요구, 건의, 반복 요청
+  🚨 <strong>리스크 신호</strong> — 불만 급증, 이탈 조짐, 운영 리스크`
+    : `
 [summary 필드 HTML 형식 규칙]
 - summary 값은 HTML 태그가 포함된 문자열입니다.
 - 각 섹션은 이모지 + <strong>섹션명</strong>으로 시작하세요.
@@ -482,16 +496,21 @@ async function analyzeFacebookGroupPosts({ groupName, date, posts, customPrompt,
   📊 <strong>전체 동향</strong> — 오늘 그룹의 핵심 흐름 2-3문장
   📢 <strong>주요 의견/건의</strong> — 멤버들의 요구나 건의사항`;
 
-  const defaultInstruction = `그룹 멤버들의 게시글과 댓글 반응을 분석하여 오늘 해당 그룹의 동향을 파악하세요.
+  const defaultInstruction = `${isNaverLounge ? "네이버 라운지 유저들의 게시글과 댓글 반응을 분석하여 오늘 해당 라운지의 동향을 파악하세요." : "그룹 멤버들의 게시글과 댓글 반응을 분석하여 오늘 해당 그룹의 동향을 파악하세요."}
 ${customPrompt ? `\n추가 지시사항: ${customPrompt}` : ""}`;
 
+  const issueGuide = isNaverLounge
+    ? `- 포함해야 하는 이슈: 업데이트/이벤트 불만, 버그 제보, 보상/운영 논란, 과금·결제 불만, 고객지원 민원, 분쟁 확산
+- 제외해야 하는 것: 가벼운 잡담, 일반적인 후기, 단순 칭찬`
+    : `- 포함해야 하는 이슈: 분쟁, 논란, 불만 급증, 스팸, 부적절한 콘텐츠, 주요 민원`;
+
   const systemPrompt = `당신은 소셜 미디어 동향 분석 전문가입니다.
-Facebook 그룹의 게시글과 댓글 데이터를 분석하여 아래 JSON 형식으로만 응답하세요.
+${isNaverLounge ? "네이버 라운지" : "Facebook 그룹"}의 게시글과 댓글 데이터를 분석하여 아래 JSON 형식으로만 응답하세요.
 마크다운 코드블록 없이 순수 JSON만 출력하세요.
 ${summaryFormatGuide}
 
 [issues 필드 규칙]
-- 포함해야 하는 이슈: 분쟁, 논란, 불만 급증, 스팸, 부적절한 콘텐츠, 주요 민원
+${issueGuide}
 - 중요한 이슈가 없으면 반드시 빈 배열 []로 작성
 - postIndex: 해당 이슈가 포함된 게시글 번호 (1-based), 특정 불가하면 null
 

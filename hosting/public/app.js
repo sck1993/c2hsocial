@@ -3712,17 +3712,17 @@
         const badgeBorder = isValid ? '#bbf7d0' : '#fecaca';
         const badgeText   = !exists ? '세션 없음' : isValid ? '세션 유효' : '세션 만료됨';
         const badgeDesc   = !exists
-          ? '등록된 세션이 없습니다. 아래에서 쿠키를 등록하세요.'
+          ? '등록된 세션이 없습니다. 아래에서 요청 헤더를 등록하세요.'
           : isValid
           ? '로그인 상태가 유효합니다. 파이프라인이 정상 실행됩니다.'
-          : '세션이 만료되었습니다. 쿠키를 다시 등록해주세요.';
+          : '세션이 만료되었습니다. 요청 헤더를 다시 등록해주세요.';
 
         $main.innerHTML = `
           <div style="display:grid;grid-template-columns:1fr 340px;gap:20px;align-items:start">
 
-            <!-- 왼쪽: 쿠키 등록 폼 -->
+            <!-- 왼쪽: 요청 세션 등록 폼 -->
             <div class="panel-card">
-              <div class="panel-title">쿠키 등록</div>
+              <div class="panel-title">요청 세션 등록</div>
 
               <!-- 안내 박스 -->
               <div style="display:flex;gap:10px;padding:12px 14px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;margin-bottom:16px">
@@ -3909,12 +3909,19 @@
           return;
         }
         $main.innerHTML = reports.map(buildNlReportCard).join('');
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          $main.querySelectorAll('.sent-seg[data-v]').forEach(el => { el.style.width = el.dataset.v + '%'; });
+        }));
       } catch (err) {
         $main.innerHTML = `<div class="error-state">오류: ${err.message}</div>`;
       }
     }
 
     function buildNlReportCard(r) {
+      const sentiment = r.aiSentiment || {};
+      const pos = sentiment.positive ?? 0;
+      const neu = sentiment.neutral ?? 0;
+      const neg = sentiment.negative ?? 0;
       const crawlBadge = r.crawlStatus === 'partial'
         ? `<span class="badge alert">부분 수집</span>`
         : r.crawlStatus === 'session_expired'
@@ -3926,14 +3933,20 @@
         const linkBtn = postUrl
           ? `<a href="${postUrl}" target="_blank" rel="noopener" class="issue-msg-link">↗</a>`
           : '';
-        return `<div class="issue-item">
-          <div class="issue-title">${escapeHtml(issue.title || '')} ${linkBtn}</div>
-          <div class="issue-desc">${escapeHtml(issue.description || '')}</div>
+        const sev = severity(issue.count || 1);
+        return `<div class="issue-card ${sev.cls}">
+          <div class="issue-sev-bar"></div>
+          <div class="issue-count-badge">${issue.count || 1}</div>
+          <div class="issue-body">
+            <div class="issue-title">${escapeHtml(issue.title || '')}${issue.postIndex ? `<span style="color:var(--accent);font-size:.75rem;margin-left:.375rem">게시글 ${issue.postIndex}</span>` : ''}${linkBtn}</div>
+            <div class="issue-desc">${escapeHtml(issue.description || '')}</div>
+          </div>
+          <div class="issue-sev-label">${sev.label}</div>
         </div>`;
       }).join('');
 
       const tokenStrip = (r.model || r.totalTokens) ? `
-        <div class="token-strip">
+        <div class="token-info-strip">
           ${r.model ? `<span class="token-model">${escapeHtml(r.model)}</span>` : ''}
           ${r.totalTokens ? `<span>입력 ${(r.promptTokens||0).toLocaleString()} / 출력 ${(r.completionTokens||0).toLocaleString()} / 합계 ${(r.totalTokens||0).toLocaleString()} 토큰</span>` : ''}
           ${r.cost != null ? `<span>비용 $${Number(r.cost).toFixed(4)}</span>` : ''}
@@ -3948,22 +3961,37 @@
             <div class="ch-meta">
               ${r.postCount != null ? `게시글 ${r.postCount}개` : ''}
               ${r.totalComments != null ? ` &nbsp;·&nbsp; 댓글 ${r.totalComments.toLocaleString()}개` : ''}
+              ${r.aiIssues?.length != null ? ` &nbsp;·&nbsp; 이슈 ${r.aiIssues.length}건` : ''}
               ${crawlBadge}
             </div>
           </div>
         </div>
 
-        ${r.aiSummary ? `
         <div class="scard anim d2">
-          <div class="scard-label">📋 AI 동향 요약</div>
-          <div class="scard-body">${sanitizeReportHtml(r.aiSummary)}</div>
-        </div>` : ''}
+          <div class="slabel"><div class="slabel-dot"></div>${SVG.doc}라운지 동향 요약</div>
+          <p class="summary-body">${formatSummary(r.aiSummary)}</p>
+        </div>
 
-        ${issues ? `
         <div class="scard anim d3">
-          <div class="scard-label">🚨 주요 이슈</div>
-          <div class="scard-body">${issues}</div>
-        </div>` : ''}
+          <div class="slabel"><div class="slabel-dot"></div>${SVG.bar}감정 분석</div>
+          <div class="sent-wrap">
+            <div class="sent-spectrum">
+              <div class="sent-seg pos" data-v="${pos}" style="width:0%"></div>
+              <div class="sent-seg neu" data-v="${neu}" style="width:0%"></div>
+              <div class="sent-seg neg" data-v="${neg}" style="width:0%"></div>
+            </div>
+            <div class="sent-tiles">
+              <div class="sent-tile"><div class="sent-tile-val pos">${pos}<span class="sent-tile-unit">%</span></div><div class="sent-tile-lbl">긍정</div></div>
+              <div class="sent-tile"><div class="sent-tile-val neu">${neu}<span class="sent-tile-unit">%</span></div><div class="sent-tile-lbl">중립</div></div>
+              <div class="sent-tile"><div class="sent-tile-val neg">${neg}<span class="sent-tile-unit">%</span></div><div class="sent-tile-lbl">부정</div></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="scard anim d4" style="margin-top:1rem">
+          <div class="slabel"><div class="slabel-dot"></div>${SVG.warn}주요 이슈 <span style="color:var(--text-3);margin-left:.25rem;font-weight:400;letter-spacing:0">${r.aiIssues?.length || 0}건</span></div>
+          ${issues || `<div style="color:var(--text-3);font-size:.875rem;line-height:1.8">오늘은 별도로 부각된 주요 이슈가 감지되지 않았습니다.</div>`}
+        </div>
 
         ${tokenStrip}
       </div>`;
@@ -4209,26 +4237,54 @@
                   <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
                 </svg>
                 <div style="font-size:12.5px;color:#1e40af;line-height:1.6">
-                  브라우저에서 game.naver.com 로그인 후<br>
-                  <strong>DevTools (F12) → Application → Cookies → .naver.com</strong><br>
-                  쿠키 전체를 JSON 배열로 복사해 붙여넣으세요.
+                  브라우저에서 대상 요청을 한 번 성공시킨 뒤<br>
+                  <strong>DevTools (F12) → Network → Request Headers</strong>에서<br>
+                  <code>cookie</code>, <code>deviceid</code>, <code>user-agent</code>, <code>referer</code> 값을 복사해 입력하세요.
                 </div>
               </div>
 
-              <!-- textarea -->
-              <div style="margin-bottom:14px">
-                <label style="display:block;font-size:12px;font-weight:600;color:#475569;margin-bottom:6px">Cookie JSON 배열</label>
-                <textarea
-                  id="nlCookieInput"
-                  rows="10"
-                  style="width:100%;box-sizing:border-box;font-family:monospace;font-size:12px;padding:10px 12px;border:1px solid #e2e8f0;border-radius:8px;resize:vertical;outline:none;color:#1e293b;background:#f8fafc;line-height:1.5"
-                  placeholder='[{"name":"NID_AUT","value":"...","domain":".naver.com","path":"/","secure":true,"httpOnly":true}]'
-                ></textarea>
+              <div style="display:flex;flex-direction:column;gap:14px;margin-bottom:14px">
+                <div>
+                  <label style="display:block;font-size:12px;font-weight:600;color:#475569;margin-bottom:6px">Cookie Header</label>
+                  <textarea
+                    id="nlCookieHeaderInput"
+                    rows="6"
+                    style="width:100%;box-sizing:border-box;font-family:monospace;font-size:12px;padding:10px 12px;border:1px solid #e2e8f0;border-radius:8px;resize:vertical;outline:none;color:#1e293b;background:#f8fafc;line-height:1.5"
+                    placeholder='NID_AUT=...; NID_SES=...; NAC=...'
+                  ></textarea>
+                </div>
+                <div>
+                  <label style="display:block;font-size:12px;font-weight:600;color:#475569;margin-bottom:6px">Device ID</label>
+                  <input
+                    id="nlDeviceIdInput"
+                    type="text"
+                    style="width:100%;box-sizing:border-box;font-family:monospace;font-size:12px;padding:10px 12px;border:1px solid #e2e8f0;border-radius:8px;outline:none;color:#1e293b;background:#f8fafc;line-height:1.5"
+                    placeholder='c7fde872-dcc4-4ae3-b8b6-ee70a7ea4218'
+                  />
+                </div>
+                <div>
+                  <label style="display:block;font-size:12px;font-weight:600;color:#475569;margin-bottom:6px">User-Agent</label>
+                  <textarea
+                    id="nlUserAgentInput"
+                    rows="3"
+                    style="width:100%;box-sizing:border-box;font-family:monospace;font-size:12px;padding:10px 12px;border:1px solid #e2e8f0;border-radius:8px;resize:vertical;outline:none;color:#1e293b;background:#f8fafc;line-height:1.5"
+                    placeholder='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ...'
+                  ></textarea>
+                </div>
+                <div>
+                  <label style="display:block;font-size:12px;font-weight:600;color:#475569;margin-bottom:6px">Referer</label>
+                  <input
+                    id="nlRefererInput"
+                    type="text"
+                    style="width:100%;box-sizing:border-box;font-family:monospace;font-size:12px;padding:10px 12px;border:1px solid #e2e8f0;border-radius:8px;outline:none;color:#1e293b;background:#f8fafc;line-height:1.5"
+                    placeholder='https://game.naver.com/lounge/Soul_Strike/board/11'
+                  />
+                </div>
               </div>
 
               <!-- 버튼 -->
               <div style="display:flex;gap:8px">
-                <button class="btn-primary" style="flex:1" onclick="saveNlCookies()">
+                <button class="btn-primary" style="flex:1" onclick="saveNlSessionProfile()">
                   세션 저장
                 </button>
                 ${exists ? `
@@ -4263,6 +4319,15 @@
                     <span style="color:#64748b">쿠키 수</span>
                     <span style="font-weight:600;color:#1e293b">${status.cookieCount || 0}개</span>
                   </div>
+                  <div style="display:flex;justify-content:space-between;align-items:center;font-size:12.5px">
+                    <span style="color:#64748b">요청 프로필</span>
+                    <span style="font-weight:600;color:#1e293b">${status.hasRequestProfile ? '등록됨' : '미완성'}</span>
+                  </div>
+                  ${status.deviceId ? `
+                  <div style="display:flex;justify-content:space-between;align-items:center;font-size:12.5px;gap:12px">
+                    <span style="color:#64748b">Device ID</span>
+                    <span style="font-weight:500;color:#1e293b;font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:180px">${escapeHtml(status.deviceId)}</span>
+                  </div>` : ''}
                   ${status.savedAt ? `
                   <div style="display:flex;justify-content:space-between;align-items:center;font-size:12.5px">
                     <span style="color:#64748b">저장일시</span>
@@ -4284,25 +4349,27 @@
       }
     }
 
-    async function saveNlCookies() {
-      const raw = document.getElementById('nlCookieInput')?.value.trim();
-      if (!raw) { alert('쿠키 JSON을 입력하세요.'); return; }
-      let cookies;
-      try { cookies = JSON.parse(raw); } catch { alert('유효한 JSON 형식이 아닙니다.'); return; }
-      if (!Array.isArray(cookies)) { alert('쿠키는 배열([ ... ]) 형식이어야 합니다.'); return; }
+    async function saveNlSessionProfile() {
+      const cookieHeader = document.getElementById('nlCookieHeaderInput')?.value.trim() || '';
+      const deviceId = document.getElementById('nlDeviceIdInput')?.value.trim() || '';
+      const userAgent = document.getElementById('nlUserAgentInput')?.value.trim() || '';
+      const referer = document.getElementById('nlRefererInput')?.value.trim() || '';
+      if (!cookieHeader) { alert('Cookie Header를 입력하세요.'); return; }
+      if (!deviceId) { alert('Device ID를 입력하세요.'); return; }
+      if (!userAgent) { alert('User-Agent를 입력하세요.'); return; }
       try {
         const res = await apiFetch('/naver/session', {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ workspaceId: WS, cookies }),
+          body: JSON.stringify({ workspaceId: WS, cookieHeader, deviceId, userAgent, referer }),
         });
-        alert(`세션 저장 완료 (쿠키 ${res.cookieCount ?? cookies.length}개)`);
+        alert(`세션 저장 완료 (쿠키 ${res.cookieCount ?? 0}개)`);
         await loadNlSession();
       } catch (err) { alert('저장 실패: ' + err.message); }
     }
 
     async function deleteNlSession() {
-      const ok = await confirmDialog('저장된 네이버 세션(쿠키)을 삭제하시겠습니까?');
+      const ok = await confirmDialog('저장된 네이버 요청 세션을 삭제하시겠습니까?');
       if (!ok) return;
       try {
         await apiFetch(`/naver/session?workspaceId=${WS}`, { method: 'DELETE' });

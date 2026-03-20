@@ -9,20 +9,17 @@
 
 const admin = require("firebase-admin");
 const {
-  launchBrowser,
   loadSessionFromFirestore,
   markSessionInvalid,
-  applyCookiesToContext,
-  verifySessionAlive,
   collectLoungePosts,
-  collectPostContent,
   collectPostComments,
+  isAuthError,
 } = require("./collectors/naverLoungeCollector");
 const { analyzeFacebookGroupPosts } = require("./analyzers/openrouterAnalyzer");
 const { sendNaverLoungeEmailReport } = require("./reportDelivery");
 const { getKSTYesterdayString } = require("./utils/dateUtils");
 
-const POST_GAP_MS = 2000;    // 포스트 간 대기 ms
+const POST_GAP_MS = 400;     // 게시글별 댓글 수집 간격 ms
 const LOUNGE_GAP_MS = 5000;  // 라운지 간 대기 ms
 const DEFAULT_WORKSPACE = "ws_antigravity";
 
@@ -62,229 +59,210 @@ async function runNaverLoungePipeline(
     return results;
   }
 
-  if (!session || !session.cookies || session.cookies.length === 0) {
-    console.warn("[naverLoungePipeline] 저장된 세션 없음 — 파이프라인 중단");
+  if (!session || !session.cookieHeader || !session.deviceId || !session.userAgent) {
+    console.warn("[naverLoungePipeline] 저장된 요청 세션 없음 — 파이프라인 중단");
     return results;
   }
 
-  // ── 브라우저 실행 ────────────────────────────────────────────────
-  let browser;
-  try {
-    browser = await launchBrowser();
-  } catch (err) {
-    console.error("[naverLoungePipeline] 브라우저 실행 실패:", err.message);
+  // ── 라운지 목록 조회 ─────────────────────────────────────────
+  const loungeSnap = await db
+    .collection("workspaces")
+    .doc(workspaceId)
+    .collection("naver_lounges")
+    .where("isActive", "==", true)
+    .get();
+
+  if (loungeSnap.empty) {
+    console.log("[naverLoungePipeline] 활성 라운지 없음 — 종료");
     return results;
   }
 
-  try {
-    const context = await browser.newContext({
-      userAgent: session.userAgent || undefined,
-      locale: "ko-KR",
-      extraHTTPHeaders: { "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8" },
-    });
+  async function markAllLoungesSessionExpired() {
+    console.warn("[naverLoungePipeline] 세션 만료 감지 — isValid=false 마킹");
+    await markSessionInvalid(db, workspaceId);
 
-    await applyCookiesToContext(context, session.cookies);
-    const page = await context.newPage();
-
-    // ── 세션 유효성 확인 ──────────────────────────────────────────
-    const alive = await verifySessionAlive(page);
-    if (!alive) {
-      console.warn("[naverLoungePipeline] 세션 만료 감지 — isValid=false 마킹");
-      await markSessionInvalid(db, workspaceId);
-
-      // 모든 활성 라운지에 crawlStatus="session_expired" 저장
-      const loungeSnap = await db
+    for (const lDoc of loungeSnap.docs) {
+      await db
         .collection("workspaces")
         .doc(workspaceId)
-        .collection("naver_lounges")
-        .where("isActive", "==", true)
-        .get();
+        .collection("naver_reports")
+        .doc(date)
+        .collection("lounges")
+        .doc(lDoc.id)
+        .set(
+          {
+            loungeId: lDoc.data().loungeId || lDoc.id,
+            loungeName: lDoc.data().loungeName || "",
+            date,
+            crawlStatus: "session_expired",
+            collectedAt: admin.firestore.FieldValue.serverTimestamp(),
+          },
+          { merge: true }
+        );
+      results.errors++;
+    }
+  }
 
-      for (const lDoc of loungeSnap.docs) {
-        await db
-          .collection("workspaces")
-          .doc(workspaceId)
-          .collection("naver_reports")
-          .doc(date)
-          .collection("lounges")
-          .doc(lDoc.id)
-          .set(
-            {
-              loungeId: lDoc.data().loungeId || lDoc.id,
-              loungeName: lDoc.data().loungeName || "",
-              date,
-              crawlStatus: "session_expired",
-              collectedAt: admin.firestore.FieldValue.serverTimestamp(),
-            },
-            { merge: true }
-          );
-        results.errors++;
-      }
-      return results;
+  // ── 라운지 순회 ──────────────────────────────────────────────
+  for (const lDoc of loungeSnap.docs) {
+    const loungeData = lDoc.data();
+    const loungeId   = loungeData.loungeId   || lDoc.id;
+    const loungeName = loungeData.loungeName || "";
+    const loungeUrl  = loungeData.loungeUrl  || "";
+
+    if (!loungeUrl) {
+      console.warn(`[naverLoungePipeline] loungeUrl 없음 — skip (${lDoc.id})`);
+      results.skipped++;
+      continue;
     }
 
-    // ── 라운지 목록 조회 ─────────────────────────────────────────
-    const loungeSnap = await db
-      .collection("workspaces")
-      .doc(workspaceId)
-      .collection("naver_lounges")
-      .where("isActive", "==", true)
-      .get();
+    console.log(`[naverLoungePipeline] 라운지 처리: ${loungeName} (${loungeId})`);
 
-    if (loungeSnap.empty) {
-      console.log("[naverLoungePipeline] 활성 라운지 없음 — 종료");
-      return results;
-    }
+    try {
+      const { posts, skipped } = await collectLoungePosts({
+        session,
+        loungeId,
+        loungeUrl,
+        targetDate: date,
+        boardId: loungeData.boardId || 0,
+      });
 
-    // ── 라운지 순회 ──────────────────────────────────────────────
-    for (const lDoc of loungeSnap.docs) {
-      const loungeData = lDoc.data();
-      const loungeId   = loungeData.loungeId   || lDoc.id;
-      const loungeName = loungeData.loungeName || "";
-      const loungeUrl  = loungeData.loungeUrl  || "";
-
-      if (!loungeUrl) {
-        console.warn(`[naverLoungePipeline] loungeUrl 없음 — skip (${lDoc.id})`);
+      if (skipped || posts.length === 0) {
+        console.log(`[naverLoungePipeline] ${loungeName}: 해당일 게시글 없음 — skip`);
         results.skipped++;
         continue;
       }
 
-      console.log(`[naverLoungePipeline] 라운지 처리: ${loungeName} (${loungeId})`);
-
-      try {
-        // 1. 게시글 목록 수집
-        const { posts, skipped } = await collectLoungePosts(page, loungeUrl, date);
-
-        if (skipped || posts.length === 0) {
-          console.log(`[naverLoungePipeline] ${loungeName}: 해당일 게시글 없음 — skip`);
-          results.skipped++;
-          continue;
-        }
-
-        // 2. 포스트별 본문 + 댓글 수집
-        let partialFailure = false;
-        for (const post of posts) {
-          // 본문 수집
-          const { text, error: contentErr } = await collectPostContent(page, post.postUrl);
-          post.text = text;
-          if (contentErr) partialFailure = true;
-
-          // 댓글 수집 (collectPostContent 이후 동일 페이지에 있으므로 재이동 최소화)
-          const { comments, error: commentErr } = await collectPostComments(page, post.postUrl);
-          post.comments = comments;
-          post.commentCount = comments.length;
-          if (commentErr) partialFailure = true;
-
-          await sleep(POST_GAP_MS);
-        }
-
-        // 3. 집계
-        const totalComments = posts.reduce((s, p) => s + (p.commentCount || 0), 0);
-
-        // 4. AI 분석 (openrouterAnalyzer의 Facebook 분석 함수 재사용)
-        let aiSummary = "", aiIssues = [];
-        let promptTokens = 0, completionTokens = 0, totalCost = 0;
+      let partialFailure = false;
+      for (const post of posts) {
+        if (!post.commentCount) continue;
 
         try {
-          const analysisResult = await analyzeFacebookGroupPosts({
-            groupName: loungeName,
-            date,
-            posts,
-            customPrompt: loungeData.analysisPrompt || "",
-            model: loungeData.analysisModel || process.env.OPENROUTER_MODEL,
+          const result = await collectPostComments({
+            session,
+            loungeId,
+            feedId: post.feedId,
+            postUrl: post.postUrl,
           });
-          aiSummary = analysisResult.summary || "";
-          aiIssues  = analysisResult.issues  || [];
-
-          const usage = analysisResult.usage || {};
-          promptTokens     = usage.prompt_tokens     || 0;
-          completionTokens = usage.completion_tokens || 0;
-          totalCost        = Number(usage.cost || 0).toFixed(6);
-        } catch (aiErr) {
+          post.comments = result.comments;
+          post.commentCount = result.totalCount;
+        } catch (commentErr) {
+          if (isAuthError(commentErr)) throw commentErr;
+          partialFailure = true;
           console.warn(
-            `[naverLoungePipeline] AI 분석 실패 (${loungeName}): ${aiErr.message}`
+            `[naverLoungePipeline] 댓글 수집 실패 (${loungeName}/${post.feedId}): ${commentErr.message}`
           );
         }
 
-        // 5. Firestore 저장
-        const crawlStatus = partialFailure ? "partial" : "ok";
-        const reportData = {
-          loungeId,
-          loungeName,
-          loungeUrl,
-          date,
-          postCount:       posts.length,
-          totalComments,
-          posts,
-          aiSummary,
-          aiIssues,
-          model:            loungeData.analysisModel || process.env.OPENROUTER_MODEL || "",
-          promptTokens,
-          completionTokens,
-          totalTokens:      promptTokens + completionTokens,
-          cost:             totalCost,
-          crawlStatus,
-          collectedAt: admin.firestore.FieldValue.serverTimestamp(),
-        };
-
-        // 부모 날짜 문서 생성
-        await db
-          .collection("workspaces")
-          .doc(workspaceId)
-          .collection("naver_reports")
-          .doc(date)
-          .set({ updatedAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
-
-        // 라운지별 리포트 저장
-        await db
-          .collection("workspaces")
-          .doc(workspaceId)
-          .collection("naver_reports")
-          .doc(date)
-          .collection("lounges")
-          .doc(lDoc.id)
-          .set(reportData);
-
-        console.log(
-          `[naverLoungePipeline] ${loungeName}: 저장 완료 (posts: ${posts.length}, crawlStatus: ${crawlStatus})`
-        );
-
-        // 6. 이메일 발송
-        const emailConfig = loungeData.deliveryConfig?.email;
-        if (!skipEmail && emailConfig?.isEnabled && (emailConfig.recipients || []).length > 0) {
-          try {
-            await sendNaverLoungeEmailReport({
-              recipients: emailConfig.recipients,
-              loungeName,
-              loungeUrl,
-              date,
-              report: reportData,
-            });
-            console.log(`[naverLoungePipeline] 이메일 발송 완료: ${loungeName}`);
-          } catch (emailErr) {
-            console.error(
-              `[naverLoungePipeline] 이메일 발송 실패 (${loungeName}): ${emailErr.message}`
-            );
-          }
-        }
-
-        results.processed++;
-      } catch (err) {
-        const detail = err.response?.data ? JSON.stringify(err.response.data) : "";
-        console.error(
-          `[naverLoungePipeline] ${workspaceId}/${lDoc.id} 오류: ${err.message}${
-            detail ? " — " + detail : ""
-          }`
-        );
-        results.errors++;
+        await sleep(POST_GAP_MS);
       }
 
-      await sleep(LOUNGE_GAP_MS);
+      const totalComments = posts.reduce((sum, post) => sum + (post.commentCount || 0), 0);
+
+      let aiSummary = "";
+      let aiSentiment = { positive: 0, neutral: 100, negative: 0 };
+      let aiIssues = [];
+      let promptTokens = 0, completionTokens = 0, totalCost = 0;
+
+      try {
+        const analysisResult = await analyzeFacebookGroupPosts({
+          groupName: loungeName,
+          date,
+          posts,
+          customPrompt: loungeData.analysisPrompt || "",
+          model: loungeData.analysisModel || process.env.OPENROUTER_MODEL,
+          platform: "naver_lounge",
+        });
+        aiSummary = analysisResult.summary || "";
+        aiSentiment = analysisResult.sentiment || aiSentiment;
+        aiIssues  = analysisResult.issues  || [];
+
+        const usage = analysisResult.usage || {};
+        promptTokens     = usage.prompt_tokens     || 0;
+        completionTokens = usage.completion_tokens || 0;
+        totalCost        = Number(usage.cost || 0).toFixed(6);
+      } catch (aiErr) {
+        console.warn(
+          `[naverLoungePipeline] AI 분석 실패 (${loungeName}): ${aiErr.message}`
+        );
+      }
+
+      const crawlStatus = partialFailure ? "partial" : "ok";
+      const reportData = {
+        loungeId,
+        loungeName,
+        loungeUrl,
+        date,
+        postCount:       posts.length,
+        totalComments,
+        posts,
+        aiSummary,
+        aiSentiment,
+        aiIssues,
+        model:            loungeData.analysisModel || process.env.OPENROUTER_MODEL || "",
+        promptTokens,
+        completionTokens,
+        totalTokens:      promptTokens + completionTokens,
+        cost:             totalCost,
+        crawlStatus,
+        collectedAt: admin.firestore.FieldValue.serverTimestamp(),
+      };
+
+      await db
+        .collection("workspaces")
+        .doc(workspaceId)
+        .collection("naver_reports")
+        .doc(date)
+        .set({ updatedAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
+
+      await db
+        .collection("workspaces")
+        .doc(workspaceId)
+        .collection("naver_reports")
+        .doc(date)
+        .collection("lounges")
+        .doc(lDoc.id)
+        .set(reportData);
+
+      console.log(
+        `[naverLoungePipeline] ${loungeName}: 저장 완료 (posts: ${posts.length}, crawlStatus: ${crawlStatus})`
+      );
+
+      const emailConfig = loungeData.deliveryConfig?.email;
+      if (!skipEmail && emailConfig?.isEnabled && (emailConfig.recipients || []).length > 0) {
+        try {
+          await sendNaverLoungeEmailReport({
+            recipients: emailConfig.recipients,
+            loungeName,
+            loungeUrl,
+            date,
+            report: reportData,
+          });
+          console.log(`[naverLoungePipeline] 이메일 발송 완료: ${loungeName}`);
+        } catch (emailErr) {
+          console.error(
+            `[naverLoungePipeline] 이메일 발송 실패 (${loungeName}): ${emailErr.message}`
+          );
+        }
+      }
+
+      results.processed++;
+    } catch (err) {
+      if (isAuthError(err)) {
+        await markAllLoungesSessionExpired();
+        return results;
+      }
+
+      const detail = err.response?.data ? JSON.stringify(err.response.data) : "";
+      console.error(
+        `[naverLoungePipeline] ${workspaceId}/${lDoc.id} 오류: ${err.message}${
+          detail ? " — " + detail : ""
+        }`
+      );
+      results.errors++;
     }
-  } finally {
-    try {
-      await browser.close();
-    } catch (_) {}
+
+    await sleep(LOUNGE_GAP_MS);
   }
 
   console.log(

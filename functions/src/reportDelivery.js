@@ -336,10 +336,10 @@ function buildEmailHTML({ guildName, guildId = "", date, report, lang = "ko" }) 
       <div style="width:${neu}%;background:#94a3b8"></div>
       <div style="width:${neg}%;background:#dc2626"></div>
     </div>
-    <div style="display:flex;gap:16px;font-size:13px">
-      <span style="color:#059669;font-weight:500">${L.posLabel} ${pos}%</span>
-      <span style="color:#94a3b8;font-weight:500">${L.neuLabel} ${neu}%</span>
-      <span style="color:#dc2626;font-weight:500">${L.negLabel} ${neg}%</span>
+    <div style="font-size:13px;line-height:1.6">
+      <span style="display:inline-block;color:#059669;font-weight:500;margin-right:16px">${L.posLabel} ${pos}%</span>
+      <span style="display:inline-block;color:#94a3b8;font-weight:500;margin-right:16px">${L.neuLabel} ${neu}%</span>
+      <span style="display:inline-block;color:#dc2626;font-weight:500">${L.negLabel} ${neg}%</span>
     </div>`;
 
   const rawKeywords = isEN ? (report.keywords_en || report.keywords) : report.keywords;
@@ -354,12 +354,12 @@ function buildEmailHTML({ guildName, guildId = "", date, report, lang = "ko" }) 
         const description = escapeHtml(isEN ? (i.description_en || i.description || "") : (i.description || ""));
         const channel  = i.channel ? `<span style="color:#6366f1;font-size:12px;margin-left:6px">#${escapeHtml(i.channel)}</span>` : "";
         const metaParts = [];
-        if (i.count) metaParts.push(`<span style="color:#94a3b8;font-size:12px">${i.count} ${L.issueCountUnit}</span>`);
+        if (i.count) metaParts.push(`<span style="display:inline-block;color:#94a3b8;font-size:12px;margin-right:12px">${i.count} ${L.issueCountUnit}</span>`);
         const msgUrl = (guildId && i.channelId && i.messageId)
           ? `https://discord.com/channels/${guildId}/${i.channelId}/${i.messageId}`
           : null;
-        if (msgUrl) metaParts.push(`<a href="${msgUrl}" style="display:inline-block;font-size:11px;color:#6366f1;text-decoration:none;border:1px solid #c7d2fe;border-radius:4px;padding:1px 6px">${L.msgViewLink}</a>`);
-        const metaRow = metaParts.length ? `<div style="margin-top:3px">${metaParts.join("&nbsp;&nbsp;")}</div>` : "";
+        if (msgUrl) metaParts.push(`<a href="${msgUrl}" style="display:inline-block;font-size:11px;color:#6366f1;text-decoration:none;border:1px solid #c7d2fe;border-radius:4px;padding:1px 6px;margin-top:2px">${L.msgViewLink}</a>`);
+        const metaRow = metaParts.length ? `<div style="margin-top:3px;line-height:1.8">${metaParts.join("")}</div>` : "";
         const desc    = description ? `<div style="color:#64748b;font-size:13px;margin-top:4px">${description}</div>` : "";
         return `<li style="margin-bottom:12px;color:#374151;font-size:14px;line-height:1.6">
           <div><strong>${title}</strong>${channel}</div>
@@ -1140,54 +1140,61 @@ async function sendFacebookEmailReport({ recipients, groupName, groupUrl, date, 
  * 네이버 라운지 리포트 HTML 빌드
  */
 function buildNaverLoungeEmailHTML({ loungeName, loungeUrl, date, report }) {
-  const displayDate = (() => {
-    const parts = String(date || "").split("-");
-    if (parts.length === 3) {
-      const d = new Date(Date.UTC(+parts[0], +parts[1] - 1, +parts[2]));
-      const dow = ["일", "월", "화", "수", "목", "금", "토"][d.getUTCDay()];
-      return `${+parts[1]}월 ${+parts[2]}일 (${dow})`;
-    }
-    return date || "";
-  })();
-
-  // 핵심 수치 카드
-  const stats = [
-    { label: "수집 게시글", value: String(report.postCount || 0) },
-    { label: "총 댓글 수",  value: (report.totalComments || 0).toLocaleString() },
-  ];
-  const statCards = stats.map((s) => `
-    <td style="width:50%;padding:0 8px;text-align:center">
-      <div style="background:#f1f5f9;border-radius:12px;padding:16px 10px">
-        <div style="font-size:22px;font-weight:700;color:#1e293b">${escapeHtml(s.value)}</div>
-        <div style="font-size:11px;color:#64748b;margin-top:4px">${escapeHtml(s.label)}</div>
-      </div>
-    </td>`).join("");
-
-  // 이슈 목록
+  const displayDate = formatKSTDate(date);
+  const HEADING = "font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#03c75a";
+  const sentiment = report.aiSentiment || {};
+  const pos = sentiment.positive || 0;
+  const neu = sentiment.neutral || 0;
+  const neg = sentiment.negative || 0;
   const issues = report.aiIssues || [];
+
+  const sentimentBar = `
+    <div style="display:flex;height:10px;border-radius:999px;overflow:hidden;margin:10px 0 10px;background:#e2e8f0">
+      <div style="width:${pos}%;background:#059669"></div>
+      <div style="width:${neu}%;background:#94a3b8"></div>
+      <div style="width:${neg}%;background:#dc2626"></div>
+    </div>
+    <div style="font-size:13px;line-height:1.6">
+      <span style="display:inline-block;color:#059669;font-weight:600;margin-right:16px">긍정 ${pos}%</span>
+      <span style="display:inline-block;color:#64748b;font-weight:600;margin-right:16px">중립 ${neu}%</span>
+      <span style="display:inline-block;color:#dc2626;font-weight:600">부정 ${neg}%</span>
+    </div>`;
+
   const issueRows = issues.map((issue) => {
     const postUrl = issue.postIndex
       ? (report.posts || [])[issue.postIndex - 1]?.postUrl || null
       : null;
-    const linkBtn = postUrl
-      ? `<a href="${escapeHtml(postUrl)}" style="display:inline-block;font-size:11px;color:#6366f1;text-decoration:none;border:1px solid #c7d2fe;border-radius:4px;padding:1px 6px">게시글 보기 ↗</a>`
-      : "";
+    const metaParts = [];
+    if (issue.count) metaParts.push(`<span style="display:inline-block;color:#c2410c;font-size:11px;margin-right:8px">${issue.count}회 언급</span>`);
+    if (issue.postIndex) metaParts.push(`<span style="display:inline-block;color:#92400e;font-size:11px;margin-right:8px">게시글 ${issue.postIndex}</span>`);
+    if (postUrl) {
+      metaParts.push(`<a href="${escapeHtml(postUrl)}" style="display:inline-block;font-size:11px;color:#03c75a;text-decoration:none;border:1px solid #86efac;border-radius:999px;padding:2px 8px;margin-top:2px">게시글 보기 ↗</a>`);
+    }
     return `
-    <div style="padding:12px 14px;background:#fff7ed;border-left:3px solid #f97316;border-radius:0 8px 8px 0;margin-bottom:8px">
-      <div style="font-size:13px;font-weight:600;color:#c2410c">${escapeHtml(issue.title || "")}</div>
-      ${linkBtn ? `<div style="margin-top:4px">${linkBtn}</div>` : ""}
-      <div style="font-size:12px;color:#78350f;margin-top:4px">${escapeHtml(issue.description || "")}</div>
-    </div>`;
+      <div style="padding:14px 16px;background:#fffbeb;border:1px solid #fde68a;border-left:4px solid #f59e0b;border-radius:12px;margin-bottom:10px">
+        <div style="font-size:14px;font-weight:700;color:#92400e">${escapeHtml(issue.title || "")}</div>
+        ${metaParts.length ? `<div style="margin-top:6px;line-height:1.8">${metaParts.join("")}</div>` : ""}
+        <div style="font-size:13px;color:#78350f;line-height:1.7;margin-top:6px">${escapeHtml(issue.description || "")}</div>
+      </div>`;
   }).join("");
+
+  const issueSection = issueRows || `
+    <div style="padding:14px 16px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;font-size:13px;color:#64748b;line-height:1.7">
+      오늘은 별도로 부각된 주요 이슈가 감지되지 않았습니다.
+    </div>`;
 
   const crawlStatusBadge = (() => {
     const s = report.crawlStatus || "ok";
-    if (s === "ok")      return `<span style="color:#16a34a;font-size:11px">● 정상 수집</span>`;
+    if (s === "ok") return `<span style="color:#16a34a;font-size:11px">● 정상 수집</span>`;
     if (s === "partial") return `<span style="color:#d97706;font-size:11px">● 부분 수집</span>`;
     return `<span style="color:#dc2626;font-size:11px">● ${escapeHtml(s)}</span>`;
   })();
 
-  const html = `<!DOCTYPE html>
+  const loungeButton = loungeUrl
+    ? `<a href="${escapeHtml(loungeUrl)}" style="display:inline-block;margin-top:14px;padding:8px 14px;border-radius:999px;background:rgba(255,255,255,.16);border:1px solid rgba(255,255,255,.28);color:#ffffff;font-size:12px;font-weight:600;text-decoration:none">라운지 바로가기 ↗</a>`
+    : "";
+
+  return `<!DOCTYPE html>
 <html lang="ko">
 <head>
   <meta charset="UTF-8">
@@ -1196,58 +1203,52 @@ function buildNaverLoungeEmailHTML({ loungeName, loungeUrl, date, report }) {
 </head>
 <body style="margin:0;padding:0;background:#f8fafc;font-family:-apple-system,'Malgun Gothic','맑은 고딕',sans-serif">
   <div style="display:none;max-height:0;overflow:hidden;mso-hide:all">${escapeHtml(loungeName)} 네이버 라운지 ${displayDate} 일일 리포트</div>
-  <div style="max-width:620px;margin:32px auto;background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.1)">
+  <div style="max-width:620px;margin:32px auto;background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 1px 3px rgba(15,23,42,.12)">
 
-    <!-- 헤더 -->
-    <div style="background:linear-gradient(135deg,#03C75A 0%,#00a845 100%);padding:28px 32px">
-      <div style="color:#d1fae5;font-size:11px;letter-spacing:.08em;margin-bottom:6px">AI SOCIAL LISTENING · DAILY REPORT</div>
+    <div style="background:linear-gradient(135deg,#03c75a 0%,#00a845 52%,#0f766e 100%);padding:28px 32px">
+      <div style="color:#dcfce7;font-size:11px;letter-spacing:.08em;margin-bottom:6px">AI SOCIAL LISTENING · DAILY REPORT</div>
       <div style="color:#fff;font-size:22px;font-weight:700">${escapeHtml(loungeName)}</div>
-      <div style="color:#d1fae5;font-size:14px;margin-top:4px">네이버 라운지 &nbsp;·&nbsp; ${displayDate} &nbsp;${crawlStatusBadge}</div>
+      <div style="color:#dcfce7;font-size:14px;margin-top:6px">네이버 라운지 &nbsp;·&nbsp; ${displayDate} &nbsp;${crawlStatusBadge}</div>
+      ${loungeButton}
     </div>
 
-    <!-- 본문 -->
+    <div style="background:#fffbeb;border-bottom:1px solid #fde68a;padding:10px 32px;font-size:12px;color:#92400e">
+      ⚠️ AI 분석 특성상 게시글 문맥이나 유저 의도를 일부 다르게 해석할 수 있습니다.
+    </div>
+
     <div style="padding:28px 32px">
-
-      <!-- 핵심 수치 카드 -->
-      <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:24px">
-        <tr>${statCards}</tr>
-      </table>
-
-      <!-- AI 요약 -->
-      ${report.aiSummary ? `
       <div style="margin-bottom:24px">
-        <div style="font-size:13px;font-weight:700;color:#1e293b;margin-bottom:10px">📋 AI 동향 요약</div>
-        <div style="font-size:13px;color:#374151;line-height:1.8;padding:16px;background:#f8fafc;border-radius:10px;border-left:3px solid #03C75A">
-          ${sanitizeReportHtml(report.aiSummary)}
+        <div style="${HEADING};margin-bottom:8px">라운지 동향 요약</div>
+        <div style="font-size:14px;color:#374151;line-height:1.75;background:#f8fafc;border-left:3px solid #03c75a;border-radius:0 10px 10px 0;padding:14px 16px">
+          ${sanitizeReportHtml(formatSummaryHtml(report.aiSummary)) || "—"}
         </div>
-      </div>` : ""}
+      </div>
 
-      <!-- 이슈 -->
-      ${issueRows ? `
       <div style="margin-bottom:24px">
-        <div style="font-size:13px;font-weight:700;color:#1e293b;margin-bottom:10px">🚨 주요 이슈</div>
-        ${issueRows}
-      </div>` : ""}
+        <div style="${HEADING};margin-bottom:8px">감정 분석</div>
+        ${sentimentBar}
+        <div style="font-size:13px;color:#64748b;margin-top:8px">게시글 ${(report.postCount || 0).toLocaleString()}건 · 댓글 ${(report.totalComments || 0).toLocaleString()}개 기준</div>
+      </div>
 
-      <!-- 토큰/비용 -->
+      <div style="margin-bottom:24px">
+        <div style="${HEADING};margin-bottom:8px">주요 이슈</div>
+        ${issueSection}
+      </div>
+
       ${(report.model || report.totalTokens) ? `
       <div style="padding-top:12px;border-top:1px dashed #e2e8f0;font-size:11px;color:#94a3b8;text-align:right">
         ${report.model ? `<span style="margin-right:10px;font-weight:500">${escapeHtml(report.model)}</span>` : ""}
         ${report.totalTokens ? `<span style="margin-right:10px">입력 ${(report.promptTokens || 0).toLocaleString()} / 출력 ${(report.completionTokens || 0).toLocaleString()} / 합계 ${(report.totalTokens || 0).toLocaleString()} 토큰</span>` : ""}
         ${report.cost != null ? `<span>비용 $${Number(report.cost).toFixed(4)}</span>` : ""}
       </div>` : ""}
-
     </div>
 
-    <!-- 푸터 -->
     <div style="background:#f8fafc;padding:16px 32px;border-top:1px solid #e2e8f0;font-size:12px;color:#94a3b8;text-align:center">
       Social Listener by 사업전략팀 &nbsp;·&nbsp; 이 메일은 자동 발송됩니다
     </div>
   </div>
 </body>
 </html>`;
-
-  return html;
 }
 
 /**
