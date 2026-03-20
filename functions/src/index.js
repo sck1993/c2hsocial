@@ -1331,13 +1331,14 @@ exports.api = onRequest(
     // ── POST /instagram/pipeline/trigger ── 수동 파이프라인 실행 (리포트 생성만, 이메일 미발송)
     if (req.method === "POST" && path === "/instagram/pipeline/trigger") {
       try {
-        const { workspaceId, date, skipEmail, forceRegenerateComments } = req.body || {};
+        const { workspaceId, date, skipEmail, forceRegenerateComments, accountId } = req.body || {};
         const result = await runInstagramPipeline(
           workspaceId || null,
           date || null,
           {
             skipEmail: skipEmail !== false,  // 기본 true (생성만), skipEmail:false 명시 시만 이메일 발송
             forceRegenerateComments: Boolean(forceRegenerateComments),
+            filterAccountId: accountId || null,
           }
         );
         return res.json({ success: true, result });
@@ -1442,6 +1443,39 @@ exports.api = onRequest(
         return res.json({ success: true, username, newExpiresAt: newExpiresAt.toISOString() });
       } catch (err) {
         console.error("[POST /instagram/tokens/refresh] 오류:", err.message);
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── POST /instagram/tokens/check ── 토큰 유효성 실시간 확인
+    if (req.method === "POST" && path === "/instagram/tokens/check") {
+      try {
+        const db = admin.firestore();
+        const { workspaceId: _wsId, docId } = req.query;
+        if (!docId) return res.status(400).json({ error: "docId 필수" });
+        const workspaceId = resolveWorkspaceId(_wsId);
+
+        const ref = db.collection("workspaces").doc(workspaceId)
+          .collection("instagram_accounts").doc(docId);
+        const doc = await ref.get();
+        if (!doc.exists) return res.status(404).json({ error: "계정을 찾을 수 없습니다." });
+
+        const { accessToken, appId, appSecret, username, apiType: accApiType } = doc.data();
+        const isDirectApi = accApiType === "instagram";
+
+        try {
+          if (isDirectApi) {
+            const info = await debugIgDirectToken(accessToken);
+            return res.json({ valid: true, username: info.username || username });
+          } else {
+            const info = await debugIgToken(accessToken, appId, appSecret);
+            return res.json({ valid: info.isValid, username, expiresAt: info.expiresAt?.toISOString() ?? null });
+          }
+        } catch (apiErr) {
+          return res.json({ valid: false, username, error: apiErr.message });
+        }
+      } catch (err) {
+        console.error("[POST /instagram/tokens/check] 오류:", err.message);
         return res.status(500).json({ error: err.message });
       }
     }
@@ -2143,9 +2177,9 @@ exports.facebookGroupPipeline = onSchedule(
 //  UTC 01:30 = KST 10:30 | 모든 개별 파이프라인 완료 후 실행
 // ══════════════════════════════════════════════════════
 exports.presetPipeline = onSchedule(
-  { schedule: "30 1 * * *", timeoutSeconds: 300, memory: "512MiB" },
+  { schedule: "30 0 * * *", timeoutSeconds: 300, memory: "512MiB" },
   async () => {
-    console.log("[presetPipeline] 스케줄 실행 시작 (KST 10:30)");
+    console.log("[presetPipeline] 스케줄 실행 시작 (KST 09:30)");
     await runReportPresetPipeline();
     console.log("[presetPipeline] 스케줄 실행 완료");
   }

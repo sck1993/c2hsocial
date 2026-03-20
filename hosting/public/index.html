@@ -921,13 +921,30 @@
               <!-- 수신자 -->
               <div class="field-group" style="margin-bottom:24px">
                 <label class="field-label">수신자 이메일</label>
-                <div id="preset-chip-container" class="chip-container"></div>
+                <div id="preset-chip-container" class="chip-input-wrap">
+                  <div class="chip-list"></div>
+                  <input type="text" class="chip-text-input" placeholder="이메일 입력 후 Enter">
+                  <span class="chip-count hidden"></span>
+                </div>
               </div>
 
               <!-- 버튼 -->
               <div style="display:flex;gap:8px">
                 <button class="btn-save-settings" onclick="savePreset()">저장</button>
                 <button class="btn-cancel-settings" onclick="closePresetEditor()">취소</button>
+              </div>
+
+              <!-- 이메일 미리보기 -->
+              <div id="preset-preview-section" style="display:none;margin-top:28px">
+                <div class="preset-preview-header">
+                  <span>이메일 미리보기</span>
+                  <span class="preset-preview-badge">목업 데이터</span>
+                </div>
+                <iframe id="preset-preview-frame"
+                        srcdoc=""
+                        sandbox="allow-same-origin allow-scripts"
+                        style="width:100%;height:620px;border:1px solid #e2e8f0;border-radius:8px;background:#fff;display:block">
+                </iframe>
               </div>
             </div>
           </div>

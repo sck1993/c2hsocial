@@ -4,7 +4,7 @@
 
 디스코드, 유튜브 등 각종 소셜 플랫폼에서 등록한 계정 또는 서버의 지표, 유저 댓글, 동향 등을 수집하고 AI로 분석하여 리포트를 발간하는 툴.
 
-**현재 구현된 플랫폼:** Discord, Instagram, Facebook Group
+**현재 구현된 플랫폼:** Discord, Instagram, Facebook Group, Naver Lounge
 **예정 플랫폼:** YouTube, 인터넷 사이트 크롤링
 
 ---
@@ -30,7 +30,7 @@
 ### 이메일 발송 금지
 이메일 리포트 발송은 민감한 수신인이 지정되어 있으므로, 테스트 목적으로 임의 발송을 해서는 안 된다.
 이메일 발송이 필요한 경우 사용자에게 이유를 설명하고 명시적인 승낙을 받은 후 진행한다.
-해당 엔드포인트: `/report/trigger`, `/guilds/test-delivery`, `/instagram/email/trigger`, `/weekly-report/trigger`, `/facebook/email/trigger`
+해당 엔드포인트: `/report/trigger`, `/guilds/test-delivery`, `/instagram/email/trigger`, `/weekly-report/trigger`, `/facebook/email/trigger`, `/naver/email/trigger`, `/report-presets/email/trigger`
 
 ### 코드 작업 후 처리
 - **규모가 큰 작업**: 완료 후 문법 확인 및 타입체크 실시 → Firebase 배포 진행
@@ -90,6 +90,8 @@ SocialListener/
 │   │   ├── discordWeeklyPipeline.js        # Discord 주간 리포트 파이프라인
 │   │   ├── instagramDailyPipeline.js       # Instagram 수집/분석/이메일 파이프라인
 │   │   ├── facebookGroupDailyPipeline.js   # Facebook 그룹 크롤링/분석 파이프라인
+│   │   ├── naverLoungeDailyPipeline.js     # 네이버 라운지 수집/분석/저장 파이프라인
+│   │   ├── reportPresetDailyPipeline.js    # 리포트 프리셋 통합 이메일 파이프라인
 │   │   ├── reportDelivery.js               # 이메일(Gmail) + Google Sheets 발송
 │   │   ├── collectors/
 │   │   │   ├── discordCollector.js         # Discord 메시지 수집 (증분 snowflake)
@@ -97,7 +99,8 @@ SocialListener/
 │   │   │   ├── instagramCollector.js       # Instagram (Facebook Graph API 방식)
 │   │   │   ├── instagramDirectCollector.js # Instagram (Business Login 방식)
 │   │   │   ├── instagramCollectorCore.js   # Instagram 공통 factory/기반
-│   │   │   └── facebookGroupCollector.js   # Playwright 기반 Facebook 그룹 크롤러
+│   │   │   ├── facebookGroupCollector.js   # Playwright 기반 Facebook 그룹 크롤러
+│   │   │   └── naverLoungeCollector.js     # Playwright 기반 네이버 라운지 크롤러
 │   │   ├── analyzers/
 │   │   │   └── openrouterAnalyzer.js       # OpenRouter AI 분석
 │   │   └── utils/
@@ -139,6 +142,7 @@ firebase deploy --only hosting
 | `insightCollector` | `30 0 * * *` | 09:30 | Discord Guild Insights 수집 → weekly_insights 저장 |
 | `weeklyPipeline` | `0 1 * * 1` | 월 10:00 | Discord 주간 리포트 생성 + 이메일 발송 |
 | `instagramPipeline` | `0 0 * * *` | 09:00 | Instagram 수집/분석/이메일 |
+| `presetPipeline` | `30 1 * * *` | 10:30 | 리포트 프리셋 통합 이메일 발송 |
 
 ---
 
@@ -149,3 +153,66 @@ firebase deploy --only hosting
 | `/start` | 세션 시작 시 프로젝트 구조 전체 파악 |
 | `/deploy` | Firebase 배포 실행 |
 | `/check-report` | 특정 날짜 리포트 데이터 조회 |
+
+# context-mode — MANDATORY routing rules
+
+You have context-mode MCP tools available. These rules are NOT optional — they protect your context window from flooding. A single unrouted command can dump 56 KB into context and waste the entire session.
+
+## BLOCKED commands — do NOT attempt these
+
+### curl / wget — BLOCKED
+Any Bash command containing `curl` or `wget` is intercepted and replaced with an error message. Do NOT retry.
+Instead use:
+- `ctx_fetch_and_index(url, source)` to fetch and index web pages
+- `ctx_execute(language: "javascript", code: "const r = await fetch(...)")` to run HTTP calls in sandbox
+
+### Inline HTTP — BLOCKED
+Any Bash command containing `fetch('http`, `requests.get(`, `requests.post(`, `http.get(`, or `http.request(` is intercepted and replaced with an error message. Do NOT retry with Bash.
+Instead use:
+- `ctx_execute(language, code)` to run HTTP calls in sandbox — only stdout enters context
+
+### WebFetch — BLOCKED
+WebFetch calls are denied entirely. The URL is extracted and you are told to use `ctx_fetch_and_index` instead.
+Instead use:
+- `ctx_fetch_and_index(url, source)` then `ctx_search(queries)` to query the indexed content
+
+## REDIRECTED tools — use sandbox equivalents
+
+### Bash (>20 lines output)
+Bash is ONLY for: `git`, `mkdir`, `rm`, `mv`, `cd`, `ls`, `npm install`, `pip install`, and other short-output commands.
+For everything else, use:
+- `ctx_batch_execute(commands, queries)` — run multiple commands + search in ONE call
+- `ctx_execute(language: "shell", code: "...")` — run in sandbox, only stdout enters context
+
+### Read (for analysis)
+If you are reading a file to **Edit** it → Read is correct (Edit needs content in context).
+If you are reading to **analyze, explore, or summarize** → use `ctx_execute_file(path, language, code)` instead. Only your printed summary enters context. The raw file content stays in the sandbox.
+
+### Grep (large results)
+Grep results can flood context. Use `ctx_execute(language: "shell", code: "grep ...")` to run searches in sandbox. Only your printed summary enters context.
+
+## Tool selection hierarchy
+
+1. **GATHER**: `ctx_batch_execute(commands, queries)` — Primary tool. Runs all commands, auto-indexes output, returns search results. ONE call replaces 30+ individual calls.
+2. **FOLLOW-UP**: `ctx_search(queries: ["q1", "q2", ...])` — Query indexed content. Pass ALL questions as array in ONE call.
+3. **PROCESSING**: `ctx_execute(language, code)` | `ctx_execute_file(path, language, code)` — Sandbox execution. Only stdout enters context.
+4. **WEB**: `ctx_fetch_and_index(url, source)` then `ctx_search(queries)` — Fetch, chunk, index, query. Raw HTML never enters context.
+5. **INDEX**: `ctx_index(content, source)` — Store content in FTS5 knowledge base for later search.
+
+## Subagent routing
+
+When spawning subagents (Agent/Task tool), the routing block is automatically injected into their prompt. Bash-type subagents are upgraded to general-purpose so they have access to MCP tools. You do NOT need to manually instruct subagents about context-mode.
+
+## Output constraints
+
+- Keep responses under 500 words.
+- Write artifacts (code, configs, PRDs) to FILES — never return them as inline text. Return only: file path + 1-line description.
+- When indexing content, use descriptive source labels so others can `ctx_search(source: "label")` later.
+
+## ctx commands
+
+| Command | Action |
+|---------|--------|
+| `ctx stats` | Call the `ctx_stats` MCP tool and display the full output verbatim |
+| `ctx doctor` | Call the `ctx_doctor` MCP tool, run the returned shell command, display as checklist |
+| `ctx upgrade` | Call the `ctx_upgrade` MCP tool, run the returned shell command, display as checklist |

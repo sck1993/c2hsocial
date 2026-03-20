@@ -140,6 +140,11 @@
       }
 
       getEmails() {
+        const pending = this.textInput.value.trim();
+        if (pending) {
+          this._addEmail(pending);
+          this.textInput.value = '';
+        }
         return [...this.emails];
       }
 
@@ -3310,13 +3315,18 @@
           : acc.tokenRefreshedAt
       ).toLocaleDateString('ko-KR') : '-';
       const daysStr = acc.daysUntilExpiry != null ? (acc.daysUntilExpiry < 0 ? '만료됨' : `${acc.daysUntilExpiry}일`) : '-';
+      const safeDocId = escapeHtml(acc.docId);
       return `<tr>
         <td>@${escapeHtml(acc.username || acc.igUserId || '')}</td>
         <td><span style="color:${s.color};font-weight:600">${s.text}</span></td>
         <td>${expiresStr}</td>
         <td>${daysStr}</td>
         <td>${refreshedStr}</td>
-        <td><button class="btn-save-settings" style="padding:.25rem .75rem;font-size:.8125rem" data-docid="${escapeHtml(acc.docId)}" onclick="refreshIgToken(this.dataset.docid)">갱신</button></td>
+        <td style="display:flex;gap:.375rem;align-items:center;flex-wrap:wrap">
+          <button class="btn-save-settings" style="padding:.25rem .75rem;font-size:.8125rem" data-docid="${safeDocId}" onclick="refreshIgToken(this.dataset.docid)">갱신</button>
+          <button class="btn-save-settings" style="padding:.25rem .75rem;font-size:.8125rem;background:var(--surface2)" data-docid="${safeDocId}" onclick="checkIgToken(this.dataset.docid, this)">상태 확인</button>
+          <span id="ig-check-result-${safeDocId}" style="font-size:.8125rem"></span>
+        </td>
       </tr>`;
     }
 
@@ -3329,6 +3339,31 @@
         loadIgTokens();
       } catch (err) {
         alert('토큰 갱신 실패: ' + err.message);
+      }
+    }
+
+    async function checkIgToken(docId, btn) {
+      const $result = document.getElementById(`ig-check-result-${docId}`);
+      if (!$result) return;
+      btn.disabled = true;
+      $result.style.color = '#94a3b8';
+      $result.textContent = '확인 중…';
+      try {
+        const res = await apiFetch(`/instagram/tokens/check?workspaceId=${WS}&docId=${encodeURIComponent(docId)}`, {
+          method: 'POST',
+        });
+        if (res.valid) {
+          $result.style.color = '#059669';
+          $result.textContent = '✓ 유효';
+        } else {
+          $result.style.color = '#ef4444';
+          $result.textContent = '✗ 무효';
+        }
+      } catch (err) {
+        $result.style.color = '#ef4444';
+        $result.textContent = '오류';
+      } finally {
+        btn.disabled = false;
       }
     }
 
@@ -4289,10 +4324,55 @@
 
     /** 플랫폼별 메타 */
     const PRESET_PLATFORM_META = {
-      discord:      { label: 'Discord',       icon: '🎮', cls: 'preset-block--discord' },
-      instagram:    { label: 'Instagram',     icon: '📸', cls: 'preset-block--instagram' },
-      facebook:     { label: 'Facebook 그룹', icon: '👥', cls: 'preset-block--facebook' },
-      naver_lounge: { label: '네이버 라운지', icon: '🏪', cls: 'preset-block--naver_lounge' },
+      discord: {
+        label: 'Discord', color: '#5865F2', emailIcon: '🎮', cls: 'preset-block--discord',
+        icon: `<svg viewBox="0 0 24 24" fill="currentColor" style="width:13px;height:13px;flex-shrink:0;color:var(--discord)"><path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994a.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"/></svg>`,
+      },
+      instagram: {
+        label: 'Instagram', color: '#E1306C', emailIcon: '📸', cls: 'preset-block--instagram',
+        icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" style="width:13px;height:13px;flex-shrink:0;color:#E1306C"><rect x="2" y="2" width="20" height="20" rx="5" ry="5"/><path d="M16 11.37A4 4 0 1 1 12.63 8 4 4 0 0 1 16 11.37z"/><line x1="17.5" y1="6.5" x2="17.51" y2="6.5"/></svg>`,
+      },
+      facebook: {
+        label: 'Facebook 그룹', color: '#1877F2', emailIcon: '👥', cls: 'preset-block--facebook',
+        icon: `<svg viewBox="0 0 24 24" fill="currentColor" style="width:13px;height:13px;flex-shrink:0;color:#1877F2"><path d="M24 12.073C24 5.405 18.627 0 12 0S0 5.405 0 12.073C0 18.1 4.388 23.094 10.125 24v-8.437H7.078v-3.49h3.047V9.41c0-3.025 1.792-4.697 4.533-4.697 1.312 0 2.686.236 2.686.236v2.97h-1.513c-1.491 0-1.956.93-1.956 1.886v2.267h3.328l-.532 3.49h-2.796V24C19.612 23.094 24 18.1 24 12.073z"/></svg>`,
+      },
+      naver_lounge: {
+        label: '네이버 라운지', color: '#03C75A', emailIcon: '🏪', cls: 'preset-block--naver_lounge',
+        icon: `<svg viewBox="0 0 24 24" fill="currentColor" style="width:13px;height:13px;flex-shrink:0;color:#03C75A"><path d="M16.273 12.845 7.376 0H0v24h7.727V11.155L16.624 24H24V0h-7.727z"/></svg>`,
+      },
+    };
+
+    /** 플랫폼별 프리뷰 목업 데이터 */
+    const PREVIEW_MOCK = {
+      discord: {
+        messageCount: 128,
+        summary: '오늘은 신규 업데이트 관련 긍정적인 반응이 많았습니다. 유저들의 참여도가 전반적으로 높았으며 커뮤니티 활동이 활발하게 이루어졌습니다.',
+        issues: [
+          { title: '서버 불안정 문의', description: '접속 오류를 경험한 유저 보고 다수', count: 12 },
+          { title: '신규 콘텐츠 요청', description: '다음 업데이트 일정에 대한 문의 증가', count: 8 },
+        ],
+      },
+      instagram: {
+        aiPerformanceReview: '오늘 게시된 릴스 콘텐츠가 평균 대비 1.8배 높은 도달률을 기록했습니다. 팔로워 유입도 꾸준히 증가 추세입니다.',
+        posts: [
+          { caption: '새로운 컬렉션 출시!', likeCount: 312, commentsCount: 18, videoViewCount: 4200 },
+          { caption: '오늘의 비하인드', likeCount: 198, commentsCount: 9, videoViewCount: 2100 },
+        ],
+      },
+      facebook: {
+        postCount: 15,
+        aiSummary: '<p>이번 주 그룹 내 주요 화제는 신제품 출시였으며, 전반적으로 긍정적인 반응이 주를 이뤘습니다.</p>',
+        aiIssues: [
+          { title: '배송 지연 불만', description: '배송 지연 경험을 공유하는 게시글이 증가', count: 7 },
+        ],
+      },
+      naver_lounge: {
+        postCount: 22,
+        aiSummary: '<p>라운지 내 이벤트 관련 게시글이 활발하게 공유되고 있으며, 커뮤니티 참여도가 높습니다.</p>',
+        aiIssues: [
+          { title: '이벤트 당첨 문의', description: '이벤트 결과 발표 관련 문의 급증', count: 11 },
+        ],
+      },
     };
 
     /** 편집 중인 프리셋 상태 */
@@ -4343,7 +4423,9 @@
 
       document.getElementById('preset-editor-empty').style.display = 'none';
       document.getElementById('preset-editor-form').style.display = '';
-      document.getElementById('preset-name-input').value = preset ? preset.name : '';
+      const $nameInput = document.getElementById('preset-name-input');
+      $nameInput.value = preset ? preset.name : '';
+      $nameInput.oninput = () => updateEmailPreview();
 
       // ChipInput 초기화
       if (!_presetChipInput) {
@@ -4373,6 +4455,7 @@
       _presetItems = [];
       document.getElementById('preset-editor-empty').style.display = '';
       document.getElementById('preset-editor-form').style.display = 'none';
+      document.getElementById('preset-preview-section').style.display = 'none';
       loadPresets();
     }
 
@@ -4393,8 +4476,8 @@
         if (guildsData.status === 'fulfilled') {
           (guildsData.value.guilds || []).forEach((g) => allTargets.push({
             platform: 'discord',
-            targetId: g.discordGuildId,
-            targetName: g.guildName || g.discordGuildId,
+            targetId: g.docId,
+            targetName: g.guildName || g.docId,
           }));
         }
         if (igData.status === 'fulfilled') {
@@ -4458,6 +4541,167 @@
           <button class="preset-block-remove" onclick="removePresetItem(${idx})" title="제거">✕</button>`;
         $zone.appendChild(el);
       });
+      updateEmailPreview();
+    }
+
+    // ── 이메일 미리보기 ──────────────────────────────────────────
+
+    function _previewEsc(str) {
+      return String(str || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    function _buildPreviewDiscordSection(report) {
+      const issues = (report.issues || []).slice(0, 3);
+      const issueRows = issues.map((iss) => `
+        <div class="iss">
+          <div class="iss-t">${_previewEsc(iss.title)}</div>
+          <div class="iss-d">${_previewEsc(iss.description)}</div>
+        </div>`).join('');
+      return `
+        <div><span class="dc-bdg">${report.messageCount || 0}개 메시지</span></div>
+        <div class="dc-sum">${_previewEsc(report.summary)}</div>
+        ${issueRows ? `<div><div class="dc-ish">🚨 주요 이슈</div>${issueRows}</div>` : ''}`;
+    }
+
+    function _buildPreviewInstagramSection(report) {
+      const posts = (report.posts || []).slice(0, 3);
+      const postRows = posts.map((p) => {
+        const cap = _previewEsc((p.caption || '').slice(0, 20) + ((p.caption||'').length > 20 ? '…' : ''));
+        return `<tr>
+          <td class="ig-tdd">—</td>
+          <td class="ig-tdc">${cap}</td>
+          <td class="ig-tdt">—</td>
+          <td class="ig-tdr">—</td><td class="ig-tdr">—</td><td class="ig-tdr">—</td>
+          <td class="ig-tdr">—</td><td class="ig-tdr">—</td><td class="ig-tdr">—</td>
+          <td class="ig-tdr">—</td>
+        </tr>`;
+      }).join('');
+      return `
+        <div class="ig-ptw">
+          <div class="ig-h">최근 1주 포스트</div>
+          <div class="ig-scroll">
+            <table class="ig-tbl">
+              <thead><tr class="ig-thead-tr">
+                <th class="ig-th">날짜</th><th class="ig-th">본문</th><th class="ig-th">유형</th>
+                <th class="ig-th-r">조회</th><th class="ig-th-r">좋아요</th><th class="ig-th-r">댓글</th>
+                <th class="ig-th-r">공유</th><th class="ig-th-r">저장</th><th class="ig-th-r">프로필방문</th>
+                <th class="ig-th-r">참여율</th>
+              </tr></thead>
+              <tbody>${postRows}</tbody>
+            </table>
+          </div>
+        </div>
+        ${report.aiPerformanceReview ? `<div class="ig-rev"><div class="ig-rev-in"><span class="ig-rev-t">AI 성과 리뷰</span><div class="ig-rev-b">${_previewEsc(report.aiPerformanceReview)}</div></div></div>` : ''}`;
+    }
+
+    function _buildPreviewCrawlerSection(report, accentColor) {
+      const issues = (report.aiIssues || []).slice(0, 3);
+      const issueRows = issues.map((iss) => `
+        <div class="cr-iss">
+          <div class="cr-iss-t">${_previewEsc(iss.title)}</div>
+          <div class="cr-iss-d">${_previewEsc(iss.description)}</div>
+        </div>`).join('');
+      return `
+        <div><span class="cr-bdg">${report.postCount || 0}개 게시글</span></div>
+        ${report.aiSummary ? `<div class="cr-sum" style="border-left:3px solid ${accentColor}">${report.aiSummary}</div>` : ''}
+        ${issueRows ? `<div><div class="cr-ish">🚨 주요 이슈</div>${issueRows}</div>` : ''}`;
+    }
+
+    function buildEmailPreviewHTML(presetName, items) {
+      const today = new Date().toLocaleDateString('ko-KR', { year:'numeric', month:'long', day:'numeric' });
+
+      const sectionHtmls = items.map(({ platform, targetName }, idx) => {
+        const meta = PRESET_PLATFORM_META[platform] || { label: platform, color: '#6366f1', emailIcon: '📋' };
+        const mock = PREVIEW_MOCK[platform] || {};
+        let bodyHtml = '';
+        if (platform === 'discord')           bodyHtml = _buildPreviewDiscordSection(mock);
+        else if (platform === 'instagram')    bodyHtml = _buildPreviewInstagramSection(mock);
+        else if (platform === 'facebook')     bodyHtml = _buildPreviewCrawlerSection(mock, meta.color);
+        else if (platform === 'naver_lounge') bodyHtml = _buildPreviewCrawlerSection(mock, meta.color);
+        const divider = idx > 0 ? `<div class="sec-div"></div>` : '';
+        return `
+          ${divider}
+          <div class="sec">
+            <div class="sec-hd">
+              <span style="display:inline-block;width:4px;height:20px;background:${meta.color};border-radius:2px"></span>
+              <span style="font-size:11px;font-weight:700;color:${meta.color};letter-spacing:.05em;text-transform:uppercase">${meta.emailIcon} ${meta.label}</span>
+              <span class="sec-nm">${_previewEsc(targetName)}</span>
+            </div>
+            ${bodyHtml}
+          </div>`;
+      }).join('');
+
+      const indexBadges = items.map(({ platform, targetName }) => {
+        const meta = PRESET_PLATFORM_META[platform] || { label: platform, color: '#6366f1', emailIcon: '📋' };
+        return `<span style="display:inline-block;padding:3px 10px;border-radius:999px;background:${meta.color}1a;color:${meta.color};font-size:11px;font-weight:600">${meta.emailIcon} ${_previewEsc(targetName)}</span>`;
+      }).join('');
+
+      return `<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8">
+        <style>
+          body{margin:0;padding:0;background:#f8fafc;font-family:-apple-system,'Malgun Gothic','맑은 고딕',sans-serif}
+          .wrap{max-width:640px;margin:32px auto;background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.1)}
+          .hero{background:linear-gradient(135deg,#f58529 0%,#dd2a7b 50%,#8134af 100%);padding:28px 32px}
+          .hero-sub{color:rgba(255,255,255,.75);font-size:11px;letter-spacing:.08em;margin-bottom:6px}
+          .hero-title{color:#fff;font-size:22px;font-weight:700}
+          .hero-date{color:rgba(255,255,255,.8);font-size:14px;margin-top:4px}
+          .toc{padding:18px 32px 0;border-bottom:1px solid #f1f5f9}
+          .toc-chips{display:flex;flex-wrap:wrap;gap:6px;padding-bottom:18px}
+          .secs{padding-top:28px}
+          .sec-div{border-top:2px dashed #e2e8f0;margin:0 32px 28px}
+          .sec{padding:0 32px 28px}
+          .sec-hd{display:flex;align-items:center;gap:8px;margin-bottom:14px}
+          .sec-nm{font-size:13px;font-weight:600;color:#1e293b}
+          .ft{background:#f8fafc;padding:16px 32px;border-top:1px solid #e2e8f0;font-size:12px;color:#94a3b8;text-align:center}
+          .dc-bdg{display:inline-block;background:#5865f21a;color:#5865f2;font-size:11px;font-weight:700;padding:3px 10px;border-radius:999px;margin-bottom:10px}
+          .dc-sum{font-size:13px;color:#374151;line-height:1.7;background:#f8fafc;border-left:3px solid #5865f2;border-radius:0 8px 8px 0;padding:12px 14px;margin-bottom:12px}
+          .dc-ish{font-size:11px;font-weight:700;color:#64748b;margin-bottom:8px}
+          .iss{padding:10px 12px;background:#ede9fe;border-left:3px solid #6366f1;border-radius:0 8px 8px 0;margin-bottom:6px}
+          .iss-t{font-size:13px;font-weight:600;color:#4338ca}
+          .iss-d{font-size:12px;color:#4c1d95;margin-top:2px}
+          .ig-h{font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#6366f1;margin-bottom:10px}
+          .ig-ptw{margin-bottom:24px}
+          .ig-scroll{overflow-x:auto}
+          .ig-tbl{width:100%;border-collapse:collapse;font-size:11px;min-width:680px}
+          .ig-thead-tr{background:#f8fafc}
+          .ig-th{padding:6px;text-align:left;color:#475569;font-weight:600}
+          .ig-th-r{padding:6px;text-align:right;color:#475569;font-weight:600}
+          .ig-tdd{padding:6px;border-bottom:1px solid #f1f5f9;font-size:11px;color:#64748b;white-space:nowrap}
+          .ig-tdc{padding:6px;border-bottom:1px solid #f1f5f9;font-size:11px;color:#334155;width:96px;max-width:96px;line-height:1.35;word-break:break-word}
+          .ig-tdt{padding:6px;border-bottom:1px solid #f1f5f9;font-size:11px;color:#64748b}
+          .ig-tdr{padding:6px;border-bottom:1px solid #f1f5f9;font-size:11px;text-align:right}
+          .ig-rev{margin-bottom:24px}
+          .ig-rev-in{background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:16px}
+          .ig-rev-t{font-size:11px;font-weight:700;color:#475569;display:block;margin-bottom:8px}
+          .ig-rev-b{font-size:13px;color:#374151;line-height:1.6}
+          .cr-bdg{display:inline-block;background:#f0fdf4;color:#166534;font-size:11px;font-weight:600;padding:3px 8px;border-radius:999px;margin-bottom:10px}
+          .cr-sum{font-size:13px;color:#374151;line-height:1.8;padding:14px 16px;background:#f8fafc;border-radius:10px;margin-bottom:12px}
+          .cr-ish{font-size:11px;font-weight:700;color:#64748b;margin-bottom:6px}
+          .cr-iss{padding:10px 12px;background:#fff7ed;border-left:3px solid #f97316;border-radius:0 8px 8px 0;margin-bottom:6px}
+          .cr-iss-t{font-size:12px;font-weight:600;color:#c2410c}
+          .cr-iss-d{font-size:11px;color:#78350f;margin-top:2px}
+        </style>
+        </head><body>
+        <div class="wrap">
+          <div class="hero">
+            <div class="hero-sub">AI SOCIAL LISTENING · INTEGRATED REPORT</div>
+            <div class="hero-title">${_previewEsc(presetName)}</div>
+            <div class="hero-date">${today}</div>
+          </div>
+          <div class="toc"><div class="toc-chips">${indexBadges}</div></div>
+          <div class="secs">${sectionHtmls}</div>
+          <div class="ft">Social Listener by 사업전략팀 &nbsp;·&nbsp; 이 메일은 자동 발송됩니다</div>
+        </div>
+      </body></html>`;
+    }
+
+    function updateEmailPreview() {
+      const section = document.getElementById('preset-preview-section');
+      const frame   = document.getElementById('preset-preview-frame');
+      if (!section || !frame) return;
+      if (!_presetItems.length) { section.style.display = 'none'; return; }
+      section.style.display = '';
+      const presetName = (document.getElementById('preset-name-input')?.value || '').trim() || '(이름 미입력)';
+      frame.srcdoc = buildEmailPreviewHTML(presetName, _presetItems);
     }
 
     /** 드래그 시작: dataTransfer에 블록 정보 저장 */

@@ -110,10 +110,11 @@ function buildPostCommentPeriodContext(targetPost, allPosts) {
  * @param {object} options
  * @param {boolean} options.skipEmail - true이면 이메일 발송 건너뜀 (기본: false)
  * @param {boolean} options.forceRegenerateComments - true이면 기존 게시물 AI 코멘트 재생성
+ * @param {string|null} options.filterAccountId - 지정 시 해당 계정 doc ID만 처리 (예: "instagram_34601953809451809")
  * @returns {Promise<{processed: number, skipped: number, errors: number}>}
  */
 async function runInstagramPipeline(filterWorkspaceId = null, targetDate = null, options = {}) {
-  const { skipEmail = false, forceRegenerateComments = false } = options;
+  const { skipEmail = false, forceRegenerateComments = false, filterAccountId = null } = options;
   const db   = admin.firestore();
   const date = targetDate || getKSTYesterdayString();
   const results = { processed: 0, skipped: 0, errors: 0 };
@@ -142,6 +143,8 @@ async function runInstagramPipeline(filterWorkspaceId = null, targetDate = null,
     for (const accDoc of accountsSnap.docs) {
       const acc = accDoc.data();
       const docId = accDoc.id;
+
+      if (filterAccountId && docId !== filterAccountId) continue;
 
       try {
         let { accessToken, igUserId, username, appId, appSecret } = acc;

@@ -1278,61 +1278,112 @@ const PLATFORM_META = {
   naver_lounge:{ label: "네이버 라운지",  color: "#03C75A", icon: "🏪" },
 };
 
-/** Discord 섹션 내용 HTML (인라인 스타일) */
+/** Discord 섹션 내용 HTML */
 function buildDiscordSection(targetName, report) {
-  const summary = report.summary || "";
-  const issues  = (report.issues || []).slice(0, 3);
+  const summary  = report.summary || "";
+  const issues   = (report.issues || []).slice(0, 3);
   const msgCount = report.messageCount || 0;
 
   const issueRows = issues.map((iss) => `
-    <div style="padding:10px 12px;background:#fff7ed;border-left:3px solid #f97316;border-radius:0 8px 8px 0;margin-bottom:6px">
-      <div style="font-size:12px;font-weight:600;color:#c2410c">${escapeHtml(iss.title || "")}</div>
-      <div style="font-size:11px;color:#78350f;margin-top:2px">${escapeHtml(iss.description || "")}</div>
+    <div class="iss">
+      <div class="iss-t">${escapeHtml(iss.title || "")}</div>
+      <div class="iss-d">${escapeHtml(iss.description || "")}</div>
     </div>`).join("");
 
   return `
-    <div style="margin-bottom:10px">
-      <span style="display:inline-block;background:#eff1ff;color:#4f46e5;font-size:11px;font-weight:600;padding:3px 8px;border-radius:999px">${escapeHtml(String(msgCount))}개 메시지</span>
-    </div>
-    ${summary ? `
-    <div style="font-size:13px;color:#374151;line-height:1.8;padding:14px 16px;background:#f8fafc;border-radius:10px;border-left:3px solid #5865F2;margin-bottom:12px">
-      ${sanitizeReportHtml(summary)}
-    </div>` : ""}
-    ${issueRows ? `
-    <div>
-      <div style="font-size:11px;font-weight:700;color:#64748b;margin-bottom:6px">🚨 주요 이슈</div>
-      ${issueRows}
-    </div>` : ""}`;
+    <div><span class="dc-bdg">${escapeHtml(String(msgCount))}개 메시지</span></div>
+    ${summary ? `<div class="dc-sum">${sanitizeReportHtml(summary)}</div>` : ""}
+    ${issueRows ? `<div><div class="dc-ish">🚨 주요 이슈</div>${issueRows}</div>` : ""}`;
 }
 
-/** Instagram 섹션 내용 HTML */
-function buildInstagramSection(targetName, report) {
-  const review = report.aiPerformanceReview || "";
-  const posts  = (report.posts || []).slice(0, 3);
+/** Instagram 섹션 내용 HTML — 개별 이메일과 동일한 풀 구성, { html, attachments } 반환 */
+function buildInstagramSection(targetName, report, date) {
+  const username = report.username || (targetName.startsWith("@") ? targetName.slice(1) : targetName);
+  const attachments = [];
 
-  const postRows = posts.map((p) => {
-    const views    = p.videoViewCount   != null ? `${(p.videoViewCount || 0).toLocaleString()}뷰` : null;
-    const likes    = p.likeCount        != null ? `❤️ ${(p.likeCount || 0).toLocaleString()}` : null;
-    const comments = p.commentsCount    != null ? `💬 ${(p.commentsCount || 0).toLocaleString()}` : null;
-    const stats    = [views, likes, comments].filter(Boolean).join(" &nbsp; ");
-    const caption  = normalizeCaptionText(p.caption || "").slice(0, 60) + (p.caption?.length > 60 ? "…" : "");
-    return `
-    <div style="padding:8px 12px;border:1px solid #fce7f3;border-radius:8px;margin-bottom:6px">
-      <div style="font-size:12px;color:#374151">${escapeHtml(caption)}</div>
-      ${stats ? `<div style="font-size:11px;color:#9d174d;margin-top:3px">${stats}</div>` : ""}
-    </div>`;
+  // 트렌드 차트
+  const trendChartImage = buildInstagramTrendChartImage({ report, username, date });
+  if (trendChartImage.attachment) attachments.push(trendChartImage.attachment);
+  const trendSection = trendChartImage.cid ? `
+    <div class="ig-trend">
+      <div class="ig-h">팔로워 · 조회 트렌드 (최근 14일)</div>
+      <div class="ig-tc"><img src="cid:${trendChartImage.cid}" alt="팔로워 및 오가닉 조회 트렌드 차트" /></div>
+    </div>` : "";
+
+  // 포스트 테이블
+  const MEDIA_LABELS = { IMAGE: "사진", VIDEO: "영상", CAROUSEL_ALBUM: "슬라이드" };
+  const DOW_KO = ["일","월","화","수","목","금","토"];
+  const postRows = (report.posts || []).map((p) => {
+    let dateStr = "—";
+    if (p.timestamp) {
+      const dtKST = new Date(new Date(p.timestamp).getTime() + 9 * 60 * 60 * 1000);
+      dateStr = `${dtKST.getUTCMonth()+1}/${dtKST.getUTCDate()}(${DOW_KO[dtKST.getUTCDay()]})`;
+    }
+    const rawCap = p.caption ? normalizeCaptionText(p.caption) : null;
+    const capText = rawCap ? escapeHtml(rawCap.length > 20 ? rawCap.slice(0, 20) + "…" : rawCap) : "—";
+    const captionCell = (p.permalink && p.permalink.startsWith("https://"))
+      ? `<a href="${p.permalink}" target="_blank" rel="noopener noreferrer" class="ig-a">${capText}</a>`
+      : capText;
+    const mediaLabel = MEDIA_LABELS[p.mediaType] || p.mediaType || "—";
+    const er = p.engagementRate || 0;
+    const erColor = er >= 5 ? "#059669" : er >= 2 ? "#d97706" : "#94a3b8";
+    const erText  = er > 0 ? `${er.toFixed(1)}%` : "—";
+    const views    = p.views         != null ? p.views.toLocaleString()         : "—";
+    const likes    = p.likes         != null ? p.likes.toLocaleString()         : "—";
+    const comments = p.comments      != null ? p.comments.toLocaleString()      : "—";
+    const shares   = p.shares        != null ? p.shares.toLocaleString()        : "—";
+    const saves    = p.saves         != null ? p.saves.toLocaleString()         : "—";
+    const pv       = p.profileVisits != null ? p.profileVisits.toLocaleString() : "—";
+    return `<tr>
+      <td class="ig-tdd">${dateStr}</td>
+      <td class="ig-tdc">${captionCell}</td>
+      <td class="ig-tdt">${mediaLabel}</td>
+      <td class="ig-tdr">${views}</td>
+      <td class="ig-tdr">${likes}</td>
+      <td class="ig-tdr">${comments}</td>
+      <td class="ig-tdr">${shares}</td>
+      <td class="ig-tdr">${saves}</td>
+      <td class="ig-tdr">${pv}</td>
+      <td class="ig-tdr" style="font-weight:600;color:${erColor}">${erText}</td>
+    </tr>`;
   }).join("");
+  const postTable = (report.posts || []).length > 0 ? `
+    <div class="ig-ptw">
+      <div class="ig-h">최근 1주 포스트 (AI 코멘트는 대시보드에서 확인)</div>
+      <div class="ig-scroll">
+        <table class="ig-tbl">
+          <thead><tr class="ig-thead-tr">
+            <th class="ig-th">날짜</th>
+            <th class="ig-th" style="width:96px">본문</th>
+            <th class="ig-th">유형</th>
+            <th class="ig-th-r">조회</th>
+            <th class="ig-th-r">좋아요</th>
+            <th class="ig-th-r">댓글</th>
+            <th class="ig-th-r">공유</th>
+            <th class="ig-th-r">저장</th>
+            <th class="ig-th-r">프로필방문</th>
+            <th class="ig-th-r">참여율</th>
+          </tr></thead>
+          <tbody>${postRows}</tbody>
+        </table>
+      </div>
+    </div>` : "";
 
-  return `
-    ${review ? `
-    <div style="font-size:13px;color:#374151;line-height:1.8;padding:14px 16px;background:#fdf2f8;border-radius:10px;border-left:3px solid #E1306C;margin-bottom:12px">
-      ${escapeHtml(review)}
-    </div>` : ""}
-    ${postRows ? `
-    <div>
-      <div style="font-size:11px;font-weight:700;color:#64748b;margin-bottom:6px">📋 최근 게시물</div>
-      ${postRows}
-    </div>` : ""}`;
+  // AI 성과 리뷰
+  const perfBlock = report.aiPerformanceReview
+    ? (() => {
+        const lines = report.aiPerformanceReview.split("\n").filter(l => l.trim());
+        const linesHtml = lines.map((line) => formatReviewLine(line)).join("");
+        return `<div class="ig-rev">
+          <div class="ig-rev-in">
+            <span class="ig-rev-t">AI 성과 리뷰 — 최근 1주 포스트 종합</span>
+            <div class="ig-rev-b">${linesHtml}</div>
+          </div>
+        </div>`;
+      })()
+    : "";
+
+  return { html: `${trendSection}${postTable}${perfBlock}`, attachments };
 }
 
 /** Facebook / Naver Lounge 섹션 내용 HTML (구조 동일) */
@@ -1342,22 +1393,20 @@ function buildCrawlerSection(targetName, report, accentColor) {
   const postCount = report.postCount || 0;
 
   const issueRows = issues.map((iss) => `
-    <div style="padding:10px 12px;background:#fff7ed;border-left:3px solid #f97316;border-radius:0 8px 8px 0;margin-bottom:6px">
-      <div style="font-size:12px;font-weight:600;color:#c2410c">${escapeHtml(iss.title || "")}</div>
-      <div style="font-size:11px;color:#78350f;margin-top:2px">${escapeHtml(iss.description || "")}</div>
+    <div class="cr-iss">
+      <div class="cr-iss-t">${escapeHtml(iss.title || "")}</div>
+      <div class="cr-iss-d">${escapeHtml(iss.description || "")}</div>
     </div>`).join("");
 
   return `
-    <div style="margin-bottom:10px">
-      <span style="display:inline-block;background:#f0fdf4;color:#166534;font-size:11px;font-weight:600;padding:3px 8px;border-radius:999px">${escapeHtml(String(postCount))}개 게시글</span>
-    </div>
+    <div><span class="cr-bdg">${escapeHtml(String(postCount))}개 게시글</span></div>
     ${summary ? `
-    <div style="font-size:13px;color:#374151;line-height:1.8;padding:14px 16px;background:#f8fafc;border-radius:10px;border-left:3px solid ${accentColor};margin-bottom:12px">
+    <div class="cr-sum" style="border-left:3px solid ${accentColor}">
       ${sanitizeReportHtml(summary)}
     </div>` : ""}
     ${issueRows ? `
     <div>
-      <div style="font-size:11px;font-weight:700;color:#64748b;margin-bottom:6px">🚨 주요 이슈</div>
+      <div class="cr-ish">🚨 주요 이슈</div>
       ${issueRows}
     </div>` : ""}`;
 }
@@ -1368,6 +1417,7 @@ function buildCrawlerSection(targetName, report, accentColor) {
  */
 function buildUnifiedEmailHTML({ presetName, date, sections }) {
   const displayDate = formatKSTDate(date);
+  const allAttachments = [];
 
   const sectionHtmls = sections.map(({ platform, targetName, report }, idx) => {
     const meta = PLATFORM_META[platform] || { label: platform, color: "#6366f1", icon: "📋" };
@@ -1376,69 +1426,103 @@ function buildUnifiedEmailHTML({ presetName, date, sections }) {
     if (platform === "discord") {
       bodyHtml = buildDiscordSection(targetName, report);
     } else if (platform === "instagram") {
-      bodyHtml = buildInstagramSection(targetName, report);
+      const result = buildInstagramSection(targetName, report, date);
+      bodyHtml = result.html;
+      allAttachments.push(...result.attachments);
     } else if (platform === "facebook") {
       bodyHtml = buildCrawlerSection(targetName, report, meta.color);
     } else if (platform === "naver_lounge") {
       bodyHtml = buildCrawlerSection(targetName, report, meta.color);
     }
 
-    const divider = idx > 0
-      ? `<div style="border-top:2px dashed #e2e8f0;margin:0 32px 28px"></div>`
-      : "";
+    const divider = idx > 0 ? `<div class="sec-div"></div>` : "";
 
     return `
       ${divider}
-      <div style="padding:0 32px 28px">
-        <div style="display:flex;align-items:center;gap:8px;margin-bottom:14px">
+      <div class="sec">
+        <div class="sec-hd">
           <span style="display:inline-block;width:4px;height:20px;background:${meta.color};border-radius:2px"></span>
           <span style="font-size:11px;font-weight:700;color:${meta.color};letter-spacing:.05em;text-transform:uppercase">${meta.icon} ${meta.label}</span>
-          <span style="font-size:13px;font-weight:600;color:#1e293b">${escapeHtml(targetName)}</span>
+          <span class="sec-nm">${escapeHtml(targetName)}</span>
         </div>
         ${bodyHtml}
       </div>`;
   }).join("");
 
-  return `<!DOCTYPE html>
+  const tocChips = sections.map(({ platform, targetName }) => {
+    const meta = PLATFORM_META[platform] || { label: platform, color: "#6366f1", icon: "📋" };
+    return `<span style="display:inline-block;padding:3px 10px;border-radius:999px;background:${meta.color}1a;color:${meta.color};font-size:11px;font-weight:600">${meta.icon} ${escapeHtml(targetName)}</span>`;
+  }).join("");
+
+  const html = `<!DOCTYPE html>
 <html lang="ko">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>${escapeHtml(presetName)} 통합 리포트 (${date})</title>
+  <style>
+    body{margin:0;padding:0;background:#f8fafc;font-family:-apple-system,'Malgun Gothic','맑은 고딕',sans-serif}
+    .wrap{max-width:640px;margin:32px auto;background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.1)}
+    .hero{background:linear-gradient(135deg,#f58529 0%,#dd2a7b 50%,#8134af 100%);padding:28px 32px}
+    .hero-sub{color:rgba(255,255,255,.75);font-size:11px;letter-spacing:.08em;margin-bottom:6px}
+    .hero-title{color:#fff;font-size:22px;font-weight:700}
+    .hero-date{color:rgba(255,255,255,.8);font-size:14px;margin-top:4px}
+    .toc{padding:18px 32px 0;border-bottom:1px solid #f1f5f9}
+    .toc-chips{display:flex;flex-wrap:wrap;gap:6px;padding-bottom:18px}
+    .secs{padding-top:28px}
+    .sec-div{border-top:2px dashed #e2e8f0;margin:0 32px 28px}
+    .sec{padding:0 32px 28px}
+    .sec-hd{display:flex;align-items:center;gap:8px;margin-bottom:14px}
+    .sec-nm{font-size:13px;font-weight:600;color:#1e293b}
+    .ft{background:#f8fafc;padding:16px 32px;border-top:1px solid #e2e8f0;font-size:12px;color:#94a3b8;text-align:center}
+    .dc-bdg{display:inline-block;background:#5865f21a;color:#5865f2;font-size:11px;font-weight:700;padding:3px 10px;border-radius:999px;margin-bottom:10px}
+    .dc-sum{font-size:13px;color:#374151;line-height:1.7;background:#f8fafc;border-left:3px solid #5865f2;border-radius:0 8px 8px 0;padding:12px 14px;margin-bottom:12px}
+    .dc-ish{font-size:11px;font-weight:700;color:#64748b;margin-bottom:8px}
+    .iss{padding:10px 12px;background:#ede9fe;border-left:3px solid #6366f1;border-radius:0 8px 8px 0;margin-bottom:6px}
+    .iss-t{font-size:13px;font-weight:600;color:#4338ca}
+    .iss-d{font-size:12px;color:#4c1d95;margin-top:2px}
+    .ig-h{font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#6366f1;margin-bottom:10px}
+    .ig-trend{margin-bottom:24px}
+    .ig-tc{border:1px solid rgba(148,163,184,.22);border-radius:14px;overflow:hidden;background:#fcfdff}
+    .ig-tc img{display:block;width:100%;height:auto;border:0;outline:none;text-decoration:none}
+    .ig-a{color:#6366f1;text-decoration:none}
+    .ig-ptw{margin-bottom:24px}
+    .ig-scroll{overflow-x:auto}
+    .ig-tbl{width:100%;border-collapse:collapse;font-size:11px;min-width:680px}
+    .ig-thead-tr{background:#f8fafc}
+    .ig-th{padding:6px;text-align:left;color:#475569;font-weight:600}
+    .ig-th-r{padding:6px;text-align:right;color:#475569;font-weight:600}
+    .ig-tdd{padding:6px;border-bottom:1px solid #f1f5f9;font-size:11px;color:#64748b;white-space:nowrap}
+    .ig-tdc{padding:6px;border-bottom:1px solid #f1f5f9;font-size:11px;color:#334155;width:96px;max-width:96px;line-height:1.35;word-break:break-word}
+    .ig-tdt{padding:6px;border-bottom:1px solid #f1f5f9;font-size:11px;color:#64748b}
+    .ig-tdr{padding:6px;border-bottom:1px solid #f1f5f9;font-size:11px;text-align:right}
+    .ig-rev{margin-bottom:24px}
+    .ig-rev-in{background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:16px}
+    .ig-rev-t{font-size:11px;font-weight:700;color:#475569;display:block;margin-bottom:8px}
+    .ig-rev-b{font-size:13px;color:#374151;line-height:1.6}
+    .cr-bdg{display:inline-block;background:#f0fdf4;color:#166534;font-size:11px;font-weight:600;padding:3px 8px;border-radius:999px;margin-bottom:10px}
+    .cr-sum{font-size:13px;color:#374151;line-height:1.8;padding:14px 16px;background:#f8fafc;border-radius:10px;margin-bottom:12px}
+    .cr-ish{font-size:11px;font-weight:700;color:#64748b;margin-bottom:6px}
+    .cr-iss{padding:10px 12px;background:#fff7ed;border-left:3px solid #f97316;border-radius:0 8px 8px 0;margin-bottom:6px}
+    .cr-iss-t{font-size:12px;font-weight:600;color:#c2410c}
+    .cr-iss-d{font-size:11px;color:#78350f;margin-top:2px}
+  </style>
 </head>
-<body style="margin:0;padding:0;background:#f8fafc;font-family:-apple-system,'Malgun Gothic','맑은 고딕',sans-serif">
+<body>
   <div style="display:none;max-height:0;overflow:hidden;mso-hide:all">${escapeHtml(presetName)} 통합 리포트 ${displayDate}</div>
-  <div style="max-width:640px;margin:32px auto;background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.1)">
-
-    <!-- 헤더 -->
-    <div style="background:linear-gradient(135deg,#6366f1 0%,#4f46e5 100%);padding:28px 32px">
-      <div style="color:#c7d2fe;font-size:11px;letter-spacing:.08em;margin-bottom:6px">AI SOCIAL LISTENING · INTEGRATED REPORT</div>
-      <div style="color:#fff;font-size:22px;font-weight:700">${escapeHtml(presetName)}</div>
-      <div style="color:#c7d2fe;font-size:14px;margin-top:4px">통합 리포트 &nbsp;·&nbsp; ${displayDate}</div>
+  <div class="wrap">
+    <div class="hero">
+      <div class="hero-sub">AI SOCIAL LISTENING · INTEGRATED REPORT</div>
+      <div class="hero-title">${escapeHtml(presetName)}</div>
+      <div class="hero-date">${displayDate}</div>
     </div>
-
-    <!-- 섹션 목차 -->
-    <div style="padding:18px 32px 0;border-bottom:1px solid #f1f5f9">
-      <div style="display:flex;flex-wrap:wrap;gap:6px;padding-bottom:18px">
-        ${sections.map(({ platform, targetName }) => {
-          const meta = PLATFORM_META[platform] || { label: platform, color: "#6366f1", icon: "📋" };
-          return `<span style="display:inline-block;padding:3px 10px;border-radius:999px;background:${meta.color}1a;color:${meta.color};font-size:11px;font-weight:600">${meta.icon} ${escapeHtml(targetName)}</span>`;
-        }).join("")}
-      </div>
-    </div>
-
-    <!-- 본문 섹션들 -->
-    <div style="padding-top:28px">
-      ${sectionHtmls}
-    </div>
-
-    <!-- 푸터 -->
-    <div style="background:#f8fafc;padding:16px 32px;border-top:1px solid #e2e8f0;font-size:12px;color:#94a3b8;text-align:center">
-      Social Listener by 사업전략팀 &nbsp;·&nbsp; 이 메일은 자동 발송됩니다
-    </div>
+    <div class="toc"><div class="toc-chips">${tocChips}</div></div>
+    <div class="secs">${sectionHtmls}</div>
+    <div class="ft">Social Listener by 사업전략팀 &nbsp;·&nbsp; 이 메일은 자동 발송됩니다</div>
   </div>
 </body>
 </html>`;
+  return { html, attachments: allAttachments };
 }
 
 /**
@@ -1446,13 +1530,14 @@ function buildUnifiedEmailHTML({ presetName, date, sections }) {
  * @param {{ recipients, presetName, date, sections }} opts
  */
 async function sendUnifiedEmailReport({ recipients, presetName, date, sections }) {
-  const html = buildUnifiedEmailHTML({ presetName, date, sections });
+  const { html, attachments } = buildUnifiedEmailHTML({ presetName, date, sections });
 
   const mailOptions = {
     from:    `Social Listener <${process.env.GMAIL_USER}>`,
     to:      recipients.join(", "),
     subject: `[Social Listener] ${presetName} - 통합 리포트 (${date})`,
     html,
+    ...(attachments.length > 0 ? { attachments } : {}),
   };
 
   await getTransporter().sendMail(mailOptions);

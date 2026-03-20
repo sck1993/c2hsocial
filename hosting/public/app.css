@@ -3435,6 +3435,25 @@
   background: var(--surface-3);
 }
 
+.preset-preview-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-2);
+  margin-bottom: 10px;
+}
+
+.preset-preview-badge {
+  font-size: 11px;
+  color: #6366f1;
+  background: #eef2ff;
+  border-radius: 4px;
+  padding: 2px 7px;
+  font-weight: 500;
+}
+
 /* 이메일 트리거 버튼 (작은 아이콘 버튼) */
 .preset-trigger-btn {
   display: inline-flex;

@@ -28,9 +28,10 @@ async function fetchReportForItem(db, workspaceId, item, date) {
         .collection("reports").doc(date)
         .collection("guilds").doc(targetId);
     } else if (platform === "instagram") {
+      const docId = targetId.startsWith("instagram_") ? targetId : `instagram_${targetId}`;
       ref = db.collection("workspaces").doc(workspaceId)
         .collection("instagram_reports").doc(date)
-        .collection("accounts").doc(targetId);
+        .collection("accounts").doc(docId);
     } else if (platform === "facebook") {
       ref = db.collection("workspaces").doc(workspaceId)
         .collection("facebook_reports").doc(date)
