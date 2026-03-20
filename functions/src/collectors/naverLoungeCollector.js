@@ -1,45 +1,302 @@
+"use strict";
+
 /**
  * naverLoungeCollector.js
- * Playwright + @sparticuz/chromium 기반 네이버 라운지 크롤러
+ * HTTP 요청 기반 네이버 라운지 수집기
  *
  * 주요 함수:
- *   launchBrowser()                           — 헤드리스 Chromium 실행
- *   loadSessionFromFirestore(db, wsId)        — Firestore에서 쿠키 로드
- *   saveSessionToFirestore(db, wsId, data)    — Firestore에 쿠키 저장
+ *   loadSessionFromFirestore(db, wsId)        — Firestore에서 요청 세션 로드
+ *   saveSessionToFirestore(db, wsId, data)    — Firestore에 요청 세션 저장
  *   markSessionInvalid(db, wsId)              — 세션 만료 마킹
- *   applyCookiesToContext(context, cookies)   — BrowserContext에 쿠키 주입
- *   verifySessionAlive(page)                  — 로그인 유효성 확인
- *   collectLoungePosts(page, loungeUrl, date) — 해당일 게시글 목록 수집
- *   collectPostContent(page, postUrl)         — 게시글 상세 본문 수집
- *   collectPostComments(page, postUrl)        — 게시글 전체 댓글 수집
- *
- * NOTE: game.naver.com은 React/Next.js 기반이므로
- *       DOM 선택자는 실제 라이브 페이지에서 검증 후 조정 필요.
+ *   collectLoungePosts(opts)                  — feed API로 해당일 게시글 목록 수집
+ *   collectPostComments(opts)                 — 댓글 API로 게시글 댓글 수집
  */
 
-const chromium = require("@sparticuz/chromium");
-const { chromium: playwrightChromium } = require("playwright-core");
+const axios = require("axios");
 const admin = require("firebase-admin");
 
-// ── 상수 ─────────────────────────────────────────────────────────
-const NETWORKIDLE_TIMEOUT = 30000;   // networkidle 최대 대기 ms
-const PAGE_WAIT_MS = 2000;           // 페이지 로드 후 추가 대기 ms
-const COMMENT_BTN_DELAY_MS = 1500;   // 댓글 더보기 클릭 후 대기 ms
-const COMMENT_EXPAND_MAX = 20;       // 댓글 더보기 클릭 최대 횟수
-const POST_MAX = 50;                 // 최대 수집 게시글 수
+const FEED_PAGE_LIMIT = 25;
+const FEED_FETCH_MAX_PAGES = 12;
+const COMMENT_PAGE_LIMIT = 30;
+const COMMENT_FETCH_MAX_PAGES = 20;
+const POST_MAX = 50;
 
-// ── 브라우저 실행 ──────────────────────────────────────────────────
-async function launchBrowser() {
-  const executablePath = await chromium.executablePath();
-  const browser = await playwrightChromium.launch({
-    args: chromium.args,
-    executablePath,
-    headless: true,
-  });
-  return browser;
+function parseCookieHeaderToCookies(cookieHeader) {
+  if (!cookieHeader || typeof cookieHeader !== "string") return [];
+
+  return cookieHeader
+    .split(";")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((part) => {
+      const index = part.indexOf("=");
+      if (index <= 0) return null;
+      const name = part.slice(0, index).trim();
+      const value = part.slice(index + 1).trim();
+      if (!name || !value) return null;
+      return {
+        name,
+        value,
+        domain: ".naver.com",
+        path: "/",
+        secure: true,
+        httpOnly: false,
+      };
+    })
+    .filter(Boolean);
 }
 
-// ── 세션 로드 ─────────────────────────────────────────────────────
+function decodeHtmlEntities(value) {
+  return String(value || "")
+    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => {
+      try {
+        return String.fromCodePoint(parseInt(hex, 16));
+      } catch {
+        return _;
+      }
+    })
+    .replace(/&#(\d+);/g, (_, num) => {
+      try {
+        return String.fromCodePoint(parseInt(num, 10));
+      } catch {
+        return _;
+      }
+    })
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, "\"")
+    .replace(/&#39;/g, "'");
+}
+
+function compactWhitespace(value) {
+  return String(value || "")
+    .replace(/\u00a0/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function walkSmartEditor(node, texts) {
+  if (!node) return;
+
+  if (Array.isArray(node)) {
+    for (const item of node) walkSmartEditor(item, texts);
+    return;
+  }
+
+  if (typeof node !== "object") return;
+
+  if (node["@ctype"] === "textNode" && typeof node.value === "string") {
+    const value = compactWhitespace(decodeHtmlEntities(node.value));
+    if (value) texts.push(value);
+  }
+
+  for (const value of Object.values(node)) {
+    walkSmartEditor(value, texts);
+  }
+}
+
+function extractTextFromContents(contents) {
+  if (!contents) return "";
+
+  let parsed;
+  try {
+    parsed = typeof contents === "string" ? JSON.parse(contents) : contents;
+  } catch {
+    return compactWhitespace(decodeHtmlEntities(contents));
+  }
+
+  const texts = [];
+  walkSmartEditor(parsed, texts);
+  return compactWhitespace(texts.join("\n")).slice(0, 3000);
+}
+
+function extractLoungeId(loungeUrl = "", fallback = "") {
+  const match = String(loungeUrl).match(/\/lounge\/([^/?#]+)/);
+  return match ? match[1] : fallback;
+}
+
+function extractBoardId(loungeUrl = "", fallback = 0) {
+  try {
+    const parsed = new URL(String(loungeUrl));
+    const raw = parsed.searchParams.get("boardId");
+    if (raw != null && raw !== "") return Number(raw);
+  } catch (_) {}
+  return Number(fallback || 0);
+}
+
+function normalizeReferer(referer = "", loungeId = "") {
+  return String(referer || "").trim() || `https://game.naver.com/lounge/${loungeId}/board`;
+}
+
+function getDateParts(createdDate) {
+  const value = String(createdDate || "");
+  if (!/^\d{8,14}$/.test(value)) {
+    return { dateKey: "", isoDateTime: "" };
+  }
+
+  const year = value.slice(0, 4);
+  const month = value.slice(4, 6);
+  const day = value.slice(6, 8);
+  const hour = value.slice(8, 10) || "00";
+  const minute = value.slice(10, 12) || "00";
+  const second = value.slice(12, 14) || "00";
+
+  return {
+    dateKey: `${year}-${month}-${day}`,
+    isoDateTime: `${year}-${month}-${day}T${hour}:${minute}:${second}+09:00`,
+  };
+}
+
+function createAuthError(message, statusCode = 403) {
+  const error = new Error(message);
+  error.code = "NAVER_AUTH";
+  error.statusCode = statusCode;
+  return error;
+}
+
+function isAuthError(error) {
+  return error?.code === "NAVER_AUTH" || [401, 403].includes(error?.statusCode);
+}
+
+function buildRequestHeaders(session, referer) {
+  return {
+    Accept: "application/json, text/plain, */*",
+    "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Cache-Control": "no-cache",
+    Cookie: session.cookieHeader,
+    deviceid: session.deviceId,
+    "front-client-platform-type": "PC",
+    "front-client-product-type": "web",
+    Origin: "https://game.naver.com",
+    Pragma: "no-cache",
+    Referer: referer,
+    "User-Agent": session.userAgent,
+  };
+}
+
+async function fetchFeedPage({ session, loungeId, boardId = 0, offset = 0, referer }) {
+  const url = `https://comm-api.game.naver.com/nng_main/v1/community/lounge/${encodeURIComponent(loungeId)}/feed`;
+  const response = await axios.get(url, {
+    params: {
+      boardId,
+      buffFilteringYN: "N",
+      limit: FEED_PAGE_LIMIT,
+      offset,
+      order: "NEW",
+    },
+    headers: buildRequestHeaders(session, referer),
+    timeout: 30000,
+    validateStatus: () => true,
+  });
+
+  if ([401, 403].includes(response.status)) {
+    throw createAuthError(`[naverLoungeCollector] 인증 실패 (${response.status})`, response.status);
+  }
+
+  if (response.status >= 400) {
+    const detail = typeof response.data === "object"
+      ? JSON.stringify(response.data).slice(0, 500)
+      : "";
+    throw new Error(`[naverLoungeCollector] feed 요청 실패 (${response.status}) ${detail}`.trim());
+  }
+
+  const data = response.data || {};
+  if (data.code !== 200 || !data.content) {
+    if ([401, 403].includes(Number(data.code))) {
+      throw createAuthError(
+        `[naverLoungeCollector] 세션 만료 또는 권한 없음 (code=${data.code})`,
+        Number(data.code)
+      );
+    }
+    throw new Error(
+      `[naverLoungeCollector] feed 응답 비정상 (code=${data.code}, message=${data.message || "unknown"})`
+    );
+  }
+
+  return data.content;
+}
+
+async function fetchCommentPage({ session, loungeId, feedId, offset = 0, referer }) {
+  const url = `https://apis.naver.com/nng_main/nng_comment_api/v1/type/FEED/id/${encodeURIComponent(feedId)}/comments`;
+  const response = await axios.get(url, {
+    params: {
+      originalLoungeId: loungeId,
+      limit: COMMENT_PAGE_LIMIT,
+      offset,
+      orderType: "ASC",
+      pagingType: "PAGE",
+    },
+    headers: buildRequestHeaders(session, referer),
+    timeout: 30000,
+    validateStatus: () => true,
+  });
+
+  if ([401, 403].includes(response.status)) {
+    throw createAuthError(`[naverLoungeCollector] 댓글 인증 실패 (${response.status})`, response.status);
+  }
+
+  if (response.status >= 400) {
+    const detail = typeof response.data === "object"
+      ? JSON.stringify(response.data).slice(0, 500)
+      : "";
+    throw new Error(`[naverLoungeCollector] 댓글 요청 실패 (${response.status}) ${detail}`.trim());
+  }
+
+  const data = response.data || {};
+  if (data.code !== 200 || !data.content?.comments) {
+    if ([401, 403].includes(Number(data.code))) {
+      throw createAuthError(
+        `[naverLoungeCollector] 댓글 세션 만료 또는 권한 없음 (code=${data.code})`,
+        Number(data.code)
+      );
+    }
+    throw new Error(
+      `[naverLoungeCollector] 댓글 응답 비정상 (code=${data.code}, message=${data.message || "unknown"})`
+    );
+  }
+
+  return data.content.comments;
+}
+
+function mapFeedToPost(item, targetDate) {
+  const feed = item?.feed || {};
+  const user = item?.user || {};
+  const comment = item?.comment || {};
+  const board = item?.board || {};
+  const buff = item?.buff || {};
+  const { dateKey, isoDateTime } = getDateParts(feed.createdDate);
+
+  if (!dateKey) return { post: null, dateKey: "" };
+
+  const post = {
+    feedId: feed.feedId || item?.feedId || null,
+    postUrl:
+      item?.feedLink?.pc ||
+      `https://game.naver.com/lounge/${feed.loungeId || ""}/board/detail/${feed.feedId || ""}`,
+    title: compactWhitespace(decodeHtmlEntities(feed.title || "")),
+    authorName: compactWhitespace(decodeHtmlEntities(user.nickname || "")),
+    text: extractTextFromContents(feed.contents) ||
+      compactWhitespace(decodeHtmlEntities(feed.title || "")),
+    publishedAt: dateKey,
+    publishedAtDateTime: isoDateTime,
+    commentCount: Number(comment.totalCount ?? comment.commentCount ?? 0),
+    comments: [],
+    reactions: Number(buff.buffCount ?? feed.buff ?? 0),
+    readCount: Number(item?.readCount || 0),
+    boardId: board.boardId ?? null,
+    boardName: board.boardName || "",
+    isPinned: Boolean(feed.pinned),
+    images: [],
+  };
+
+  if (dateKey !== targetDate) {
+    return { post: null, dateKey };
+  }
+
+  return { post, dateKey };
+}
+
 async function loadSessionFromFirestore(db, workspaceId) {
   const ref = db
     .collection("workspaces")
@@ -48,20 +305,35 @@ async function loadSessionFromFirestore(db, workspaceId) {
     .doc("main");
   const snap = await ref.get();
   if (!snap.exists) return null;
-  return snap.data(); // { cookies[], userAgent, isValid, savedAt, lastValidatedAt }
+  return snap.data();
 }
 
-// ── 세션 저장 ─────────────────────────────────────────────────────
-async function saveSessionToFirestore(db, workspaceId, { cookies, userAgent = "" }) {
+async function saveSessionToFirestore(
+  db,
+  workspaceId,
+  { cookieHeader = "", deviceId = "", userAgent = "", referer = "", cookies = null }
+) {
   const ref = db
     .collection("workspaces")
     .doc(workspaceId)
     .collection("naver_session")
     .doc("main");
+
+  const normalizedCookieHeader = String(cookieHeader || "").trim();
+  const normalizedDeviceId = String(deviceId || "").trim();
+  const normalizedUserAgent = String(userAgent || "").trim();
+  const normalizedReferer = String(referer || "").trim();
+  const normalizedCookies = Array.isArray(cookies)
+    ? cookies
+    : parseCookieHeaderToCookies(normalizedCookieHeader);
+
   await ref.set(
     {
-      cookies,
-      userAgent,
+      cookieHeader: normalizedCookieHeader,
+      deviceId: normalizedDeviceId,
+      userAgent: normalizedUserAgent,
+      referer: normalizedReferer,
+      cookies: normalizedCookies,
       isValid: true,
       savedAt: admin.firestore.FieldValue.serverTimestamp(),
       lastValidatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -70,7 +342,6 @@ async function saveSessionToFirestore(db, workspaceId, { cookies, userAgent = ""
   );
 }
 
-// ── 세션 만료 마킹 ────────────────────────────────────────────────
 async function markSessionInvalid(db, workspaceId) {
   const ref = db
     .collection("workspaces")
@@ -80,256 +351,64 @@ async function markSessionInvalid(db, workspaceId) {
   await ref.set({ isValid: false }, { merge: true });
 }
 
-// ── 쿠키 주입 ─────────────────────────────────────────────────────
-async function applyCookiesToContext(context, cookies) {
-  if (!cookies || cookies.length === 0) return;
-
-  // sameSite 정규화 맵 (브라우저 익스텐션 export → Playwright 기대값)
-  const sameSiteMap = {
-    strict: "Strict",
-    lax: "Lax",
-    none: "None",
-    no_restriction: "None",
-    unspecified: undefined,
-  };
-
-  const sanitized = cookies
-    .filter((c) => {
-      // .naver.com 계열 쿠키만 주입
-      const domain = String(c.domain || "");
-      return domain.includes("naver.com");
-    })
-    .map((c) => {
-      const cookie = {
-        name: c.name,
-        value: c.value,
-        domain: c.domain,
-        path: c.path || "/",
-        secure: c.secure ?? true,
-        httpOnly: c.httpOnly ?? false,
-      };
-
-      // 만료일: expirationDate(브라우저 export) 또는 expires 둘 다 지원
-      const expiry = c.expires ?? c.expirationDate;
-      if (expiry && !c.session) {
-        cookie.expires = Math.floor(expiry);
-      }
-
-      // sameSite 정규화
-      const rawSameSite = (c.sameSite ?? "").toLowerCase();
-      const normalizedSameSite = sameSiteMap[rawSameSite];
-      if (normalizedSameSite) {
-        cookie.sameSite = normalizedSameSite;
-      }
-
-      return cookie;
-    })
-    .filter((c) => c.name && c.value);
-
-  console.log(`[naverLoungeCollector] 쿠키 ${sanitized.length}개 주입`);
-  await context.addCookies(sanitized);
-}
-
-// ── 세션 유효성 확인 ─────────────────────────────────────────────
-/**
- * www.naver.com 접속 후 로그인 상태 감지
- * NOTE: 실제 naver.com DOM 구조에서 선택자 검증 필요
- */
-async function verifySessionAlive(page) {
-  try {
-    await page.goto("https://www.naver.com/", {
-      waitUntil: "domcontentloaded",
-      timeout: NETWORKIDLE_TIMEOUT,
-    });
-    // 로그인 링크 존재 = 미로그인 상태
-    const loginLink = await page.$(
-      'a[href*="nid.naver.com/nidlogin"], a[href*="login.naver.com"]'
-    );
-    return !loginLink;
-  } catch (err) {
-    console.error("[naverLoungeCollector] verifySessionAlive 오류:", err.message);
-    return false;
+async function collectLoungePosts({
+  session,
+  loungeId,
+  loungeUrl = "",
+  targetDate,
+  boardId = 0,
+}) {
+  if (!session?.cookieHeader || !session?.deviceId || !session?.userAgent) {
+    throw createAuthError("[naverLoungeCollector] 요청 세션 정보가 부족합니다.", 401);
   }
-}
 
-// ── 라운지 게시글 목록 수집 ──────────────────────────────────────
-/**
- * 네이버 라운지 게시판 목록 크롤링
- *
- * URL 구조: https://game.naver.com/lounge/{loungeId}/board
- * 게시글 URL 구조: https://game.naver.com/lounge/{loungeId}/board/view/{articleId}
- *
- * NOTE: game.naver.com은 React 기반 동적 렌더링.
- *       아래 선택자는 실제 DOM에서 검증 필요.
- *
- * @param {import('playwright-core').Page} page
- * @param {string} loungeUrl  라운지 보드 URL
- * @param {string} targetDate  'YYYY-MM-DD' (KST 기준)
- * @returns {{ posts: object[], skipped: boolean }}
- */
-async function collectLoungePosts(page, loungeUrl, targetDate) {
+  const resolvedLoungeId = extractLoungeId(loungeUrl, loungeId);
+  if (!resolvedLoungeId) {
+    throw new Error("[naverLoungeCollector] loungeId를 확인할 수 없습니다.");
+  }
+
+  const resolvedBoardId = extractBoardId(loungeUrl, boardId);
+  const referer = normalizeReferer(session.referer, resolvedLoungeId);
+
   console.log(
-    `[naverLoungeCollector] 라운지 이동: ${loungeUrl} | 대상 날짜: ${targetDate}`
+    `[naverLoungeCollector] feed 수집 시작: loungeId=${resolvedLoungeId}, boardId=${resolvedBoardId}, targetDate=${targetDate}`
   );
 
-  await page.goto(loungeUrl, { waitUntil: "networkidle", timeout: NETWORKIDLE_TIMEOUT });
-  await new Promise((r) => setTimeout(r, PAGE_WAIT_MS));
-
-  const postLinks = await page.evaluate((td) => {
-    const results = [];
-    const KST_OFFSET = 9 * 60 * 60 * 1000;
-    const nowMs = Date.now();
-
-    function toKST(ms) {
-      const d = new Date(ms + KST_OFFSET);
-      return [
-        d.getUTCFullYear(),
-        String(d.getUTCMonth() + 1).padStart(2, "0"),
-        String(d.getUTCDate()).padStart(2, "0"),
-      ].join("-");
-    }
-
-    /**
-     * 날짜 텍스트 → 'YYYY-MM-DD' (KST)
-     * 지원 패턴: "방금 전", "X분 전", "X시간 전", "어제", "YYYY.MM.DD", "MM.DD."
-     */
-    function parseDateText(t) {
-      if (!t) return null;
-      const s = t.trim();
-      if (/방금|초 전/.test(s)) return toKST(nowMs);
-      if (/분 전/.test(s)) return toKST(nowMs);
-      if (/시간 전/.test(s)) {
-        const m = s.match(/(\d+)시간/);
-        const hrs = m ? parseInt(m[1], 10) : 1;
-        return toKST(nowMs - hrs * 3600 * 1000);
-      }
-      if (/어제/.test(s)) return toKST(nowMs - 86400 * 1000);
-      // YYYY.MM.DD 또는 YYYY-MM-DD
-      const fullM = s.match(/(\d{4})[.\-](\d{1,2})[.\-](\d{1,2})/);
-      if (fullM) {
-        return `${fullM[1]}-${String(fullM[2]).padStart(2, "0")}-${String(
-          fullM[3]
-        ).padStart(2, "0")}`;
-      }
-      // MM.DD. (당해 연도)
-      const shortM = s.match(/^(\d{1,2})\.(\d{1,2})\.?$/);
-      if (shortM) {
-        const nowKST = new Date(nowMs + KST_OFFSET);
-        return `${nowKST.getUTCFullYear()}-${String(shortM[1]).padStart(
-          2,
-          "0"
-        )}-${String(shortM[2]).padStart(2, "0")}`;
-      }
-      return null;
-    }
-
-    // ── 게시글 아이템 선택자 (우선순위 순으로 시도) ──
-    // NOTE: 아래 선택자는 game.naver.com 실제 DOM에서 검증 필요
-    const itemSelectors = [
-      "ul.board_list li",
-      "ul.article_list li",
-      "li[class*='BoardItem']",
-      "li[class*='board_item']",
-      "li[class*='article']",
-    ];
-
-    let items = [];
-    for (const sel of itemSelectors) {
-      try {
-        items = Array.from(document.querySelectorAll(sel));
-        if (items.length > 0) break;
-      } catch (_) {}
-    }
-
-    // 폴백: /board/view/ 링크를 갖는 부모 요소 탐색
-    if (items.length === 0) {
-      const links = Array.from(
-        document.querySelectorAll('a[href*="/board/view/"]')
-      );
-      const seen = new Set();
-      for (const link of links) {
-        const parent =
-          link.closest("li") ||
-          link.closest("article") ||
-          link.parentElement;
-        if (parent && !seen.has(parent)) {
-          seen.add(parent);
-          items.push(parent);
-        }
-      }
-    }
-
-    for (const item of items) {
-      // ── 게시글 URL ──
-      const linkEl = item.querySelector('a[href*="/board/view/"]');
-      if (!linkEl) continue;
-      const postUrl = linkEl.href;
-
-      // ── 날짜 ──
-      let kstDate = null;
-      // time[datetime] 속성 우선
-      const timeEl = item.querySelector("time[datetime]");
-      if (timeEl) {
-        const dt = timeEl.getAttribute("datetime");
-        const m = dt.match(/(\d{4})-(\d{2})-(\d{2})/);
-        if (m) kstDate = `${m[1]}-${m[2]}-${m[3]}`;
-      }
-      // 없으면 텍스트 파싱
-      if (!kstDate) {
-        const dateEl = item.querySelector(
-          ".date, .time, [class*='date'], [class*='time'], .num"
-        );
-        if (dateEl) kstDate = parseDateText(dateEl.innerText.trim());
-      }
-      if (!kstDate) continue;
-
-      // ── 제목 ──
-      const titleEl = item.querySelector(
-        ".title, .subject, [class*='title'], [class*='subject'], strong"
-      );
-      const title = titleEl
-        ? titleEl.innerText.trim()
-        : linkEl.innerText.trim();
-
-      // ── 작성자 ──
-      const authorEl = item.querySelector(
-        ".nick, .author, .writer, [class*='nick'], [class*='author'], [class*='writer']"
-      );
-      const authorName = authorEl ? authorEl.innerText.trim() : "";
-
-      // ── 댓글 수 ──
-      let commentCount = 0;
-      const commentEl = item.querySelector(
-        "[class*='comment'], [class*='reply']"
-      );
-      if (commentEl) {
-        const m = commentEl.innerText.match(/\d+/);
-        if (m) commentCount = parseInt(m[0], 10);
-      }
-
-      results.push({ postUrl, kstDate, title, authorName, commentCount });
-    }
-
-    return results;
-  }, targetDate);
-
-  // targetDate 해당 게시글만 필터링
-  const seenUrls = new Set();
+  const seenFeedIds = new Set();
   const posts = [];
-  for (const p of postLinks) {
-    if (p.kstDate !== targetDate) continue;
-    if (seenUrls.has(p.postUrl)) continue;
-    seenUrls.add(p.postUrl);
-    posts.push({
-      postUrl: p.postUrl,
-      title: p.title,
-      authorName: p.authorName,
-      text: "", // 본문은 collectPostContent에서 수집
-      publishedAt: targetDate,
-      commentCount: p.commentCount,
-      comments: [],
+
+  for (let pageIndex = 0; pageIndex < FEED_FETCH_MAX_PAGES; pageIndex++) {
+    const offset = pageIndex * FEED_PAGE_LIMIT;
+    const content = await fetchFeedPage({
+      session,
+      loungeId: resolvedLoungeId,
+      boardId: resolvedBoardId,
+      offset,
+      referer,
     });
-    if (posts.length >= POST_MAX) break;
+
+    const feeds = Array.isArray(content.feeds) ? content.feeds : [];
+    if (feeds.length === 0) break;
+
+    let sawUnpinnedOlderThanTarget = false;
+
+    for (const item of feeds) {
+      const feed = item?.feed || {};
+      const { post, dateKey } = mapFeedToPost(item, targetDate);
+
+      if (dateKey && dateKey < targetDate && !feed.pinned) {
+        sawUnpinnedOlderThanTarget = true;
+      }
+
+      if (!post) continue;
+      if (seenFeedIds.has(post.feedId)) continue;
+
+      seenFeedIds.add(post.feedId);
+      posts.push(post);
+      if (posts.length >= POST_MAX) break;
+    }
+
+    if (posts.length >= POST_MAX || sawUnpinnedOlderThanTarget) break;
   }
 
   if (posts.length === 0) {
@@ -341,138 +420,60 @@ async function collectLoungePosts(page, loungeUrl, targetDate) {
   return { posts, skipped: false };
 }
 
-// ── 게시글 상세 본문 수집 ─────────────────────────────────────────
-/**
- * 게시글 상세 페이지에서 본문 텍스트 수집
- * NOTE: 본문 컨테이너 선택자는 실제 DOM에서 검증 필요
- *
- * @param {import('playwright-core').Page} page
- * @param {string} postUrl
- * @returns {{ text: string, error: string|null }}
- */
-async function collectPostContent(page, postUrl) {
-  try {
-    await page.goto(postUrl, {
-      waitUntil: "networkidle",
-      timeout: NETWORKIDLE_TIMEOUT,
-    });
-    await new Promise((r) => setTimeout(r, PAGE_WAIT_MS));
-
-    const text = await page.evaluate(() => {
-      // 본문 컨테이너 선택자 (우선순위 순)
-      // NOTE: game.naver.com 실제 DOM 구조에서 검증 필요
-      const contentSelectors = [
-        ".article_view",
-        ".board_view_content",
-        "[class*='ContentBody']",
-        "[class*='content_body']",
-        "[class*='article_body']",
-        ".se-main-container", // 스마트에디터
-        ".post-content",
-      ];
-      for (const sel of contentSelectors) {
-        const el = document.querySelector(sel);
-        if (el) return el.innerText.trim().slice(0, 3000);
-      }
-      return "";
-    });
-
-    return { text, error: null };
-  } catch (err) {
-    console.error(
-      `[naverLoungeCollector] collectPostContent 오류 (${postUrl}): ${err.message}`
-    );
-    return { text: "", error: err.message };
+async function collectPostComments({
+  session,
+  loungeId,
+  feedId,
+  postUrl = "",
+}) {
+  if (!feedId) {
+    return { comments: [], totalCount: 0 };
   }
-}
 
-// ── 게시글 댓글 수집 ─────────────────────────────────────────────
-/**
- * @param {import('playwright-core').Page} page
- * @param {string} postUrl  게시글 URL (collectPostContent 이후 호출 시 재이동 없음)
- * @returns {{ comments: object[], error: string|null }}
- */
-async function collectPostComments(page, postUrl) {
-  try {
-    // postUrl이 현재 페이지와 다르면 이동
-    if (!page.url().includes(postUrl.split("?")[0])) {
-      await page.goto(postUrl, {
-        waitUntil: "networkidle",
-        timeout: NETWORKIDLE_TIMEOUT,
+  const referer = String(postUrl || "").trim() || normalizeReferer(session.referer, loungeId);
+  const comments = [];
+
+  for (let pageIndex = 0; pageIndex < COMMENT_FETCH_MAX_PAGES; pageIndex++) {
+    const offset = pageIndex * COMMENT_PAGE_LIMIT;
+    const page = await fetchCommentPage({
+      session,
+      loungeId,
+      feedId,
+      offset,
+      referer,
+    });
+
+    const rows = Array.isArray(page.data) ? page.data : [];
+    for (const row of rows) {
+      const comment = row?.comment || {};
+      const user = row?.user || {};
+      if (comment.deleted || comment.hideByCleanBot) continue;
+
+      const text = compactWhitespace(decodeHtmlEntities(comment.content || ""));
+      if (!text) continue;
+
+      comments.push({
+        author: compactWhitespace(decodeHtmlEntities(user.userNickname || "")),
+        text,
       });
-      await new Promise((r) => setTimeout(r, PAGE_WAIT_MS));
     }
 
-    // "댓글 더 보기" 반복 클릭
-    let clickCount = 0;
-    while (clickCount < COMMENT_EXPAND_MAX) {
-      const moreBtn = await page.$(
-        '[class*="more_comment"], [class*="btn_more"], button:text-is("더보기"), button:text-is("댓글 더보기"), button:text-is("더 보기")'
-      );
-      if (!moreBtn) break;
-      try {
-        await moreBtn.click();
-        await new Promise((r) => setTimeout(r, COMMENT_BTN_DELAY_MS));
-      } catch {
-        break;
-      }
-      clickCount++;
+    const totalCount = Number(page.totalCount ?? page.commentCount ?? comments.length);
+    if (rows.length < COMMENT_PAGE_LIMIT || comments.length >= totalCount) {
+      return { comments, totalCount };
     }
-
-    // 댓글 추출
-    const comments = await page.evaluate(() => {
-      const results = [];
-      // 댓글 목록 선택자 (우선순위 순)
-      // NOTE: game.naver.com 실제 DOM 구조에서 검증 필요
-      const listSelectors = [
-        ".comment_list li",
-        ".reply_list li",
-        "ul[class*='comment'] li",
-        "ul[class*='reply'] li",
-        "[class*='CommentList'] li",
-      ];
-      let items = [];
-      for (const sel of listSelectors) {
-        items = Array.from(document.querySelectorAll(sel));
-        if (items.length > 0) break;
-      }
-
-      for (const item of items) {
-        // 작성자
-        const authorEl = item.querySelector(
-          ".nick, .author, [class*='nick'], [class*='user_name'], [class*='UserName']"
-        );
-        const author = authorEl ? authorEl.innerText.trim() : "";
-
-        // 댓글 텍스트
-        const textEl = item.querySelector(
-          ".comment_text, .text, [class*='comment_text'], [class*='CommentText'], [class*='content']"
-        );
-        const text = textEl ? textEl.innerText.trim() : "";
-        if (!text) continue;
-
-        results.push({ author, text });
-      }
-      return results;
-    });
-
-    return { comments, error: null };
-  } catch (err) {
-    console.error(
-      `[naverLoungeCollector] collectPostComments 오류 (${postUrl}): ${err.message}`
-    );
-    return { comments: [], error: err.message };
   }
+
+  return { comments, totalCount: comments.length };
 }
 
 module.exports = {
-  launchBrowser,
-  loadSessionFromFirestore,
-  saveSessionToFirestore,
-  markSessionInvalid,
-  applyCookiesToContext,
-  verifySessionAlive,
   collectLoungePosts,
-  collectPostContent,
   collectPostComments,
+  extractTextFromContents,
+  isAuthError,
+  loadSessionFromFirestore,
+  markSessionInvalid,
+  parseCookieHeaderToCookies,
+  saveSessionToFirestore,
 };
