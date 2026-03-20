@@ -1,7 +1,7 @@
 "use strict";
 const admin  = require("firebase-admin");
-const { analyzeWeeklySummary }   = require("./analyzers/openrouter");
-const { sendWeeklyEmailReport }  = require("./delivery");
+const { analyzeWeeklySummary }   = require("./analyzers/openrouterAnalyzer");
+const { sendWeeklyEmailReport }  = require("./reportDelivery");
 
 // 이번 주 월요일 기준 직전 주 월~일 날짜 계산 (KST)
 function getLastWeekRange() {

@@ -2,6 +2,7 @@
     const API = 'https://api-xsauyjh24q-du.a.run.app';
     const WS = 'ws_antigravity';
     let _igPendingAccountSelection = null;
+    let _igRegisteredAccounts = [];
     const DEFAULT_IG_POST_COMMENT_PROMPT = `당신은 Instagram 콘텐츠 분석가입니다.
 이메일 리포트의 게시물 표 아래에 붙일 아주 짧은 코멘트 1~2문장만 작성하세요.
 반드시 아래 원칙을 지키세요.
@@ -14,8 +15,19 @@
 - 마크다운, HTML, 이모지, 따옴표 없이 순수 텍스트만 출력
     - 120자 안팎의 짧은 한국어 코멘트로 작성`;
     const IG_PERFORMANCE_MODELS = [
-      { value: 'openai/gpt-5-mini', label: 'GPT-5 mini' },
+      { value: 'openai/gpt-5.4-mini', label: 'GPT-5.4 mini' },
       { value: 'google/gemini-3-flash-preview', label: 'Gemini Flash 3' },
+      { value: 'google/gemini-3.1-flash-lite-preview', label: 'Gemini Flash 3.1 Lite' },
+    ];
+    const FB_ANALYSIS_MODELS = [
+      { value: 'openai/gpt-5.4-mini', label: 'GPT-5.4 mini' },
+      { value: 'google/gemini-3-flash-preview', label: 'Gemini Flash 3' },
+      { value: 'google/gemini-3.1-flash-lite-preview', label: 'Gemini Flash 3.1 Lite' },
+    ];
+    const NL_ANALYSIS_MODELS = [
+      { value: 'openai/gpt-5.4-mini', label: 'GPT-5.4 mini' },
+      { value: 'google/gemini-3-flash-preview', label: 'Gemini Flash 3' },
+      { value: 'google/gemini-3.1-flash-lite-preview', label: 'Gemini Flash 3.1 Lite' },
     ];
 
     /* ── Chip Input ── */
@@ -172,20 +184,25 @@
     /* ── Flatpickr: 가용 날짜 기반 날짜 비활성화 ── */
     let _fpDatePicker = null, _fpWeekStart = null;
     let _fpAnalyticsStart = null, _fpAnalyticsEnd = null;
-    let _fpIgDatePicker = null;
+    let _fpIgDatePicker = null, _fpIgAnalyticsStart = null, _fpIgAnalyticsEnd = null;
+    let _fpFbDatePicker = null;
+    let _fpNlDatePicker = null;
+    let _availableNlDates = [];
     let _availableDailyDates = [], _availableWeeklyDates = [], _availableIgDates = [];
     let _selectedWeekMonday = null; // 주간 picker: 선택된 주의 월요일
 
     async function initAvailableDates() {
       try {
-        const [daily, weekly, ig] = await Promise.all([
+        const [daily, weekly, ig, nl] = await Promise.all([
           apiFetch(`/available-dates?workspaceId=${WS}&type=daily`),
           apiFetch(`/available-dates?workspaceId=${WS}&type=weekly`),
           apiFetch(`/instagram/available-dates?workspaceId=${WS}`),
+          apiFetch(`/naver/available-dates?workspaceId=${WS}`),
         ]);
         _availableDailyDates  = daily.dates  || [];
         _availableWeeklyDates = weekly.dates || [];
         _availableIgDates     = ig.dates     || [];
+        _availableNlDates     = nl.dates     || [];
       } catch (e) {
         console.warn('[available-dates] 로드 실패, 날짜 제한 없이 동작:', e.message);
       }
@@ -200,6 +217,41 @@
         _availableIgDates = newDates;
         if (_fpIgDatePicker) _fpIgDatePicker.set('enable', newDates);
       } catch (e) { /* silent */ }
+    }
+
+    function ensureIgAnalyticsRange() {
+      const $start = document.getElementById('igAnalyticsStartDate');
+      const $end = document.getElementById('igAnalyticsEndDate');
+      if (!$start || !$end || ($start.value && $end.value)) return;
+
+      const fallbackEnd = new Date(Date.now() + 9 * 60 * 60 * 1000 - 86400000);
+      const endDate = _availableIgDates[0] || fallbackEnd.toISOString().split('T')[0];
+      const endMs = new Date(endDate + 'T00:00:00+09:00').getTime();
+      const windowStartMs = endMs - 29 * 86400000;
+      let startDate = endDate;
+
+      for (let i = _availableIgDates.length - 1; i >= 0; i--) {
+        const candidate = _availableIgDates[i];
+        const candidateMs = new Date(candidate + 'T00:00:00+09:00').getTime();
+        if (candidateMs >= windowStartMs && candidateMs <= endMs) {
+          startDate = candidate;
+          break;
+        }
+      }
+
+      if (!_availableIgDates.length) {
+        const startFallback = new Date(endMs - 29 * 86400000).toISOString().split('T')[0];
+        startDate = startFallback;
+      }
+
+      if (!$start.value) {
+        if (_fpIgAnalyticsStart) _fpIgAnalyticsStart.setDate(startDate, false);
+        else $start.value = startDate;
+      }
+      if (!$end.value) {
+        if (_fpIgAnalyticsEnd) _fpIgAnalyticsEnd.setDate(endDate, false);
+        else $end.value = endDate;
+      }
     }
 
     function initFlatpickrs() {
@@ -270,6 +322,38 @@
       _fpIgDatePicker   = flatpickr('#igDatePicker', makeOpts(_availableIgDates, {
         onChange([d]) { if (d) loadIgReport(); },
       }));
+      _fpIgAnalyticsStart = flatpickr('#igAnalyticsStartDate', {
+        dateFormat: 'Y-m-d',
+        maxDate,
+        locale: { firstDayOfWeek: 1 },
+        onDayCreate: onDayCreateBase,
+      });
+      _fpIgAnalyticsEnd = flatpickr('#igAnalyticsEndDate', {
+        dateFormat: 'Y-m-d',
+        maxDate,
+        locale: { firstDayOfWeek: 1 },
+        onDayCreate: onDayCreateBase,
+      });
+
+      _fpFbDatePicker = flatpickr('#fbReportDate', {
+        dateFormat: 'Y-m-d',
+        maxDate,
+        locale: { firstDayOfWeek: 1 },
+        onDayCreate: onDayCreateBase,
+        onChange([d]) { if (d) loadFbReport(); },
+      });
+
+      _fpNlDatePicker = flatpickr('#nlReportDate', {
+        dateFormat: 'Y-m-d',
+        maxDate,
+        locale: { firstDayOfWeek: 1 },
+        onDayCreate: onDayCreateBase,
+        onChange([d]) { if (d) loadNlReport(); },
+      });
+      if (_availableNlDates.length) {
+        _fpNlDatePicker.set('enable', _availableNlDates);
+        if (!_fpNlDatePicker.selectedDates.length) _fpNlDatePicker.setDate(_availableNlDates[0], false);
+      }
     }
 
     /* ── Init ── */
@@ -285,6 +369,17 @@
     function initApp() {
       switchView('landing');
       initAvailableDates();
+      checkFbSessionAlert();
+      checkNlSessionAlert();
+    }
+
+    async function checkFbSessionAlert() {
+      try {
+        const status = await apiFetch(`/facebook/session/status?workspaceId=${WS}`);
+        const show = status.exists && !status.isValid;
+        const $dot = document.getElementById('fb-session-alert');
+        if ($dot) $dot.style.display = show ? 'inline-block' : 'none';
+      } catch (_) {}
     }
 
     /* ── View switching ── */
@@ -295,9 +390,36 @@
     let _reportAllGuilds = [];
     let _weeklyAllGuilds = [];
     let _alertAllChannels = [];
+    let _igAnalyticsAccounts = [];
+    let _igReportAllAccounts = [];
+
+    function togglePlatform(rowEl) {
+      const section = rowEl.closest('.platform-section');
+      if (!section.querySelector('.sub-nav')) return;
+      section.classList.toggle('open');
+    }
 
     function switchView(view) {
       currentView = view;
+
+      // 해당 nav 아이템의 상위 플랫폼 섹션이 닫혀있으면 자동으로 열기
+      const viewToNavId = {
+        'report': 'nav-report', 'weekly': 'nav-weekly', 'analytics': 'nav-analytics',
+        'channels': 'nav-channels', 'data': 'nav-data', 'alert': 'nav-alert',
+        'ig-report': 'nav-ig-report', 'ig-analytics': 'nav-ig-analytics',
+        'ig-accounts': 'nav-ig-accounts', 'ig-tokens': 'nav-ig-tokens',
+        'fb-report': 'nav-fb-report', 'fb-groups': 'nav-fb-groups', 'fb-session': 'nav-fb-session',
+        'nl-report': 'nav-nl-report', 'nl-lounges': 'nav-nl-lounges', 'nl-session': 'nav-nl-session',
+        'preset-mgmt': 'nav-preset-mgmt',
+      };
+      const navId = viewToNavId[view];
+      if (navId) {
+        const navEl = document.getElementById(navId);
+        if (navEl) {
+          const section = navEl.closest('.platform-section');
+          if (section && !section.classList.contains('open')) section.classList.add('open');
+        }
+      }
 
       // Sub-nav active state
       document.getElementById('nav-report').classList.toggle('active', view === 'report');
@@ -307,8 +429,16 @@
       document.getElementById('nav-data').classList.toggle('active', view === 'data');
       document.getElementById('nav-alert').classList.toggle('active', view === 'alert');
       document.getElementById('nav-ig-report').classList.toggle('active', view === 'ig-report');
+      document.getElementById('nav-ig-analytics').classList.toggle('active', view === 'ig-analytics');
       document.getElementById('nav-ig-accounts').classList.toggle('active', view === 'ig-accounts');
       document.getElementById('nav-ig-tokens').classList.toggle('active', view === 'ig-tokens');
+      document.getElementById('nav-fb-report').classList.toggle('active', view === 'fb-report');
+      document.getElementById('nav-fb-groups').classList.toggle('active', view === 'fb-groups');
+      document.getElementById('nav-fb-session').classList.toggle('active', view === 'fb-session');
+      document.getElementById('nav-nl-report').classList.toggle('active', view === 'nl-report');
+      document.getElementById('nav-nl-lounges').classList.toggle('active', view === 'nl-lounges');
+      document.getElementById('nav-nl-session').classList.toggle('active', view === 'nl-session');
+      document.getElementById('nav-preset-mgmt').classList.toggle('active', view === 'preset-mgmt');
 
       // Topbars
       document.getElementById('topbar-report').classList.toggle('hidden', view !== 'report');
@@ -318,8 +448,16 @@
       document.getElementById('topbar-data').classList.toggle('hidden', view !== 'data');
       document.getElementById('topbar-alert').classList.toggle('hidden', view !== 'alert');
       document.getElementById('topbar-ig-report').classList.toggle('hidden', view !== 'ig-report');
+      document.getElementById('topbar-ig-analytics').classList.toggle('hidden', view !== 'ig-analytics');
       document.getElementById('topbar-ig-accounts').classList.toggle('hidden', view !== 'ig-accounts');
       document.getElementById('topbar-ig-tokens').classList.toggle('hidden', view !== 'ig-tokens');
+      document.getElementById('topbar-fb-report').classList.toggle('hidden', view !== 'fb-report');
+      document.getElementById('topbar-fb-groups').classList.toggle('hidden', view !== 'fb-groups');
+      document.getElementById('topbar-fb-session').classList.toggle('hidden', view !== 'fb-session');
+      document.getElementById('topbar-nl-report').classList.toggle('hidden', view !== 'nl-report');
+      document.getElementById('topbar-nl-lounges').classList.toggle('hidden', view !== 'nl-lounges');
+      document.getElementById('topbar-nl-session').classList.toggle('hidden', view !== 'nl-session');
+      document.getElementById('topbar-preset-mgmt').classList.toggle('hidden', view !== 'preset-mgmt');
 
       // Views
       document.getElementById('view-landing').classList.toggle('hidden', view !== 'landing');
@@ -330,16 +468,36 @@
       document.getElementById('view-data').classList.toggle('hidden', view !== 'data');
       document.getElementById('view-alert').classList.toggle('hidden', view !== 'alert');
       document.getElementById('view-ig-report').classList.toggle('hidden', view !== 'ig-report');
+      document.getElementById('view-ig-analytics').classList.toggle('hidden', view !== 'ig-analytics');
       document.getElementById('view-ig-accounts').classList.toggle('hidden', view !== 'ig-accounts');
       document.getElementById('view-ig-tokens').classList.toggle('hidden', view !== 'ig-tokens');
+      document.getElementById('view-fb-report').classList.toggle('hidden', view !== 'fb-report');
+      document.getElementById('view-fb-groups').classList.toggle('hidden', view !== 'fb-groups');
+      document.getElementById('view-fb-session').classList.toggle('hidden', view !== 'fb-session');
+      document.getElementById('view-nl-report').classList.toggle('hidden', view !== 'nl-report');
+      document.getElementById('view-nl-lounges').classList.toggle('hidden', view !== 'nl-lounges');
+      document.getElementById('view-nl-session').classList.toggle('hidden', view !== 'nl-session');
+      document.getElementById('view-preset-mgmt').classList.toggle('hidden', view !== 'preset-mgmt');
 
       if (view === 'report') loadReport();
       if (view === 'channels') loadChannels();
       if (view === 'data') loadDataLogs();
       if (view === 'alert') loadAlertMonitor();
       if (view === 'ig-report') { refreshIgAvailableDates(); loadIgReport(); }
+      if (view === 'ig-analytics') {
+        refreshIgAvailableDates();
+        ensureIgAnalyticsRange();
+        loadIgAnalytics();
+      }
       if (view === 'ig-accounts') loadIgAccounts();
       if (view === 'ig-tokens') loadIgTokens();
+      if (view === 'fb-report') { refreshFbAvailableDates().then(() => loadFbReport()); }
+      if (view === 'fb-groups') loadFbGroups();
+      if (view === 'fb-session') loadFbSession();
+      if (view === 'nl-report') { refreshNlAvailableDates().then(() => loadNlReport()); }
+      if (view === 'nl-lounges') loadNlLounges();
+      if (view === 'nl-session') loadNlSession();
+      if (view === 'preset-mgmt') loadPresets();
       if (view === 'weekly') {
         // 이번 주 월요일 기본값 세팅
         const d = new Date(Date.now() + 9 * 60 * 60 * 1000);
@@ -1305,7 +1463,12 @@
         throw err;
       }
       const json = await res.json();
-      if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
+      if (!res.ok) {
+        const err = new Error(json.error || `HTTP ${res.status}`);
+        err.status = res.status;
+        err.details = json;
+        throw err;
+      }
       return json;
     }
 
@@ -2115,23 +2278,29 @@
       $main.innerHTML = `<div class="ch-mgmt-grid">
         <div class="add-panel">
           <div class="panel-title">계정 추가</div>
-          <div class="panel-desc">Instagram Business/Creator 계정의 Long-lived Access Token을 입력합니다.</div>
-          <div class="info-banner">
+          <div class="panel-desc">API 타입을 선택한 후 액세스 토큰을 입력합니다.</div>
+          <div class="ig-api-type-toggle" style="display:flex;gap:.5rem;margin-bottom:1rem">
+            <button type="button" id="igApiTypeFacebook" class="ig-api-type-btn active" onclick="setIgApiType('facebook')" style="flex:1;padding:.5rem .75rem;border-radius:8px;font-size:.8125rem;font-weight:600;border:2px solid var(--border);background:var(--bg-card);cursor:pointer;transition:all .15s">Facebook API</button>
+            <button type="button" id="igApiTypeInstagram" class="ig-api-type-btn" onclick="setIgApiType('instagram')" style="flex:1;padding:.5rem .75rem;border-radius:8px;font-size:.8125rem;font-weight:600;border:2px solid var(--border);background:var(--bg-card);cursor:pointer;transition:all .15s">Instagram API</button>
+          </div>
+          <div class="info-banner" id="igApiTypeInfo">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
             </svg>
-            <span>토큰 발급: Meta 개발자 콘솔 → 앱 → 그래프 API 탐색기 → User Token 생성 (instagram_basic, instagram_manage_insights, pages_show_list 권한 포함) → 장기 토큰(EAAxxxx)으로 교환</span>
+            <span id="igApiTypeInfoText">토큰 발급: Meta 개발자 콘솔 → 그래프 API 탐색기 → User Token 생성 (instagram_basic, instagram_manage_insights, pages_show_list 권한 포함) → 장기 토큰(EAAxxxx)으로 교환</span>
+          </div>
+          <div id="igFacebookFields">
+            <div class="field-group">
+              <label class="field-label">Meta 앱 ID <span style="color:var(--neg)">*</span></label>
+              <input class="field-input" id="igAppIdInput" type="text" placeholder="1234567890" autocomplete="off">
+            </div>
+            <div class="field-group">
+              <label class="field-label">Meta 앱 시크릿 <span style="color:var(--neg)">*</span></label>
+              <input class="field-input" id="igAppSecretInput" type="password" placeholder="앱 시크릿 코드" autocomplete="off">
+            </div>
           </div>
           <div class="field-group">
-            <label class="field-label">Meta 앱 ID <span style="color:var(--neg)">*</span></label>
-            <input class="field-input" id="igAppIdInput" type="text" placeholder="1234567890" autocomplete="off">
-          </div>
-          <div class="field-group">
-            <label class="field-label">Meta 앱 시크릿 <span style="color:var(--neg)">*</span></label>
-            <input class="field-input" id="igAppSecretInput" type="password" placeholder="앱 시크릿 코드" autocomplete="off">
-          </div>
-          <div class="field-group">
-            <label class="field-label">Long-lived Access Token <span style="color:var(--neg)">*</span></label>
+            <label class="field-label" id="igTokenLabel">Long-lived Access Token <span style="color:var(--neg)">*</span></label>
             <textarea class="field-input settings-textarea" id="igTokenInput" rows="4" placeholder="EAAxxxx..."></textarea>
           </div>
           <button class="btn-add" id="igAddBtn" onclick="addIgAccount()">
@@ -2152,8 +2321,11 @@
         </div>
       </div>`;
 
+      initIgApiTypeToggle();
+
       try {
         const { accounts } = await apiFetch(`/instagram/accounts?workspaceId=${WS}`);
+        _igRegisteredAccounts = Array.isArray(accounts) ? accounts : [];
         document.getElementById('igListCount').textContent = accounts.length;
         const $list = document.getElementById('igAccountList');
         if (!accounts.length) {
@@ -2162,6 +2334,7 @@
           $list.innerHTML = accounts.map(igAccountRowHTML).join('');
         }
       } catch (err) {
+        _igRegisteredAccounts = [];
         document.getElementById('igAccountList').innerHTML = `<div class="state-wrap"><div class="state-title">불러오기 실패</div><div class="state-desc">${escapeHtml(err.message)}</div></div>`;
       }
     }
@@ -2171,6 +2344,18 @@
       const panelId = `ig-settings-${acc.docId}`;
       const recipients = (acc.deliveryConfig?.email?.recipients || []).join(', ');
       const emailEnabled = acc.deliveryConfig?.email?.isEnabled || false;
+      const postsInitialized = acc.postsInitialized === true;
+      const postsLastSynced = (() => {
+        const v = acc.postsLastSyncedAt;
+        if (!v) return null;
+        if (typeof v === 'string') return v;
+        if (typeof v === 'object') {
+          const secs = v._seconds ?? v.seconds;
+          if (secs != null) return new Date(secs * 1000).toISOString();
+          if (typeof v.toDate === 'function') return v.toDate().toISOString();
+        }
+        return null;
+      })();
       const selectedModel = IG_PERFORMANCE_MODELS.some(m => m.value === acc.performanceReviewModel)
         ? acc.performanceReviewModel
         : IG_PERFORMANCE_MODELS[0].value;
@@ -2187,7 +2372,17 @@
         </div>
         <div class="ch-row-info">
           <div class="ch-row-name">@${escapeHtml(acc.username || acc.igUserId)}</div>
-          <div class="ch-row-meta">Instagram Business</div>
+          <div class="ch-row-meta">
+            ${acc.apiType === 'instagram'
+              ? '<span style="display:inline-block;padding:.1rem .45rem;border-radius:4px;font-size:.7rem;font-weight:700;background:#fce4ec;color:#c2185b;margin-right:.35rem">Instagram API</span>'
+              : '<span style="display:inline-block;padding:.1rem .45rem;border-radius:4px;font-size:.7rem;font-weight:700;background:#e3f2fd;color:#1565c0;margin-right:.35rem">Facebook API</span>'}
+            Instagram Business${acc.pageName ? ` · ${escapeHtml(acc.pageName)}` : ''}
+          </div>
+          <div class="ig-debug-meta">
+            <span><strong>username</strong> ${escapeHtml(acc.username || '-')}</span>
+            <span><strong>igUserId</strong> ${escapeHtml(acc.igUserId || '-')}</span>
+            ${acc.pageName ? `<span><strong>pageName</strong> ${escapeHtml(acc.pageName)}</span>` : ''}
+          </div>
         </div>
         <div class="ch-row-status ${isActive ? 'active' : 'inactive'}">${isActive ? '활성' : '비활성'}</div>
         <div class="ch-row-actions">
@@ -2240,6 +2435,20 @@
         </div>
         <div class="settings-section">
           <div class="settings-section-title">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+            게시물 데이터
+          </div>
+          <div style="font-size:.8125rem;color:var(--text-muted);margin-bottom:.75rem">
+            ${postsInitialized
+              ? `초기화 완료${postsLastSynced ? ` · 마지막 동기화: ${postsLastSynced.slice(0, 10)}` : ''}`
+              : '초기화 필요 — 아래 버튼으로 전체 게시물을 처음 수집하세요.'}
+          </div>
+          <button class="btn-save-settings" id="igPostsInitBtn-${acc.docId}" data-docid="${escapeHtml(acc.docId)}"
+                  onclick="initIgPosts(this.dataset.docid)">${postsInitialized ? '전체 재수집' : '전체 게시물 초기화'}</button>
+          <div class="add-result" id="igPostsInitResult-${acc.docId}"></div>
+        </div>
+        <div class="settings-section">
+          <div class="settings-section-title">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/></svg>
             AI 성과 리뷰 지시문
           </div>
@@ -2271,6 +2480,44 @@
       </div>`;
     }
 
+    function findRegisteredIgAccount(igUserId) {
+      return (_igRegisteredAccounts || []).find(acc => String(acc.igUserId || '') === String(igUserId || '')) || null;
+    }
+
+    function renderIgDebugCard(title, account, tone = 'neutral') {
+      if (!account) return '';
+      return `
+        <div class="ig-debug-card ${tone}">
+          <div class="ig-debug-card-title">${escapeHtml(title)}</div>
+          <div class="ig-debug-card-body">
+            <div><strong>username</strong><span>${escapeHtml(account.username || '-')}</span></div>
+            <div><strong>igUserId</strong><span>${escapeHtml(account.igUserId || '-')}</span></div>
+            <div><strong>pageName</strong><span>${escapeHtml(account.pageName || account.pageId || '-')}</span></div>
+          </div>
+        </div>`;
+    }
+
+    function renderIgDuplicateDebug(duplicate = {}, fallbackIgUserId = '') {
+      const selected = duplicate.selected || (fallbackIgUserId ? { igUserId: fallbackIgUserId } : null);
+      const existing = duplicate.existing || findRegisteredIgAccount(selected?.igUserId);
+      if (!selected && !existing) return '';
+      return `
+        <div class="ig-debug-compare">
+          <div class="ig-debug-compare-title">중복 판정 기준</div>
+          <div class="ig-debug-compare-desc">이 서비스는 Meta 앱이 아니라 <code>igUserId</code> 기준으로 계정을 구분합니다.</div>
+          <div class="ig-debug-compare-grid">
+            ${renderIgDebugCard('이번에 선택한 계정', selected, 'selected')}
+            ${renderIgDebugCard('이미 등록된 계정', existing, 'existing')}
+          </div>
+        </div>`;
+    }
+
+    function renderIgDuplicateResult(err, fallbackIgUserId = '') {
+      const debugHtml = renderIgDuplicateDebug(err?.details?.duplicate || {}, fallbackIgUserId);
+      if (!debugHtml) return '';
+      return `<div class="ig-debug-result-title">${escapeHtml(err.message || '이미 등록된 계정입니다.')}</div>${debugHtml}`;
+    }
+
     function toggleIgSettings(docId) {
       const panel = document.getElementById(`ig-settings-${docId}`);
       const btn = document.getElementById(`igSettingsBtn-${docId}`);
@@ -2278,15 +2525,30 @@
       btn.classList.toggle('active', open);
     }
 
+    function setIgApiType(type) {
+      const isFacebook = type === 'facebook';
+      document.getElementById('igApiTypeFacebook').style.cssText = `flex:1;padding:.5rem .75rem;border-radius:8px;font-size:.8125rem;font-weight:600;cursor:pointer;transition:all .15s;border:2px solid ${isFacebook ? 'var(--accent)' : 'var(--border)'};background:${isFacebook ? 'var(--accent)' : 'var(--bg-card)'};color:${isFacebook ? '#fff' : 'inherit'}`;
+      document.getElementById('igApiTypeInstagram').style.cssText = `flex:1;padding:.5rem .75rem;border-radius:8px;font-size:.8125rem;font-weight:600;cursor:pointer;transition:all .15s;border:2px solid ${!isFacebook ? '#E1306C' : 'var(--border)'};background:${!isFacebook ? '#E1306C' : 'var(--bg-card)'};color:${!isFacebook ? '#fff' : 'inherit'}`;
+      document.getElementById('igFacebookFields').style.display = isFacebook ? '' : 'none';
+      document.getElementById('igApiTypeInfoText').textContent = isFacebook
+        ? '토큰 발급: Meta 개발자 콘솔 → 그래프 API 탐색기 → User Token 생성 (instagram_basic, instagram_manage_insights, pages_show_list 권한 포함) → 장기 토큰(EAAxxxx)으로 교환'
+        : '토큰 발급: Meta 개발자 콘솔 → Business Login for Instagram → OAuth로 Instagram User Access Token 발급 (instagram_business_basic, instagram_business_manage_messages 권한 포함)';
+      document.getElementById('igTokenInput').placeholder = isFacebook ? 'EAAxxxx...' : 'Instagram User Access Token';
+      document.getElementById('igTokenInput').dataset.apiType = type;
+    }
+
     async function addIgAccount() {
+      const apiType   = document.getElementById('igTokenInput').dataset.apiType || 'facebook';
       const appId     = document.getElementById('igAppIdInput').value.trim();
       const appSecret = document.getElementById('igAppSecretInput').value.trim();
       const token     = document.getElementById('igTokenInput').value.trim();
       const $picker = document.getElementById('igCandidatePicker');
       const $result = document.getElementById('igAddResult');
       const $btn = document.getElementById('igAddBtn');
-      if (!appId)     { $result.className = 'add-result err'; $result.textContent = '앱 ID를 입력해 주세요.'; return; }
-      if (!appSecret) { $result.className = 'add-result err'; $result.textContent = '앱 시크릿을 입력해 주세요.'; return; }
+      if (apiType === 'facebook') {
+        if (!appId)     { $result.className = 'add-result err'; $result.textContent = '앱 ID를 입력해 주세요.'; return; }
+        if (!appSecret) { $result.className = 'add-result err'; $result.textContent = '앱 시크릿을 입력해 주세요.'; return; }
+      }
       if (!token)     { $result.className = 'add-result err'; $result.textContent = '액세스 토큰을 입력해 주세요.'; return; }
       _igPendingAccountSelection = null;
       if ($picker) $picker.innerHTML = '';
@@ -2294,13 +2556,15 @@
       $btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="animation:spin .75s linear infinite"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg> 검증 중...`;
       $result.className = 'add-result'; $result.textContent = '';
       try {
+        const body = { workspaceId: WS, accessToken: token, apiType };
+        if (apiType === 'facebook') { body.appId = appId; body.appSecret = appSecret; }
         const res = await apiFetch('/instagram/accounts', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ workspaceId: WS, accessToken: token, appId, appSecret }),
+          body: JSON.stringify(body),
         });
         if (res.requiresSelection && Array.isArray(res.candidates) && res.candidates.length) {
-          _igPendingAccountSelection = { appId, appSecret, token, candidates: res.candidates };
+          _igPendingAccountSelection = { appId, appSecret, token, apiType, candidates: res.candidates };
           if ($picker) $picker.innerHTML = renderIgCandidatePicker(res.candidates);
           $result.className = 'add-result';
           $result.textContent = '연결된 Instagram 계정을 선택해 주세요.';
@@ -2315,25 +2579,41 @@
         loadIgAccounts();
       } catch (err) {
         $result.className = 'add-result err';
-        $result.textContent = err.message;
+        const debugHtml = renderIgDuplicateResult(err);
+        if (debugHtml) {
+          $result.innerHTML = debugHtml;
+        } else {
+          $result.textContent = err.message;
+        }
       } finally {
         $btn.disabled = false;
         $btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> 계정 추가`;
       }
     }
 
+    // API 타입 토글 초기 상태 설정 (Facebook API 기본값)
+    function initIgApiTypeToggle() {
+      setIgApiType('facebook');
+    }
+
     function renderIgCandidatePicker(candidates) {
       return `
-        <div class="info-banner" style="margin-top:1rem;display:block">
-          <div style="font-weight:600;margin-bottom:.5rem">연결된 Instagram 계정 선택</div>
-          <div style="display:flex;flex-direction:column;gap:.5rem">
+        <div class="info-banner ig-picker-banner" style="margin-top:1rem;display:block">
+          <div class="ig-picker-title">연결된 Instagram 계정 선택</div>
+          <div class="ig-picker-desc">후보마다 <code>username</code>, <code>igUserId</code>, 연결된 Facebook Page를 확인한 뒤 선택하세요.</div>
+          <div class="ig-picker-list">
             ${candidates.map((candidate) => `
               <button type="button"
-                class="btn-save-settings"
-                style="text-align:left;display:flex;justify-content:space-between;align-items:center;padding:.75rem 1rem"
+                class="btn-save-settings ig-picker-btn"
                 onclick="confirmIgAccountSelection('${escapeHtml(candidate.igUserId)}')">
-                <span>@${escapeHtml(candidate.username || candidate.igUserId)}</span>
-                <span style="font-size:.75rem;color:var(--text-3)">${escapeHtml(candidate.pageName || candidate.pageId || '')}</span>
+                <span class="ig-picker-main">
+                  <span class="ig-picker-account">@${escapeHtml(candidate.username || candidate.igUserId)}</span>
+                  <span class="ig-picker-page">${escapeHtml(candidate.pageName || candidate.pageId || '연결된 Facebook Page 없음')}</span>
+                </span>
+                <span class="ig-picker-debug">
+                  <span><strong>username</strong> ${escapeHtml(candidate.username || '-')}</span>
+                  <span><strong>igUserId</strong> ${escapeHtml(candidate.igUserId || '-')}</span>
+                </span>
               </button>`).join('')}
           </div>
         </div>`;
@@ -2358,6 +2638,7 @@
             appId: pending.appId,
             appSecret: pending.appSecret,
             igUserId,
+            apiType: 'facebook',
           }),
         });
         _igPendingAccountSelection = null;
@@ -2370,7 +2651,12 @@
         loadIgAccounts();
       } catch (err) {
         $result.className = 'add-result err';
-        $result.textContent = err.message;
+        const debugHtml = renderIgDuplicateResult(err, igUserId);
+        if (debugHtml) {
+          $result.innerHTML = debugHtml;
+        } else {
+          $result.textContent = err.message;
+        }
       } finally {
         $btn.disabled = false;
         $btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> 계정 추가`;
@@ -2416,6 +2702,28 @@
         if ($res) { $res.className = 'add-result err'; $res.textContent = err.message; }
       } finally {
         if (btn) btn.disabled = false;
+      }
+    }
+
+    async function initIgPosts(docId) {
+      const $res = document.getElementById(`igPostsInitResult-${docId}`);
+      const btn = document.getElementById(`igPostsInitBtn-${docId}`);
+      if (btn) btn.disabled = true;
+      if (btn) btn.textContent = '수집 중...';
+      if ($res) { $res.className = 'add-result'; $res.textContent = '전체 게시물을 수집하고 있습니다. 게시물 수에 따라 수 분이 걸릴 수 있습니다.'; }
+      try {
+        const result = await apiFetch('/instagram/posts/init', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ workspaceId: WS, docId }),
+        });
+        if ($res) { $res.className = 'add-result ok'; $res.textContent = `완료: ${result.count}개 게시물 저장됨.`; }
+        loadIgAccounts();
+      } catch (err) {
+        if ($res) { $res.className = 'add-result err'; $res.textContent = err.message; }
+      } finally {
+        if (btn) btn.disabled = false;
+        if (btn) btn.textContent = '전체 재수집';
       }
     }
 
@@ -2524,15 +2832,33 @@
       $main.innerHTML = skeletonHTML();
       try {
         const r = await apiFetch(`/instagram/report?workspaceId=${WS}&date=${date}`);
-        renderIgReportView(date, r);
+        _igReportAllAccounts = r.accounts || [];
+        populateIgReportAccountDropdown(_igReportAllAccounts);
+        renderIgReportView(date);
       } catch (err) {
         handleApiError(err, $main);
       }
     }
 
-    function renderIgReportView(date, data) {
+    function populateIgReportAccountDropdown(accounts) {
+      const $sel = document.getElementById('igReportAccountFilter');
+      const prev = $sel.value;
+      $sel.innerHTML = '<option value="all">전체</option>' +
+        accounts.map(a => `<option value="${escapeHtml(a.igUserId || a.id)}">${escapeHtml(a.username || a.igUserId || a.id)}</option>`).join('');
+      if ([...$sel.options].some(o => o.value === prev)) $sel.value = prev;
+    }
+
+    function filterIgReportAccount() {
+      renderIgReportView(document.getElementById('igDatePicker').value);
+    }
+
+    function renderIgReportView(date) {
       const $main = document.getElementById('ig-report-main');
-      const accounts = data.accounts || [];
+      const filterVal = document.getElementById('igReportAccountFilter').value;
+      const accounts = filterVal === 'all'
+        ? _igReportAllAccounts
+        : _igReportAllAccounts.filter(a => (a.igUserId || a.id) === filterVal);
+
       if (!accounts.length) {
         $main.innerHTML = `<div class="state-wrap"><div class="state-title">${date} 리포트 없음</div><div class="state-desc">해당 날짜에 수집된 Instagram 데이터가 없습니다.</div></div>`;
         return;
@@ -2550,18 +2876,17 @@
       }));
     }
 
-    function initIgTrendChart(acc) {
-      const canvasId = `ig-trend-${escapeHtml(String(acc.igUserId || acc.username))}`;
+    function renderIgTrendChart(canvasId, trendData) {
       const ctx = document.getElementById(canvasId);
-      if (!ctx || !acc.trendData || !acc.trendData.length) return;
+      if (!ctx || !trendData || !trendData.length) return;
       new Chart(ctx, {
         data: {
-          labels: acc.trendData.map(d => d.date ? d.date.slice(5).replace('-', '/') : ''),
+          labels: trendData.map(d => d.date ? d.date.slice(5).replace('-', '/') : ''),
           datasets: [
             {
               type: 'bar',
               label: '오가닉 조회',
-              data: acc.trendData.map(d => d.dailyViews == null ? null : Math.round(Number(d.dailyViews))),
+              data: trendData.map(d => d.dailyViews == null ? null : Math.round(Number(d.dailyViews))),
               yAxisID: 'y',
               backgroundColor: 'rgba(99,102,241,0.3)',
               borderColor: '#6366f1',
@@ -2570,7 +2895,7 @@
             {
               type: 'line',
               label: '팔로워',
-              data: acc.trendData.map(d => d.followerCount == null ? null : Math.round(Number(d.followerCount))),
+              data: trendData.map(d => d.followerCount == null ? null : Math.round(Number(d.followerCount))),
               yAxisID: 'y2',
               borderColor: '#f59e0b',
               backgroundColor: 'rgba(245,158,11,0.1)',
@@ -2622,6 +2947,74 @@
       });
     }
 
+    function initIgTrendChart(acc) {
+      const canvasId = `ig-trend-${escapeHtml(String(acc.igUserId || acc.username))}`;
+      renderIgTrendChart(canvasId, acc.trendData || []);
+    }
+
+    async function loadIgAnalytics() {
+      const $main = document.getElementById('ig-analytics-main');
+      const startDate = document.getElementById('igAnalyticsStartDate').value;
+      const endDate = document.getElementById('igAnalyticsEndDate').value;
+      if (!startDate || !endDate) {
+        $main.innerHTML = '<div class="state-wrap"><div class="state-desc">시작일과 종료일을 선택하세요.</div></div>';
+        return;
+      }
+
+      $main.innerHTML = skeletonHTML();
+      try {
+        const data = await apiFetch(`/instagram/analytics?workspaceId=${WS}&startDate=${startDate}&endDate=${endDate}`);
+        _igAnalyticsAccounts = data.accounts || [];
+
+        const $sel = document.getElementById('igAnalyticsAccountFilter');
+        const prev = $sel.value;
+        $sel.innerHTML = '<option value="all">전체</option>' +
+          _igAnalyticsAccounts.map(acc => `<option value="${escapeHtml(acc.id)}">@${escapeHtml(acc.username || acc.igUserId || acc.id)}</option>`).join('');
+        if ([...$sel.options].some(o => o.value === prev)) $sel.value = prev;
+
+        renderIgAnalyticsView(startDate, endDate);
+      } catch (err) {
+        handleApiError(err, $main);
+      }
+    }
+
+    function filterIgAnalyticsAccount() {
+      const startDate = document.getElementById('igAnalyticsStartDate').value;
+      const endDate = document.getElementById('igAnalyticsEndDate').value;
+      renderIgAnalyticsView(startDate, endDate);
+    }
+
+    function renderIgAnalyticsView(startDate, endDate) {
+      const $main = document.getElementById('ig-analytics-main');
+      const filterVal = document.getElementById('igAnalyticsAccountFilter').value;
+      const accounts = filterVal === 'all'
+        ? _igAnalyticsAccounts
+        : _igAnalyticsAccounts.filter(acc => acc.id === filterVal);
+
+      if (!accounts.length) {
+        $main.innerHTML = '<div class="state-wrap"><div class="state-title">데이터 없음</div><div class="state-desc">해당 기간에 조회할 Instagram 데이터가 없습니다.</div></div>';
+        return;
+      }
+
+      const d1 = new Date(startDate + 'T00:00:00+09:00');
+      const d2 = new Date(endDate + 'T00:00:00+09:00');
+      const fmtKo = d => d.toLocaleDateString('ko-KR', { year: 'numeric', month: 'long', day: 'numeric' });
+      const dateRange = `${fmtKo(d1)} ~ ${fmtKo(d2)}`;
+
+      $main.innerHTML = `
+        <div class="page-bar anim">
+          <div class="page-date-h">${dateRange}</div>
+          <div class="page-sub">Instagram 커스텀 분석 &middot; ${accounts.length}개 계정</div>
+        </div>
+        ${accounts.map((acc, i) => (i > 0 ? '<div class="ch-divider"></div>' : '') + igAnalyticsAccountHTML(acc)).join('')}`;
+
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        accounts.forEach(acc => {
+          renderIgTrendChart(`ig-custom-trend-${escapeHtml(String(acc.igUserId || acc.username || acc.id))}`, acc.trendChart || []);
+        });
+      }));
+    }
+
     const SVG_IG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><rect x="2" y="2" width="20" height="20" rx="5" ry="5"/><path d="M16 11.37A4 4 0 1 1 12.63 8 4 4 0 0 1 16 11.37z"/><line x1="17.5" y1="6.5" x2="17.51" y2="6.5"/></svg>`;
     const SVG_USERS = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>`;
     const SVG_EYE = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
@@ -2632,7 +3025,10 @@
 
     function igAccountReportHTML(acc) {
       const posts = acc.posts || [];
-      const MEDIA_LABELS = { IMAGE: '사진', VIDEO: '영상', REELS: '영상', CAROUSEL_ALBUM: '슬라이드' };
+      const tableId = `ig-daily-comments-${String(acc.id || acc.igUserId || acc.username || 'account').replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+      const commentRowCount = posts.filter(p =>
+        p.aiCommentStatus === 'waiting_1d' || (p.aiCommentStatus === 'commented' && p.aiComment)
+      ).length;
 
       const perfBlock = acc.aiPerformanceReview
         ? (() => {
@@ -2664,8 +3060,11 @@
       </div>
 
       <div class="scard anim d4">
-        <div class="slabel"><div class="slabel-dot"></div>${SVG_GRID}최근 게시물 <span style="color:var(--text-3);margin-left:.25rem;font-weight:400;letter-spacing:0">${posts.length}건</span></div>
-        ${igPostTableHTML(posts)}
+        <div class="slabel slabel-with-actions">
+          <div class="slabel-main"><div class="slabel-dot"></div>${SVG_GRID}최근 게시물 <span style="color:var(--text-3);margin-left:.25rem;font-weight:400;letter-spacing:0">${posts.length}건</span></div>
+          ${renderIgCommentToolbarHTML(tableId, commentRowCount)}
+        </div>
+        ${igPostTableHTML(posts, { enableCommentControls: true, tableId })}
       </div>
 
       ${perfBlock}
@@ -2678,11 +3077,95 @@
       </div>` : ''}`;
     }
 
-    function buildIgPostCommentHTML(post) {
+    function igAnalyticsAccountHTML(acc) {
+      const posts = acc.posts || [];
+      const trendRows = acc.trendChart || [];
+      const hasTrendData = trendRows.some(row => row.followerCount != null || row.dailyViews != null);
+      const tableId = `ig-comments-${String(acc.id || acc.igUserId || acc.username || 'account').replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+      const commentRowCount = posts.filter(p => p.aiCommentStatus === 'commented' && p.aiComment).length;
+
+      return `
+      <div class="ch-header anim d1">
+        <div class="ch-platform-icon" style="color:#E1306C">${SVG_IG}</div>
+        <div>
+          <div class="ch-name">@${escapeHtml(acc.username || acc.igUserId || acc.id)}</div>
+          <div class="ch-id">Instagram &middot; 기간 내 게시물 ${posts.length}개</div>
+        </div>
+      </div>
+
+      <div class="scard anim d2">
+        <div class="slabel"><div class="slabel-dot"></div>${SVG_TRENDING}팔로워 · 조회 트렌드</div>
+        ${hasTrendData
+          ? `<div class="ig-trend-chart-shell">
+              <canvas id="ig-custom-trend-${escapeHtml(String(acc.igUserId || acc.username || acc.id))}"></canvas>
+            </div>`
+          : '<div style="font-size:.875rem;color:var(--text-3);padding:.5rem 0">해당 기간의 트렌드 데이터가 없습니다.</div>'}
+      </div>
+
+      <div class="scard anim d4">
+        <div class="slabel slabel-with-actions">
+          <div class="slabel-main"><div class="slabel-dot"></div>${SVG_GRID}기간 내 게시물 <span style="color:var(--text-3);margin-left:.25rem;font-weight:400;letter-spacing:0">${posts.length}건</span></div>
+          ${renderIgCommentToolbarHTML(tableId, commentRowCount)}
+        </div>
+        ${igPostTableHTML(posts, { hidePendingAiComment: true, enableCommentControls: true, tableId })}
+      </div>`;
+    }
+
+    function renderIgCommentToolbarHTML(tableId, commentRowCount) {
+      return `<div class="ig-comment-toolbar-actions">
+        <button type="button" class="ig-comment-bulk-btn" id="ig-comment-collapse-all-${tableId}"
+          onclick="setIgCommentTableVisibility('${escapeHtml(tableId)}', false)" ${commentRowCount ? '' : 'disabled'}>일괄 접기</button>
+        <button type="button" class="ig-comment-bulk-btn" id="ig-comment-expand-all-${tableId}"
+          onclick="setIgCommentTableVisibility('${escapeHtml(tableId)}', true)" disabled>일괄 펼치기</button>
+      </div>`;
+    }
+
+    function setIgCommentRowVisible(rowKey, visible) {
+      const row = document.getElementById(`ig-comment-row-${rowKey}`);
+      const btn = document.getElementById(`ig-comment-toggle-${rowKey}`);
+      if (!row) return;
+      row.classList.toggle('ig-comment-row-hidden', !visible);
+      if (btn && !btn.disabled) {
+        btn.textContent = visible ? '코멘트 접기' : '코멘트 펼치기';
+        btn.classList.toggle('collapsed', !visible);
+      }
+    }
+
+    function syncIgCommentTableControls(tableId) {
+      const rows = [...document.querySelectorAll(`[data-ig-comment-table="${tableId}"]`)];
+      const collapseBtn = document.getElementById(`ig-comment-collapse-all-${tableId}`);
+      const expandBtn = document.getElementById(`ig-comment-expand-all-${tableId}`);
+      const visibleCount = rows.filter(row => !row.classList.contains('ig-comment-row-hidden')).length;
+
+      if (collapseBtn) collapseBtn.disabled = !rows.length || visibleCount === 0;
+      if (expandBtn) expandBtn.disabled = !rows.length || visibleCount === rows.length;
+    }
+
+    function toggleIgCommentRow(tableId, rowKey) {
+      const row = document.getElementById(`ig-comment-row-${rowKey}`);
+      if (!row) return;
+      const willShow = row.classList.contains('ig-comment-row-hidden');
+      setIgCommentRowVisible(rowKey, willShow);
+      syncIgCommentTableControls(tableId);
+    }
+
+    function setIgCommentTableVisibility(tableId, visible) {
+      const rows = [...document.querySelectorAll(`[data-ig-comment-table="${tableId}"]`)];
+      rows.forEach(row => {
+        const rowKey = row.dataset.igCommentRow;
+        if (rowKey) setIgCommentRowVisible(rowKey, visible);
+      });
+      syncIgCommentTableControls(tableId);
+    }
+
+    function buildIgPostCommentHTML(post, options = {}) {
       if (!post) return '';
-      if (post.aiCommentStatus === 'waiting_1d') {
-        return `<tr>
-          <td colspan="12" style="padding:0 8px 12px 8px;border-bottom:1px solid var(--border)">
+      const hidePendingAiComment = options.hidePendingAiComment === true;
+      const rowKey = options.rowKey || '';
+      const tableId = options.tableId || '';
+      if (!hidePendingAiComment && post.aiCommentStatus === 'waiting_1d') {
+        return `<tr id="ig-comment-row-${rowKey}" class="ig-comment-row" data-ig-comment-table="${escapeHtml(tableId)}" data-ig-comment-row="${escapeHtml(rowKey)}">
+          <td colspan="10" style="padding:0 8px 12px 8px;border-bottom:1px solid var(--border)">
             <div style="margin:8px 0 0 24px;padding:10px 12px;border-radius:12px;background:#fff7ed;border:1px solid #fdba74">
               <div style="font-size:.625rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#c2410c;margin-bottom:6px">분석 대기</div>
               <div style="font-size:.75rem;line-height:1.65;color:#9a3412">1일 대기 중. 게시 후 하루가 지난 다음 리포트에서 댓글 반응과 성과를 함께 분석합니다.</div>
@@ -2691,8 +3174,8 @@
         </tr>`;
       }
       if (post.aiCommentStatus === 'commented' && post.aiComment) {
-        return `<tr>
-          <td colspan="12" style="padding:0 8px 12px 8px;border-bottom:1px solid var(--border)">
+        return `<tr id="ig-comment-row-${rowKey}" class="ig-comment-row" data-ig-comment-table="${escapeHtml(tableId)}" data-ig-comment-row="${escapeHtml(rowKey)}">
+          <td colspan="10" style="padding:0 8px 12px 8px;border-bottom:1px solid var(--border)">
             <div style="margin:8px 0 0 24px;padding:10px 12px;border-radius:12px;background:#f5f7ff;border:1px solid #c7d2fe">
               <div style="font-size:.625rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#6366f1;margin-bottom:6px">AI 코멘트</div>
               <div style="font-size:.75rem;line-height:1.7;color:var(--text)">${escapeHtml(post.aiComment)}</div>
@@ -2703,13 +3186,19 @@
       return '';
     }
 
-    function igPostTableHTML(posts) {
+    function igPostTableHTML(posts, options = {}) {
       if (!posts || !posts.length) return '<div style="color:var(--text-2);font-size:.875rem;padding:.5rem 0">포스트 없음</div>';
+      const includeAiComments = options.includeAiComments !== false;
+      const hidePendingAiComment = options.hidePendingAiComment === true;
+      const enableCommentControls = options.enableCommentControls === true;
+      const tableId = options.tableId || `ig-comments-${Date.now()}`;
       const MEDIA_LABELS = { IMAGE: '사진', VIDEO: '영상', REELS: '영상', CAROUSEL_ALBUM: '슬라이드' };
       const DOW_KO = ['일','월','화','수','목','금','토'];
-      const rows = posts.map(p => {
+      const rows = posts.map((p, idx) => {
         const er = p.engagementRate ?? 0;
         const erColor = er >= 5 ? '#059669' : er >= 2 ? '#d97706' : '#94a3b8';
+        const hasCommentRow = includeAiComments && ((!hidePendingAiComment && p.aiCommentStatus === 'waiting_1d') || (p.aiCommentStatus === 'commented' && p.aiComment));
+        const rowKey = `${tableId}-${idx}`;
 
         // KST 날짜: UTC+9 offset으로 계산
         let dateStr = '-';
@@ -2727,6 +3216,19 @@
         const captionCell = p.permalink && p.permalink.startsWith('https://')
           ? `<a href="${escapeHtml(p.permalink)}" target="_blank" rel="noopener noreferrer" style="color:var(--brand);text-decoration:none">${captionEsc || '↗'}</a>`
           : captionEsc;
+        const commentToggleBtn = enableCommentControls
+          ? `<button type="button"
+              class="ig-comment-toggle-btn${hasCommentRow ? '' : ' disabled'}"
+              id="ig-comment-toggle-${rowKey}"
+              ${hasCommentRow ? `onclick="toggleIgCommentRow('${escapeHtml(tableId)}','${escapeHtml(rowKey)}')"` : 'disabled'}
+            >${hasCommentRow ? '코멘트 접기' : '코멘트 없음'}</button>`
+          : '';
+        const bodyCell = enableCommentControls
+          ? `<div class="ig-post-cell-wrap">
+              <span class="ig-post-cell-text" title="${p.caption ? escapeHtml(p.caption) : ''}">${captionCell}</span>
+              ${commentToggleBtn}
+            </div>`
+          : captionCell;
 
         const mtRaw = (p.mediaType || p.media_type || '').toUpperCase();
         const mt = mtRaw === 'REELS' ? 'VIDEO' : mtRaw;
@@ -2735,16 +3237,9 @@
         // 조회: 실제 views API값, fallback reach
         const views = p.views != null ? p.views.toLocaleString() : (p.reach != null ? p.reach.toLocaleString() : '-');
 
-        // 팔로우: FEED(IMAGE, CAROUSEL_ALBUM) 전용 — VIDEO/STORY는 API 400 확인
-        const follows = (mt === 'IMAGE' || mt === 'CAROUSEL_ALBUM')
-          ? (p.follows != null ? p.follows.toLocaleString() : '-')
-          : '—';
-
-        const wt = p.reelAvgWatchTime != null ? `${(p.reelAvgWatchTime / 1000).toFixed(1)}초` : '—';
-
         const baseRow = `<tr>
           <td style="white-space:nowrap">${dateStr}</td>
-          <td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.75rem" title="${p.caption ? escapeHtml(p.caption) : ''}">${captionCell}</td>
+          <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.75rem">${bodyCell}</td>
           <td><span style="font-size:.6875rem;padding:2px 5px;border-radius:4px;background:var(--surface-2);color:var(--text-2)">${typeLabel}</span></td>
           <td>${views}</td>
           <td>${p.likes != null ? p.likes.toLocaleString() : '-'}</td>
@@ -2752,18 +3247,16 @@
           <td>${p.shares != null ? p.shares.toLocaleString() : '-'}</td>
           <td>${p.saves != null ? p.saves.toLocaleString() : '-'}</td>
           <td>${p.profileVisits != null ? p.profileVisits.toLocaleString() : '-'}</td>
-          <td>${follows}</td>
-          <td style="color:#6366f1">${wt}</td>
           <td style="color:${erColor};font-weight:600">${er}%</td>
         </tr>`;
-        return baseRow + buildIgPostCommentHTML(p);
+        return baseRow + (includeAiComments ? buildIgPostCommentHTML(p, { hidePendingAiComment, rowKey, tableId }) : '');
       }).join('');
       return `<div style="overflow-x:auto;margin-top:.75rem">
         <table class="data-table" style="font-size:.75rem">
           <thead><tr>
             <th>날짜</th><th>본문</th><th>유형</th><th>조회</th>
             <th>좋아요</th><th>댓글</th><th>공유</th><th>저장</th>
-            <th>프로필</th><th>팔로우</th><th style="color:#6366f1">평균시청</th><th>참여율</th>
+            <th>프로필방문</th><th>참여율</th>
           </tr></thead>
           <tbody>${rows}</tbody>
         </table>
@@ -2836,6 +3329,1226 @@
         loadIgTokens();
       } catch (err) {
         alert('토큰 갱신 실패: ' + err.message);
+      }
+    }
+
+    // ════════════════════════════════════════════════════════
+    //  Facebook 그룹 관리
+    // ════════════════════════════════════════════════════════
+
+    // ── 날짜 목록 새로고침 ─────────────────────────────────────
+    async function refreshFbAvailableDates() {
+      try {
+        const { dates } = await apiFetch(`/facebook/available-dates?workspaceId=${WS}`);
+        if (!dates.length) return;
+        if (_fpFbDatePicker) {
+          _fpFbDatePicker.set('enable', dates);
+          if (!_fpFbDatePicker.selectedDates.length) _fpFbDatePicker.setDate(dates[0], false);
+        } else {
+          // Flatpickr 아직 미초기화 상태면 raw input 직접 세팅
+          const input = document.getElementById('fbReportDate');
+          if (input && !input.value) input.value = dates[0];
+        }
+      } catch (_) {}
+    }
+
+    // ── 수동 트리거 ───────────────────────────────────────────
+    async function triggerFbReport() {
+      const date = document.getElementById('fbReportDate')?.value;
+      if (!date) { alert('날짜를 먼저 선택하세요.'); return; }
+
+      const ok = await showConfirm({
+        platform: 'facebook',
+        icon: '📘',
+        title: 'Facebook 파이프라인',
+        color: '#1877f2',
+        sub: '재실행 — 기존 리포트 덮어쓰기',
+        badge: date,
+        desc: 'Facebook 그룹 데이터를 다시 수집하고 리포트를 재생성합니다.',
+        confirmLabel: '실행',
+      });
+      if (!ok) return;
+
+      const $btn = document.getElementById('fbTriggerBtn');
+      const $msg = document.getElementById('fbTriggerMsg');
+
+      $btn.classList.add('spinning');
+      $btn.style.pointerEvents = 'none';
+      $msg.className = 'trigger-msg run show';
+      $msg.textContent = '실행 중…';
+
+      try {
+        const r = await apiFetch('/facebook/pipeline/trigger', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ workspaceId: WS, date }),
+        });
+
+        const detail = `완료 (처리: ${r.result?.processed ?? 0}, 오류: ${r.result?.errors ?? 0})`;
+        $msg.className = 'trigger-msg ok show';
+        $msg.textContent = '✓ ' + detail;
+        setTimeout(() => loadFbReport(), 1000);
+      } catch (e) {
+        $msg.className = 'trigger-msg err show';
+        $msg.textContent = '✗ ' + (e.message || '실패');
+      } finally {
+        $btn.classList.remove('spinning');
+        $btn.style.pointerEvents = '';
+        setTimeout(() => { $msg.classList.remove('show'); }, 6000);
+      }
+    }
+
+    const SVG_FB = `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M18 2h-3a5 5 0 0 0-5 5v3H7v4h3v8h4v-8h3l1-4h-4V7a1 1 0 0 1 1-1h3z"/></svg>`;
+
+    // ── 리포트 조회 ───────────────────────────────────────────
+    async function loadFbReport() {
+      const $main = document.getElementById('fb-report-main');
+      if (!$main) return;
+      const date = document.getElementById('fbReportDate')?.value;
+      if (!date) { $main.innerHTML = '<div class="empty-state">날짜를 선택하세요.</div>'; return; }
+      $main.innerHTML = '<div class="loading-spinner"></div>';
+      try {
+        const { reports } = await apiFetch(`/facebook/report?workspaceId=${WS}&date=${encodeURIComponent(date)}`);
+        if (!reports || reports.length === 0) {
+          $main.innerHTML = `<div class="empty-state">${date} 리포트가 없습니다.</div>`;
+          return;
+        }
+        $main.innerHTML = reports.map((r, i) => (i > 0 ? '<div class="ch-divider"></div>' : '') + buildFbReportCard(r)).join('');
+      } catch (err) {
+        $main.innerHTML = `<div class="error-state">오류: ${err.message}</div>`;
+      }
+    }
+
+    function buildFbReportCard(r) {
+      const crawlBadge = r.crawlStatus === 'partial'
+        ? `<div class="badge alert">${SVG.warn} 부분 수집</div>`
+        : r.crawlStatus === 'failed'
+        ? `<div class="badge alert">${SVG.warn} 수집 오류</div>`
+        : '';
+      const issues = (r.aiIssues || []).map(issue => {
+        const postUrl = issue.postIndex ? r.posts?.[issue.postIndex - 1]?.postUrl : null;
+        const link = postUrl
+          ? `<a href="${postUrl}" target="_blank" class="issue-msg-link" title="게시글 보기">↗</a>`
+          : '';
+        return `
+        <div style="padding:10px 12px;background:#fff7ed;border-left:3px solid #f97316;border-radius:0 8px 8px 0;margin-bottom:6px">
+          <div style="font-size:13px;font-weight:600;color:#c2410c">${issue.title || ''}${link}</div>
+          <div style="font-size:12px;color:#78350f;margin-top:3px">${issue.description || ''}</div>
+        </div>`;
+      }).join('');
+      return `
+      <div class="ch-header anim d1">
+        <div class="ch-platform-icon" style="color:#1877f2">${SVG_FB}</div>
+        <div>
+          <div class="ch-name">${escapeHtml(r.groupName || '')}</div>
+          <div class="ch-id">Facebook Group &middot; 게시글 ${r.postCount||0}개 &middot; 반응 ${(r.totalReactions||0).toLocaleString()} &middot; 댓글 ${(r.totalComments||0).toLocaleString()}</div>
+        </div>
+        <div class="ch-badges">${crawlBadge}</div>
+      </div>
+
+      ${r.aiSummary ? `<div class="scard anim d2">
+        <div class="slabel"><div class="slabel-dot"></div>${SVG.doc}AI 동향 요약</div>
+        <div style="font-size:.8125rem;color:var(--text);line-height:1.8">${sanitizeReportHtml(r.aiSummary)}</div>
+      </div>` : ''}
+
+      ${issues ? `<div class="scard anim d3">
+        <div class="slabel"><div class="slabel-dot"></div>${SVG.warn}주요 이슈</div>
+        ${issues}
+      </div>` : ''}
+
+      ${(r.model || r.totalTokens) ? `
+      <div class="token-info-strip anim d4">
+        ${r.model ? `<span class="token-model">${escapeHtml(r.model)}</span>` : ''}
+        ${r.totalTokens ? `<span>입력 ${(r.promptTokens || 0).toLocaleString()} / 출력 ${(r.completionTokens || 0).toLocaleString()} / 합계 ${(r.totalTokens || 0).toLocaleString()} 토큰</span>` : ''}
+        ${r.cost != null ? `<span>비용 $${Number(r.cost).toFixed(4)}</span>` : ''}
+      </div>` : ''}`;
+    }
+
+    // ── 그룹 관리 ─────────────────────────────────────────────
+    async function loadFbGroups() {
+      const $main = document.getElementById('fb-groups-main');
+      if (!$main) return;
+
+      // 스켈레톤
+      $main.innerHTML = `
+        <div class="ch-mgmt-grid">
+          <div class="add-panel">
+            <div class="panel-title">그룹 추가</div>
+            <div class="panel-desc">모니터링할 공개 Facebook 그룹 URL을 등록합니다.</div>
+            <div class="field-group">
+              <label class="field-label">그룹 이름 <span style="color:var(--neg)">*</span></label>
+              <input class="field-input" id="fbGroupNameInput" type="text" placeholder="예: 안티그래비티 팬 그룹" autocomplete="off">
+            </div>
+            <div class="field-group">
+              <label class="field-label">그룹 URL <span style="color:var(--neg)">*</span></label>
+              <input class="field-input" id="fbGroupUrlInput" type="text" placeholder="https://www.facebook.com/groups/..." autocomplete="off">
+            </div>
+            <button class="btn-add" onclick="addFbGroup()">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+              </svg>
+              그룹 추가
+            </button>
+            <div class="add-result" id="fbAddResult"></div>
+          </div>
+          <div class="list-panel">
+            <div class="list-header">
+              <span class="list-title">등록된 그룹</span>
+              <span class="list-count" id="fbGroupListCount">-</span>
+            </div>
+            <div id="fb-group-list"><div class="sk" style="height:72px;border-radius:12px;margin-bottom:.75rem"></div></div>
+          </div>
+        </div>`;
+
+      try {
+        const { groups } = await apiFetch(`/facebook/groups?workspaceId=${WS}`);
+        document.getElementById('fbGroupListCount').textContent = groups.length;
+        const $list = document.getElementById('fb-group-list');
+        $list.innerHTML = groups.length === 0
+          ? '<div class="ch-empty"><div style="text-align:center;color:var(--text-muted)">등록된 그룹 없음</div></div>'
+          : groups.map(g => fbGroupRowHTML(g)).join('');
+      } catch (err) {
+        document.getElementById('fb-group-list').innerHTML =
+          `<div class="state-wrap"><div class="state-title">불러오기 실패</div><div class="state-desc">${escapeHtml(err.message)}</div></div>`;
+      }
+    }
+
+    function fbGroupRowHTML(g) {
+      const isActive = g.isActive !== false;
+      const recipients = (g.deliveryConfig?.email?.recipients || []).join(', ');
+      const isEmailEnabled = g.deliveryConfig?.email?.isEnabled ?? false;
+      const panelId = `fb-settings-${g.docId}`;
+      const selectedModel = FB_ANALYSIS_MODELS.some(m => m.value === g.analysisModel)
+        ? g.analysisModel
+        : FB_ANALYSIS_MODELS[0].value;
+
+      return `
+        <div class="ch-row ${isActive ? '' : 'inactive'}" id="fb-row-${g.docId}">
+          <div class="ch-row-icon">
+            <svg viewBox="0 0 24 24" fill="currentColor" style="width:18px;height:18px;color:#1877F2">
+              <path d="M24 12.073C24 5.405 18.627 0 12 0S0 5.405 0 12.073C0 18.1 4.388 23.094 10.125 24v-8.437H7.078v-3.49h3.047V9.41c0-3.025 1.792-4.697 4.533-4.697 1.312 0 2.686.236 2.686.236v2.97h-1.513c-1.491 0-1.956.93-1.956 1.886v2.267h3.328l-.532 3.49h-2.796V24C19.612 23.094 24 18.1 24 12.073z"/>
+            </svg>
+          </div>
+          <div class="ch-row-info">
+            <div class="ch-row-name">${escapeHtml(g.groupName || g.groupId)}</div>
+            <div class="ch-row-meta">Facebook Group</div>
+          </div>
+          <div class="ch-row-status ${isActive ? 'active' : 'inactive'}">${isActive ? '활성' : '비활성'}</div>
+          <div class="ch-row-actions">
+            <div class="action-btn settings" data-docid="${escapeHtml(g.docId)}"
+                 onclick="toggleFbGroupSettings(this.dataset.docid)" title="설정">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="3"/>
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+              </svg>
+            </div>
+            <div class="action-btn ${isActive ? 'toggle-on' : 'toggle-off'}"
+                 data-docid="${escapeHtml(g.docId)}"
+                 onclick="toggleFbGroup(this.dataset.docid, ${isActive})"
+                 title="${isActive ? '비활성화' : '활성화'}">
+              ${isActive
+                ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18.364 18.364A9 9 0 0 0 5.636 5.636m12.728 12.728L5.636 5.636"/></svg>`
+                : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>`}
+            </div>
+            <div class="action-btn del"
+                 data-docid="${escapeHtml(g.docId)}" data-name="${escapeHtml(g.groupName || g.groupId)}"
+                 onclick="deleteFbGroup(this.dataset.docid, this.dataset.name)"
+                 title="그룹 삭제">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="3 6 5 6 21 6"/>
+                <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
+                <path d="M10 11v6M14 11v6"/>
+                <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/>
+              </svg>
+            </div>
+          </div>
+        </div>
+        <div class="ch-settings-panel" id="${panelId}">
+          <div class="settings-section">
+            <div class="settings-section-title">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+              이메일 리포트
+            </div>
+            <label style="display:flex;align-items:center;gap:.5rem;margin-bottom:.75rem;cursor:pointer">
+              <input type="checkbox" id="fbEmailEnabled-${g.docId}" ${isEmailEnabled ? 'checked' : ''}>
+              <span style="font-size:.875rem">이메일 발송 활성화</span>
+            </label>
+            <textarea class="settings-textarea" id="fbRecipients-${g.docId}"
+              placeholder="수신자 이메일 (쉼표 구분)">${escapeHtml(recipients)}</textarea>
+            <button class="btn-save-settings" data-docid="${escapeHtml(g.docId)}"
+                    onclick="saveFbGroupSettings(this.dataset.docid)">저장</button>
+            <div class="add-result" id="fbSaveResult-${g.docId}"></div>
+          </div>
+          <div class="settings-section">
+            <div class="settings-section-title">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/></svg>
+              AI 분석 지시문
+            </div>
+            <label class="settings-field-label" for="fbAnalysisModel-${g.docId}">AI 모델</label>
+            <select class="settings-select" id="fbAnalysisModel-${g.docId}">
+              ${FB_ANALYSIS_MODELS.map(m => `
+                <option value="${escapeHtml(m.value)}" ${selectedModel === m.value ? 'selected' : ''}>
+                  ${escapeHtml(m.label)}
+                </option>
+              `).join('')}
+            </select>
+            <textarea class="settings-textarea" id="fbAnalysisPrompt-${g.docId}"
+              rows="3" placeholder="예: 부정적 반응 위주로 분석해줘. 이슈 항목은 최대 3개로 제한해줘.">${escapeHtml(g.analysisPrompt || '')}</textarea>
+            <button class="btn-save-settings" data-docid="${escapeHtml(g.docId)}"
+                    onclick="saveFbGroupSettings(this.dataset.docid)">저장</button>
+          </div>
+        </div>`;
+    }
+
+    function toggleFbGroupSettings(docId) {
+      const panel = document.getElementById(`fb-settings-${docId}`);
+      if (panel) panel.classList.toggle('open');
+    }
+
+    async function addFbGroup() {
+      const groupUrl  = document.getElementById('fbGroupUrlInput')?.value.trim();
+      const groupName = document.getElementById('fbGroupNameInput')?.value.trim();
+      if (!groupUrl) { alert('그룹 URL을 입력하세요.'); return; }
+      try {
+        await apiFetch('/facebook/groups', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ workspaceId: WS, groupUrl, groupName }),
+        });
+        await loadFbGroups();
+      } catch (err) { alert('그룹 추가 실패: ' + err.message); }
+    }
+
+    async function toggleFbGroup(docId, currentActive) {
+      try {
+        await apiFetch(`/facebook/groups?workspaceId=${WS}&docId=${encodeURIComponent(docId)}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ isActive: !currentActive }),
+        });
+        await loadFbGroups();
+      } catch (err) { alert('상태 변경 실패: ' + err.message); }
+    }
+
+    async function saveFbGroupSettings(docId) {
+      const isEnabled  = document.getElementById(`fbEmailEnabled-${docId}`)?.checked ?? false;
+      const recipients = (document.getElementById(`fbRecipients-${docId}`)?.value || '')
+        .split(/[,\n]/).map(e => e.trim()).filter(Boolean);
+      const analysisPrompt = document.getElementById(`fbAnalysisPrompt-${docId}`)?.value || '';
+      const analysisModel = document.getElementById(`fbAnalysisModel-${docId}`)?.value || FB_ANALYSIS_MODELS[0].value;
+      const $result = document.getElementById(`fbSaveResult-${docId}`);
+      try {
+        await apiFetch(`/facebook/groups/settings?workspaceId=${WS}&docId=${encodeURIComponent(docId)}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            deliveryConfig: { email: { isEnabled, recipients } },
+            analysisPrompt,
+            analysisModel,
+          }),
+        });
+        if ($result) { $result.textContent = '✓ 저장됨'; $result.style.color = 'var(--pos)'; setTimeout(() => { if ($result) $result.textContent = ''; }, 2000); }
+        await loadFbGroups();
+      } catch (err) {
+        if ($result) { $result.textContent = '저장 실패: ' + err.message; $result.style.color = 'var(--neg)'; }
+      }
+    }
+
+    async function deleteFbGroup(docId, groupName) {
+      const ok = await confirmDialog(`그룹 "${groupName}"을 삭제하시겠습니까?\n관련 리포트도 함께 삭제됩니다.`);
+      if (!ok) return;
+      try {
+        await apiFetch(`/facebook/groups?workspaceId=${WS}&docId=${encodeURIComponent(docId)}`, { method: 'DELETE' });
+        await loadFbGroups();
+      } catch (err) { alert('삭제 실패: ' + err.message); }
+    }
+
+    // ── 세션 관리 ─────────────────────────────────────────────
+    async function loadFbSession() {
+      const $main = document.getElementById('fb-session-main');
+      if (!$main) return;
+      try {
+        const status = await apiFetch(`/facebook/session/status?workspaceId=${WS}`);
+
+        const isValid   = status.isValid;
+        const exists    = status.exists;
+        const badgeColor  = isValid ? '#16a34a' : '#dc2626';
+        const badgeBg     = isValid ? '#f0fdf4' : '#fef2f2';
+        const badgeBorder = isValid ? '#bbf7d0' : '#fecaca';
+        const badgeText   = !exists ? '세션 없음' : isValid ? '세션 유효' : '세션 만료됨';
+        const badgeDesc   = !exists
+          ? '등록된 세션이 없습니다. 아래에서 쿠키를 등록하세요.'
+          : isValid
+          ? '로그인 상태가 유효합니다. 파이프라인이 정상 실행됩니다.'
+          : '세션이 만료되었습니다. 쿠키를 다시 등록해주세요.';
+
+        $main.innerHTML = `
+          <div style="display:grid;grid-template-columns:1fr 340px;gap:20px;align-items:start">
+
+            <!-- 왼쪽: 쿠키 등록 폼 -->
+            <div class="panel-card">
+              <div class="panel-title">쿠키 등록</div>
+
+              <!-- 안내 박스 -->
+              <div style="display:flex;gap:10px;padding:12px 14px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;margin-bottom:16px">
+                <svg style="flex-shrink:0;margin-top:1px" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+                </svg>
+                <div style="font-size:12.5px;color:#1e40af;line-height:1.6">
+                  브라우저에서 facebook.com 로그인 후<br>
+                  <strong>DevTools (F12) → Application → Cookies → .facebook.com</strong><br>
+                  쿠키 전체를 JSON 배열로 복사해 붙여넣으세요.
+                </div>
+              </div>
+
+              <!-- textarea -->
+              <div style="margin-bottom:14px">
+                <label style="display:block;font-size:12px;font-weight:600;color:#475569;margin-bottom:6px">Cookie JSON 배열</label>
+                <textarea
+                  id="fbCookieInput"
+                  rows="10"
+                  style="width:100%;box-sizing:border-box;font-family:monospace;font-size:12px;padding:10px 12px;border:1px solid #e2e8f0;border-radius:8px;resize:vertical;outline:none;color:#1e293b;background:#f8fafc;line-height:1.5"
+                  placeholder='[{"name":"c_user","value":"...","domain":".facebook.com",...}]'
+                ></textarea>
+              </div>
+
+              <!-- 버튼 -->
+              <div style="display:flex;gap:8px">
+                <button class="btn-primary" style="flex:1" onclick="saveFbCookies()">
+                  세션 저장
+                </button>
+                ${exists ? `
+                <button class="btn-secondary" onclick="deleteFbSession()" style="padding:0 16px">
+                  세션 삭제
+                </button>` : ''}
+              </div>
+            </div>
+
+            <!-- 오른쪽: 세션 상태 -->
+            <div style="display:flex;flex-direction:column;gap:14px">
+
+              <!-- 상태 뱃지 카드 -->
+              <div class="panel-card" style="padding:20px">
+                <div class="panel-title" style="margin-bottom:14px">세션 상태</div>
+                <div style="display:flex;align-items:center;gap:12px;padding:14px 16px;background:${badgeBg};border:1px solid ${badgeBorder};border-radius:10px">
+                  <span style="width:10px;height:10px;border-radius:50%;background:${badgeColor};flex-shrink:0;
+                    ${isValid ? 'box-shadow:0 0 0 3px rgba(22,163,74,.2)' : ''}"></span>
+                  <div>
+                    <div style="font-size:13px;font-weight:700;color:#1e293b">${badgeText}</div>
+                    <div style="font-size:11.5px;color:#64748b;margin-top:2px">${badgeDesc}</div>
+                  </div>
+                </div>
+              </div>
+
+              ${exists ? `
+              <button id="fbVerifyBtn" class="btn-secondary" style="width:100%;margin-top:4px" onclick="verifyFbSession()">
+                세션 재검증
+              </button>` : ''}
+
+              <!-- 상세 정보 카드 (세션이 있을 때만) -->
+              ${exists ? `
+              <div class="panel-card" style="padding:20px">
+                <div class="panel-title" style="margin-bottom:12px">저장 정보</div>
+                <div style="display:flex;flex-direction:column;gap:10px">
+                  <div style="display:flex;justify-content:space-between;align-items:center;font-size:12.5px">
+                    <span style="color:#64748b">쿠키 수</span>
+                    <span style="font-weight:600;color:#1e293b">${status.cookieCount || 0}개</span>
+                  </div>
+                  ${status.savedAt ? `
+                  <div style="display:flex;justify-content:space-between;align-items:center;font-size:12.5px">
+                    <span style="color:#64748b">저장일시</span>
+                    <span style="font-weight:500;color:#1e293b">${new Date(status.savedAt).toLocaleString('ko-KR', {month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'})}</span>
+                  </div>` : ''}
+                  ${status.lastValidatedAt ? `
+                  <div style="display:flex;justify-content:space-between;align-items:center;font-size:12.5px">
+                    <span style="color:#64748b">마지막 확인</span>
+                    <span style="font-weight:500;color:#1e293b">${new Date(status.lastValidatedAt).toLocaleString('ko-KR', {month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'})}</span>
+                  </div>` : ''}
+                </div>
+              </div>` : ''}
+
+            </div>
+          </div>`;
+        checkFbSessionAlert();
+      } catch (err) {
+        $main.innerHTML = `<div class="error-state">오류: ${err.message}</div>`;
+      }
+    }
+
+    async function saveFbCookies() {
+      const raw = document.getElementById('fbCookieInput')?.value.trim();
+      if (!raw) { alert('쿠키 JSON을 입력하세요.'); return; }
+      let cookies;
+      try { cookies = JSON.parse(raw); } catch { alert('유효한 JSON 형식이 아닙니다.'); return; }
+      if (!Array.isArray(cookies)) { alert('쿠키는 배열([ ... ]) 형식이어야 합니다.'); return; }
+      try {
+        const res = await apiFetch('/facebook/session', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ workspaceId: WS, cookies }),
+        });
+        alert(`세션 저장 완료 (쿠키 ${res.cookieCount}개)`);
+        await loadFbSession();
+      } catch (err) { alert('저장 실패: ' + err.message); }
+    }
+
+    async function deleteFbSession() {
+      const ok = await confirmDialog('저장된 Facebook 세션(쿠키)을 삭제하시겠습니까?');
+      if (!ok) return;
+      try {
+        await apiFetch(`/facebook/session?workspaceId=${WS}`, { method: 'DELETE' });
+        await loadFbSession();
+      } catch (err) { alert('삭제 실패: ' + err.message); }
+    }
+
+    async function verifyFbSession() {
+      const btn = document.getElementById('fbVerifyBtn');
+      if (btn) { btn.disabled = true; btn.textContent = '검증 중...'; }
+      try {
+        const res = await apiFetch('/facebook/session/verify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ workspaceId: WS }),
+        });
+        await loadFbSession();
+        alert(res.isValid ? '세션 유효 ✓ 로그인 상태가 확인되었습니다.' : '세션 만료 — 쿠키를 다시 등록해주세요.');
+      } catch (err) {
+        alert('재검증 실패: ' + err.message);
+        if (btn) { btn.disabled = false; btn.textContent = '세션 재검증'; }
+      }
+    }
+
+    // ════════════════════════════════════════════════════════
+    //  네이버 라운지
+    // ════════════════════════════════════════════════════════
+
+    const SVG_NL = `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M16.273 12.845 7.376 0H0v24h7.727V11.155L16.624 24H24V0h-7.727z"/></svg>`;
+
+    // ── 가용 날짜 갱신 ──────────────────────────────────────
+    async function refreshNlAvailableDates() {
+      try {
+        const { dates } = await apiFetch(`/naver/available-dates?workspaceId=${WS}`);
+        if (!dates.length) return;
+        if (_fpNlDatePicker) {
+          _fpNlDatePicker.set('enable', dates);
+          if (!_fpNlDatePicker.selectedDates.length) _fpNlDatePicker.setDate(dates[0], false);
+        } else {
+          document.getElementById('nlReportDate').value = dates[0] || '';
+        }
+      } catch (e) { /* silent */ }
+    }
+
+    // ── 수동 트리거 ─────────────────────────────────────────
+    async function triggerNlReport() {
+      const $btn = document.getElementById('nlTriggerBtn');
+      const $msg = document.getElementById('nlTriggerMsg');
+      $btn.classList.add('spinning');
+      $msg.textContent = '수집 중…';
+      try {
+        const date = document.getElementById('nlReportDate')?.value || '';
+        await apiFetch('/naver/pipeline/trigger', {
+          method: 'POST',
+          body: JSON.stringify({ workspaceId: WS, date: date || undefined }),
+        });
+        $msg.textContent = '수집 완료';
+        await refreshNlAvailableDates();
+        await loadNlReport();
+      } catch (err) {
+        $msg.textContent = '오류: ' + err.message;
+      } finally {
+        $btn.classList.remove('spinning');
+        setTimeout(() => { $msg.textContent = ''; }, 5000);
+      }
+    }
+
+    // ── 리포트 조회 ─────────────────────────────────────────
+    async function loadNlReport() {
+      const date = document.getElementById('nlReportDate')?.value;
+      const $main = document.getElementById('nl-report-main');
+      if (!date || !$main) return;
+      $main.innerHTML = '<div class="loading-state">로딩 중…</div>';
+      try {
+        const { reports } = await apiFetch(`/naver/report?workspaceId=${WS}&date=${date}`);
+        if (!reports || !reports.length) {
+          $main.innerHTML = '<div class="empty-state">해당 날짜의 리포트가 없습니다.</div>';
+          return;
+        }
+        $main.innerHTML = reports.map(buildNlReportCard).join('');
+      } catch (err) {
+        $main.innerHTML = `<div class="error-state">오류: ${err.message}</div>`;
+      }
+    }
+
+    function buildNlReportCard(r) {
+      const crawlBadge = r.crawlStatus === 'partial'
+        ? `<span class="badge alert">부분 수집</span>`
+        : r.crawlStatus === 'session_expired'
+        ? `<span class="badge alert">세션 만료</span>`
+        : '';
+
+      const issues = (r.aiIssues || []).map(issue => {
+        const postUrl = issue.postIndex ? (r.posts || [])[issue.postIndex - 1]?.postUrl || null : null;
+        const linkBtn = postUrl
+          ? `<a href="${postUrl}" target="_blank" rel="noopener" class="issue-msg-link">↗</a>`
+          : '';
+        return `<div class="issue-item">
+          <div class="issue-title">${escapeHtml(issue.title || '')} ${linkBtn}</div>
+          <div class="issue-desc">${escapeHtml(issue.description || '')}</div>
+        </div>`;
+      }).join('');
+
+      const tokenStrip = (r.model || r.totalTokens) ? `
+        <div class="token-strip">
+          ${r.model ? `<span class="token-model">${escapeHtml(r.model)}</span>` : ''}
+          ${r.totalTokens ? `<span>입력 ${(r.promptTokens||0).toLocaleString()} / 출력 ${(r.completionTokens||0).toLocaleString()} / 합계 ${(r.totalTokens||0).toLocaleString()} 토큰</span>` : ''}
+          ${r.cost != null ? `<span>비용 $${Number(r.cost).toFixed(4)}</span>` : ''}
+        </div>` : '';
+
+      return `
+      <div class="ch-card anim d1">
+        <div class="ch-header anim d1">
+          <div class="ch-platform-icon" style="color:#03C75A">${SVG_NL}</div>
+          <div>
+            <div class="ch-name">${escapeHtml(r.loungeName || '')}</div>
+            <div class="ch-meta">
+              ${r.postCount != null ? `게시글 ${r.postCount}개` : ''}
+              ${r.totalComments != null ? ` &nbsp;·&nbsp; 댓글 ${r.totalComments.toLocaleString()}개` : ''}
+              ${crawlBadge}
+            </div>
+          </div>
+        </div>
+
+        ${r.aiSummary ? `
+        <div class="scard anim d2">
+          <div class="scard-label">📋 AI 동향 요약</div>
+          <div class="scard-body">${sanitizeReportHtml(r.aiSummary)}</div>
+        </div>` : ''}
+
+        ${issues ? `
+        <div class="scard anim d3">
+          <div class="scard-label">🚨 주요 이슈</div>
+          <div class="scard-body">${issues}</div>
+        </div>` : ''}
+
+        ${tokenStrip}
+      </div>`;
+    }
+
+    // ── 라운지 관리 ─────────────────────────────────────────
+    async function loadNlLounges() {
+      const $main = document.getElementById('nl-lounges-main');
+      if (!$main) return;
+
+      $main.innerHTML = `
+        <div class="ch-mgmt-grid">
+          <div class="add-panel">
+            <div class="panel-title">라운지 추가</div>
+            <div class="panel-desc">모니터링할 네이버 게임 라운지 URL을 등록합니다.</div>
+            <div class="field-group">
+              <label class="field-label">라운지 이름 <span style="color:var(--text-muted);font-size:.75rem">(선택)</span></label>
+              <input class="field-input" id="nlNewLoungeName" type="text" placeholder="예: 소울스트라이크 라운지" autocomplete="off">
+            </div>
+            <div class="field-group">
+              <label class="field-label">라운지 URL <span style="color:var(--neg)">*</span></label>
+              <input class="field-input" id="nlNewLoungeUrl" type="text" placeholder="https://game.naver.com/lounge/{id}/board" autocomplete="off">
+            </div>
+            <button class="btn-add" onclick="addNlLounge()">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+              </svg>
+              라운지 추가
+            </button>
+            <div class="add-result" id="nlAddResult"></div>
+          </div>
+          <div class="list-panel">
+            <div class="list-header">
+              <span class="list-title">등록된 라운지</span>
+              <span class="list-count" id="nlLoungeListCount">-</span>
+            </div>
+            <div id="nl-lounge-list"><div class="sk" style="height:72px;border-radius:12px;margin-bottom:.75rem"></div></div>
+          </div>
+        </div>`;
+
+      try {
+        const { lounges } = await apiFetch(`/naver/lounges?workspaceId=${WS}`);
+        document.getElementById('nlLoungeListCount').textContent = lounges.length;
+        const $list = document.getElementById('nl-lounge-list');
+        $list.innerHTML = lounges.length === 0
+          ? '<div class="ch-empty"><div style="text-align:center;color:var(--text-muted)">등록된 라운지 없음</div></div>'
+          : lounges.map(nlLoungeRowHTML).join('');
+      } catch (err) {
+        document.getElementById('nl-lounge-list').innerHTML =
+          `<div class="state-wrap"><div class="state-title">불러오기 실패</div><div class="state-desc">${escapeHtml(err.message)}</div></div>`;
+      }
+    }
+
+    function nlLoungeRowHTML(g) {
+      const isActive = g.isActive !== false;
+      const recipients = (g.deliveryConfig?.email?.recipients || []).join(', ');
+      const isEmailEnabled = g.deliveryConfig?.email?.isEnabled ?? false;
+      const panelId = `nl-settings-${g.docId}`;
+      const selectedModel = NL_ANALYSIS_MODELS.some(m => m.value === g.analysisModel)
+        ? g.analysisModel
+        : NL_ANALYSIS_MODELS[0].value;
+
+      return `
+        <div class="ch-row ${isActive ? '' : 'inactive'}" id="nlrow-${g.docId}">
+          <div class="ch-row-icon">
+            <svg viewBox="0 0 24 24" fill="currentColor" style="width:18px;height:18px;color:#03C75A"><path d="M16.273 12.845 7.376 0H0v24h7.727V11.155L16.624 24H24V0h-7.727z"/></svg>
+          </div>
+          <div class="ch-row-info">
+            <div class="ch-row-name">${escapeHtml(g.loungeName || g.loungeId)}</div>
+            <div class="ch-row-meta">${escapeHtml(g.loungeUrl || '')}</div>
+          </div>
+          <div class="ch-row-status ${isActive ? 'active' : 'inactive'}">${isActive ? '활성' : '비활성'}</div>
+          <div class="ch-row-actions">
+            <div class="action-btn settings" data-docid="${escapeHtml(g.docId)}"
+                 onclick="toggleNlLoungeSettings(this.dataset.docid)" title="설정">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="3"/>
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+              </svg>
+            </div>
+            <div class="action-btn ${isActive ? 'toggle-on' : 'toggle-off'}"
+                 data-docid="${escapeHtml(g.docId)}"
+                 onclick="toggleNlLounge(this.dataset.docid, ${isActive})"
+                 title="${isActive ? '비활성화' : '활성화'}">
+              ${isActive
+                ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18.364 18.364A9 9 0 0 0 5.636 5.636m12.728 12.728L5.636 5.636"/></svg>`
+                : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>`}
+            </div>
+            <div class="action-btn del"
+                 data-docid="${escapeHtml(g.docId)}" data-name="${escapeHtml(g.loungeName || g.loungeId || '')}"
+                 onclick="deleteNlLounge(this.dataset.docid, this.dataset.name)"
+                 title="라운지 삭제">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="3 6 5 6 21 6"/>
+                <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
+                <path d="M10 11v6M14 11v6"/>
+                <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/>
+              </svg>
+            </div>
+          </div>
+        </div>
+        <div class="ch-settings-panel" id="${panelId}">
+          <div class="settings-section">
+            <div class="settings-section-title">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+              이메일 리포트
+            </div>
+            <label style="display:flex;align-items:center;gap:.5rem;margin-bottom:.75rem;cursor:pointer">
+              <input type="checkbox" id="nlEmailEnabled-${g.docId}" ${isEmailEnabled ? 'checked' : ''}>
+              <span style="font-size:.875rem">이메일 발송 활성화</span>
+            </label>
+            <textarea class="settings-textarea" id="nlEmailRecipients-${g.docId}"
+              placeholder="수신자 이메일 (쉼표 구분)">${escapeHtml(recipients)}</textarea>
+            <button class="btn-save-settings" data-docid="${escapeHtml(g.docId)}"
+                    onclick="saveNlLoungeSettings(this.dataset.docid)">저장</button>
+            <div class="add-result" id="nlSaveResult-${g.docId}"></div>
+          </div>
+          <div class="settings-section">
+            <div class="settings-section-title">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/></svg>
+              AI 분석 지시문
+            </div>
+            <label class="settings-field-label" for="nlAnalysisModel-${g.docId}">AI 모델</label>
+            <select class="settings-select" id="nlAnalysisModel-${g.docId}">
+              ${NL_ANALYSIS_MODELS.map(m => `
+                <option value="${escapeHtml(m.value)}" ${selectedModel === m.value ? 'selected' : ''}>
+                  ${escapeHtml(m.label)}
+                </option>
+              `).join('')}
+            </select>
+            <textarea class="settings-textarea" id="nlAnalysisPrompt-${g.docId}"
+              rows="3" placeholder="예: 부정적 반응 위주로 분석해줘.">${escapeHtml(g.analysisPrompt || '')}</textarea>
+            <button class="btn-save-settings" data-docid="${escapeHtml(g.docId)}"
+                    onclick="saveNlLoungeSettings(this.dataset.docid)">저장</button>
+          </div>
+        </div>`;
+    }
+
+    function toggleNlLoungeSettings(docId) {
+      const panel = document.getElementById(`nl-settings-${docId}`);
+      if (panel) panel.classList.toggle('open');
+    }
+
+    async function addNlLounge() {
+      const loungeName = document.getElementById('nlNewLoungeName')?.value.trim() || '';
+      const loungeUrl  = document.getElementById('nlNewLoungeUrl')?.value.trim() || '';
+      const $result = document.getElementById('nlAddResult');
+      if (!loungeUrl) { $result.textContent = 'URL을 입력하세요.'; return; }
+      try {
+        $result.textContent = '추가 중…';
+        await apiFetch('/naver/lounges', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ workspaceId: WS, loungeUrl, loungeName }),
+        });
+        await loadNlLounges();
+      } catch (err) {
+        $result.textContent = '오류: ' + err.message;
+      }
+    }
+
+    async function toggleNlLounge(docId, currentActive) {
+      try {
+        await apiFetch(`/naver/lounges?workspaceId=${WS}&docId=${encodeURIComponent(docId)}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ isActive: !currentActive }),
+        });
+        await loadNlLounges();
+      } catch (err) { alert('변경 실패: ' + err.message); }
+    }
+
+    async function saveNlLoungeSettings(docId) {
+      const isEnabled  = document.getElementById(`nlEmailEnabled-${docId}`)?.checked ?? false;
+      const recipients = (document.getElementById(`nlEmailRecipients-${docId}`)?.value || '')
+        .split(/[,\n]/).map(e => e.trim()).filter(Boolean);
+      const analysisPrompt = document.getElementById(`nlAnalysisPrompt-${docId}`)?.value || '';
+      const analysisModel  = document.getElementById(`nlAnalysisModel-${docId}`)?.value || NL_ANALYSIS_MODELS[0].value;
+      const $result = document.getElementById(`nlSaveResult-${docId}`);
+      try {
+        await apiFetch(`/naver/lounges/settings?workspaceId=${WS}&docId=${encodeURIComponent(docId)}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            deliveryConfig: { email: { isEnabled, recipients } },
+            analysisPrompt,
+            analysisModel,
+          }),
+        });
+        if ($result) { $result.textContent = '✓ 저장됨'; $result.style.color = 'var(--pos)'; setTimeout(() => { if ($result) $result.textContent = ''; }, 2000); }
+        await loadNlLounges();
+      } catch (err) {
+        if ($result) { $result.textContent = '저장 실패: ' + err.message; $result.style.color = 'var(--neg)'; }
+      }
+    }
+
+    async function deleteNlLounge(docId, loungeName) {
+      const ok = await confirmDialog(`"${loungeName}" 라운지를 삭제하시겠습니까?`);
+      if (!ok) return;
+      try {
+        await apiFetch(`/naver/lounges?workspaceId=${WS}&docId=${docId}`, { method: 'DELETE' });
+        await loadNlLounges();
+      } catch (err) { alert('삭제 실패: ' + err.message); }
+    }
+
+    // ── 세션 관리 ────────────────────────────────────────────
+    async function checkNlSessionAlert() {
+      try {
+        const status = await apiFetch(`/naver/session/status?workspaceId=${WS}`);
+        const $dot = document.getElementById('nl-session-alert');
+        if ($dot) $dot.style.display = (status.exists && !status.isValid) ? 'inline-block' : 'none';
+      } catch (_) {}
+    }
+
+    async function loadNlSession() {
+      const $main = document.getElementById('nl-session-main');
+      if (!$main) return;
+      try {
+        const status = await apiFetch(`/naver/session/status?workspaceId=${WS}`);
+
+        const isValid  = status.isValid;
+        const exists   = status.exists;
+        const badgeColor  = isValid ? '#16a34a' : '#dc2626';
+        const badgeBg     = isValid ? '#f0fdf4' : '#fef2f2';
+        const badgeBorder = isValid ? '#bbf7d0' : '#fecaca';
+        const badgeText   = !exists ? '세션 없음' : isValid ? '세션 유효' : '세션 만료됨';
+        const badgeDesc   = !exists
+          ? '등록된 세션이 없습니다. 아래에서 쿠키를 등록하세요.'
+          : isValid
+          ? '로그인 상태가 유효합니다. 파이프라인이 정상 실행됩니다.'
+          : '세션이 만료되었습니다. 쿠키를 다시 등록해주세요.';
+
+        $main.innerHTML = `
+          <div style="display:grid;grid-template-columns:1fr 340px;gap:20px;align-items:start">
+
+            <!-- 왼쪽: 쿠키 등록 폼 -->
+            <div class="panel-card">
+              <div class="panel-title">쿠키 등록</div>
+
+              <!-- 안내 박스 -->
+              <div style="display:flex;gap:10px;padding:12px 14px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;margin-bottom:16px">
+                <svg style="flex-shrink:0;margin-top:1px" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+                </svg>
+                <div style="font-size:12.5px;color:#1e40af;line-height:1.6">
+                  브라우저에서 game.naver.com 로그인 후<br>
+                  <strong>DevTools (F12) → Application → Cookies → .naver.com</strong><br>
+                  쿠키 전체를 JSON 배열로 복사해 붙여넣으세요.
+                </div>
+              </div>
+
+              <!-- textarea -->
+              <div style="margin-bottom:14px">
+                <label style="display:block;font-size:12px;font-weight:600;color:#475569;margin-bottom:6px">Cookie JSON 배열</label>
+                <textarea
+                  id="nlCookieInput"
+                  rows="10"
+                  style="width:100%;box-sizing:border-box;font-family:monospace;font-size:12px;padding:10px 12px;border:1px solid #e2e8f0;border-radius:8px;resize:vertical;outline:none;color:#1e293b;background:#f8fafc;line-height:1.5"
+                  placeholder='[{"name":"NID_AUT","value":"...","domain":".naver.com","path":"/","secure":true,"httpOnly":true}]'
+                ></textarea>
+              </div>
+
+              <!-- 버튼 -->
+              <div style="display:flex;gap:8px">
+                <button class="btn-primary" style="flex:1" onclick="saveNlCookies()">
+                  세션 저장
+                </button>
+                ${exists ? `
+                <button class="btn-secondary" onclick="deleteNlSession()" style="padding:0 16px">
+                  세션 삭제
+                </button>` : ''}
+              </div>
+            </div>
+
+            <!-- 오른쪽: 세션 상태 -->
+            <div style="display:flex;flex-direction:column;gap:14px">
+
+              <!-- 상태 뱃지 카드 -->
+              <div class="panel-card" style="padding:20px">
+                <div class="panel-title" style="margin-bottom:14px">세션 상태</div>
+                <div style="display:flex;align-items:center;gap:12px;padding:14px 16px;background:${badgeBg};border:1px solid ${badgeBorder};border-radius:10px">
+                  <span style="width:10px;height:10px;border-radius:50%;background:${badgeColor};flex-shrink:0;
+                    ${isValid ? 'box-shadow:0 0 0 3px rgba(22,163,74,.2)' : ''}"></span>
+                  <div>
+                    <div style="font-size:13px;font-weight:700;color:#1e293b">${badgeText}</div>
+                    <div style="font-size:11.5px;color:#64748b;margin-top:2px">${badgeDesc}</div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 상세 정보 카드 (세션이 있을 때만) -->
+              ${exists ? `
+              <div class="panel-card" style="padding:20px">
+                <div class="panel-title" style="margin-bottom:12px">저장 정보</div>
+                <div style="display:flex;flex-direction:column;gap:10px">
+                  <div style="display:flex;justify-content:space-between;align-items:center;font-size:12.5px">
+                    <span style="color:#64748b">쿠키 수</span>
+                    <span style="font-weight:600;color:#1e293b">${status.cookieCount || 0}개</span>
+                  </div>
+                  ${status.savedAt ? `
+                  <div style="display:flex;justify-content:space-between;align-items:center;font-size:12.5px">
+                    <span style="color:#64748b">저장일시</span>
+                    <span style="font-weight:500;color:#1e293b">${new Date(status.savedAt).toLocaleString('ko-KR', {month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'})}</span>
+                  </div>` : ''}
+                  ${status.lastValidatedAt ? `
+                  <div style="display:flex;justify-content:space-between;align-items:center;font-size:12.5px">
+                    <span style="color:#64748b">마지막 확인</span>
+                    <span style="font-weight:500;color:#1e293b">${new Date(status.lastValidatedAt).toLocaleString('ko-KR', {month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'})}</span>
+                  </div>` : ''}
+                </div>
+              </div>` : ''}
+
+            </div>
+          </div>`;
+        checkNlSessionAlert();
+      } catch (err) {
+        $main.innerHTML = `<div class="error-state">오류: ${err.message}</div>`;
+      }
+    }
+
+    async function saveNlCookies() {
+      const raw = document.getElementById('nlCookieInput')?.value.trim();
+      if (!raw) { alert('쿠키 JSON을 입력하세요.'); return; }
+      let cookies;
+      try { cookies = JSON.parse(raw); } catch { alert('유효한 JSON 형식이 아닙니다.'); return; }
+      if (!Array.isArray(cookies)) { alert('쿠키는 배열([ ... ]) 형식이어야 합니다.'); return; }
+      try {
+        const res = await apiFetch('/naver/session', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ workspaceId: WS, cookies }),
+        });
+        alert(`세션 저장 완료 (쿠키 ${res.cookieCount ?? cookies.length}개)`);
+        await loadNlSession();
+      } catch (err) { alert('저장 실패: ' + err.message); }
+    }
+
+    async function deleteNlSession() {
+      const ok = await confirmDialog('저장된 네이버 세션(쿠키)을 삭제하시겠습니까?');
+      if (!ok) return;
+      try {
+        await apiFetch(`/naver/session?workspaceId=${WS}`, { method: 'DELETE' });
+        await loadNlSession();
+      } catch (err) { alert('삭제 실패: ' + err.message); }
+    }
+
+    // ═══════════════════════════════════════════════════════
+    //  공용 유틸: confirmDialog (간단한 삭제 확인용)
+    // ═══════════════════════════════════════════════════════
+
+    function confirmDialog(message) {
+      return Promise.resolve(window.confirm(message));
+    }
+
+    // ═══════════════════════════════════════════════════════
+    //  리포트 프리셋 관리
+    // ═══════════════════════════════════════════════════════
+
+    /** 플랫폼별 메타 */
+    const PRESET_PLATFORM_META = {
+      discord:      { label: 'Discord',       icon: '🎮', cls: 'preset-block--discord' },
+      instagram:    { label: 'Instagram',     icon: '📸', cls: 'preset-block--instagram' },
+      facebook:     { label: 'Facebook 그룹', icon: '👥', cls: 'preset-block--facebook' },
+      naver_lounge: { label: '네이버 라운지', icon: '🏪', cls: 'preset-block--naver_lounge' },
+    };
+
+    /** 편집 중인 프리셋 상태 */
+    let _editingPresetId = null;     // null = 신규
+    let _presetItems = [];           // 현재 구성된 드롭존 항목
+    let _presetChipInput = null;     // ChipInput 인스턴스
+
+    /** 프리셋 목록 로드 및 렌더링 */
+    async function loadPresets() {
+      const $list = document.getElementById('preset-list-main');
+      $list.innerHTML = '<div class="preset-list-empty">불러오는 중...</div>';
+      try {
+        const data = await apiFetch(`/report-presets?workspaceId=${WS}`);
+        renderPresetList(data.presets || []);
+      } catch (err) {
+        $list.innerHTML = `<div class="preset-list-empty" style="color:var(--neg)">오류: ${escapeHtml(err.message)}</div>`;
+      }
+    }
+
+    function renderPresetList(presets) {
+      const $list = document.getElementById('preset-list-main');
+      if (!presets.length) {
+        $list.innerHTML = '<div class="preset-list-empty">등록된 프리셋이 없습니다</div>';
+        return;
+      }
+      $list.innerHTML = presets.map((p) => {
+        const isActive = p.isActive !== false;
+        const itemCount = (p.items || []).length;
+        const recCount = (p.recipients || []).length;
+        return `
+          <div class="preset-list-item${_editingPresetId === p.presetId ? ' active' : ''}"
+               data-preset-id="${p.presetId}"
+               onclick="openPresetEditor(${JSON.stringify(p).replace(/"/g, '&quot;')})">
+            <div class="preset-list-item-name">${escapeHtml(p.name)}</div>
+            <div class="preset-list-item-meta">
+              <span class="preset-active-badge preset-active-badge--${isActive ? 'on' : 'off'}">${isActive ? '활성' : '비활성'}</span>
+              <span>${itemCount}개 리포트</span>
+              <span>수신자 ${recCount}명</span>
+            </div>
+          </div>`;
+      }).join('');
+    }
+
+    /** 편집기 열기 (preset = null이면 신규) */
+    async function openPresetEditor(preset) {
+      _editingPresetId = preset ? preset.presetId : null;
+      _presetItems = preset ? JSON.parse(JSON.stringify(preset.items || [])) : [];
+
+      document.getElementById('preset-editor-empty').style.display = 'none';
+      document.getElementById('preset-editor-form').style.display = '';
+      document.getElementById('preset-name-input').value = preset ? preset.name : '';
+
+      // ChipInput 초기화
+      if (!_presetChipInput) {
+        _presetChipInput = new ChipInput('preset-chip-container');
+      }
+      _presetChipInput.setEmails(preset ? (preset.recipients || []) : []);
+
+      // 드롭존 렌더링
+      renderDropZone();
+
+      // 사용 가능한 블록 로드
+      await loadAvailableBlocks();
+
+      // 목록 active 상태 갱신
+      _highlightPresetListItem(_editingPresetId);
+    }
+
+    function _highlightPresetListItem(presetId) {
+      document.querySelectorAll('.preset-list-item').forEach(el => {
+        el.classList.toggle('active', el.dataset.presetId === presetId);
+      });
+    }
+
+    /** 편집기 닫기 */
+    function closePresetEditor() {
+      _editingPresetId = null;
+      _presetItems = [];
+      document.getElementById('preset-editor-empty').style.display = '';
+      document.getElementById('preset-editor-form').style.display = 'none';
+      loadPresets();
+    }
+
+    /** 모든 플랫폼의 모니터링 대상을 병렬로 조회해 블록으로 렌더링 */
+    async function loadAvailableBlocks() {
+      const $area = document.getElementById('preset-available-blocks');
+      $area.innerHTML = '<span style="font-size:12px;color:#94a3b8">불러오는 중...</span>';
+      try {
+        const [guildsData, igData, fbData, nlData] = await Promise.allSettled([
+          apiFetch(`/guilds?workspaceId=${WS}`),
+          apiFetch(`/instagram/accounts?workspaceId=${WS}`),
+          apiFetch(`/facebook/groups?workspaceId=${WS}`),
+          apiFetch(`/naver/lounges?workspaceId=${WS}`),
+        ]);
+
+        const allTargets = [];
+
+        if (guildsData.status === 'fulfilled') {
+          (guildsData.value.guilds || []).forEach((g) => allTargets.push({
+            platform: 'discord',
+            targetId: g.discordGuildId,
+            targetName: g.guildName || g.discordGuildId,
+          }));
+        }
+        if (igData.status === 'fulfilled') {
+          (igData.value.accounts || []).forEach((a) => allTargets.push({
+            platform: 'instagram',
+            targetId: a.igUserId,
+            targetName: '@' + (a.username || a.igUserId),
+          }));
+        }
+        if (fbData.status === 'fulfilled') {
+          (fbData.value.groups || []).forEach((g) => allTargets.push({
+            platform: 'facebook',
+            targetId: g.docId,
+            targetName: g.groupName || g.docId,
+          }));
+        }
+        if (nlData.status === 'fulfilled') {
+          (nlData.value.lounges || []).forEach((l) => allTargets.push({
+            platform: 'naver_lounge',
+            targetId: l.docId,
+            targetName: l.loungeName || l.docId,
+          }));
+        }
+
+        if (!allTargets.length) {
+          $area.innerHTML = '<span style="font-size:12px;color:#94a3b8">등록된 모니터링 대상이 없습니다</span>';
+          return;
+        }
+
+        $area.innerHTML = allTargets.map((t) => {
+          const meta = PRESET_PLATFORM_META[t.platform] || { icon: '📋', cls: '', label: t.platform };
+          const payload = JSON.stringify(t).replace(/"/g, '&quot;');
+          return `<span class="preset-block ${meta.cls}"
+                        draggable="true"
+                        ondragstart="onPresetBlockDragStart(event, ${payload})">
+                    ${meta.icon} ${escapeHtml(t.targetName)}
+                  </span>`;
+        }).join('');
+      } catch (err) {
+        $area.innerHTML = `<span style="font-size:12px;color:var(--neg)">조회 실패</span>`;
+      }
+    }
+
+    /** 드롭존 렌더링 */
+    function renderDropZone() {
+      const $zone = document.getElementById('preset-dropzone');
+      const $hint = document.getElementById('preset-dropzone-hint');
+      if (!_presetItems.length) {
+        $hint.style.display = '';
+        $zone.querySelectorAll('.preset-block--placed').forEach((el) => el.remove());
+        return;
+      }
+      $hint.style.display = 'none';
+      // 기존 placed 블록 제거 후 재렌더
+      $zone.querySelectorAll('.preset-block--placed').forEach((el) => el.remove());
+      _presetItems.forEach((item, idx) => {
+        const meta = PRESET_PLATFORM_META[item.platform] || { icon: '📋', cls: '' };
+        const el = document.createElement('span');
+        el.className = `preset-block--placed ${meta.cls}`;
+        el.innerHTML = `${meta.icon} ${escapeHtml(item.targetName)}
+          <button class="preset-block-remove" onclick="removePresetItem(${idx})" title="제거">✕</button>`;
+        $zone.appendChild(el);
+      });
+    }
+
+    /** 드래그 시작: dataTransfer에 블록 정보 저장 */
+    function onPresetBlockDragStart(event, item) {
+      event.dataTransfer.setData('application/json', JSON.stringify(item));
+      event.dataTransfer.effectAllowed = 'copy';
+    }
+
+    /** 드롭: 블록을 프리셋 구성에 추가 */
+    function onPresetDrop(event) {
+      event.preventDefault();
+      event.currentTarget.classList.remove('preset-dropzone--over');
+      let item;
+      try { item = JSON.parse(event.dataTransfer.getData('application/json')); } catch { return; }
+      // 중복 추가 방지
+      if (_presetItems.some((i) => i.platform === item.platform && i.targetId === item.targetId)) return;
+      _presetItems.push(item);
+      renderDropZone();
+    }
+
+    /** 드롭존에서 항목 제거 */
+    function removePresetItem(idx) {
+      _presetItems.splice(idx, 1);
+      renderDropZone();
+    }
+
+    /** 프리셋 저장 (신규 또는 수정) */
+    async function savePreset() {
+      const name = document.getElementById('preset-name-input').value.trim();
+      if (!name) { alert('프리셋 이름을 입력하세요'); return; }
+      const recipients = _presetChipInput ? _presetChipInput.getEmails() : [];
+      const body = { workspaceId: WS, name, items: _presetItems, recipients };
+
+      try {
+        if (_editingPresetId) {
+          await apiFetch('/report-presets', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ...body, presetId: _editingPresetId }),
+          });
+        } else {
+          await apiFetch('/report-presets', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          });
+        }
+        closePresetEditor();
+      } catch (err) {
+        alert('저장 실패: ' + err.message);
+      }
+    }
+
+    /** 프리셋 삭제 */
+    async function deletePreset(presetId) {
+      const ok = await confirmDialog('이 프리셋을 삭제하시겠습니까?');
+      if (!ok) return;
+      try {
+        await apiFetch('/report-presets', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ workspaceId: WS, presetId }),
+        });
+        if (_editingPresetId === presetId) closePresetEditor();
+        else loadPresets();
+      } catch (err) {
+        alert('삭제 실패: ' + err.message);
+      }
+    }
+
+    /** 통합 이메일 수동 트리거 (이메일 발송 주의) */
+    async function triggerPresetEmail(date) {
+      const confirmed = await showConfirm({
+        platform: 'discord',
+        icon: '📋',
+        title: '통합 프리셋 이메일 발송',
+        sub: date || '오늘 기준 어제',
+        desc: '활성화된 모든 프리셋의 통합 이메일을 수신자에게 발송합니다. 계속하시겠습니까?',
+        confirmLabel: '발송',
+        color: '#6366f1',
+      });
+      if (!confirmed) return;
+      try {
+        await apiFetch('/report-presets/email/trigger', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ workspaceId: WS, date: date || null }),
+        });
+        alert('발송 완료');
+      } catch (err) {
+        alert('발송 실패: ' + err.message);
       }
     }
 

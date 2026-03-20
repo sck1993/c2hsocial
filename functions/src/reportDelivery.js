@@ -1,6 +1,7 @@
 "use strict";
 
 const nodemailer = require("nodemailer");
+const { Resvg } = require("@resvg/resvg-js");
 const { google } = require("googleapis");
 
 /** 일반 텍스트 필드의 HTML 특수문자 이스케이핑 */
@@ -81,6 +82,16 @@ function computeChartScale(values, { minVisualRange = 1, paddingRatio = 0.12 } =
     max: maxValue + padding,
   };
 }
+
+function formatAxisNumber(value) {
+  if (value == null || !Number.isFinite(value)) return "0";
+  return Math.round(value).toLocaleString();
+}
+
+const IG_CHART_LABEL_IMAGES = {
+  organicViewsLegend: "iVBORw0KGgoAAAANSUhEUgAAALQAAAAmCAYAAABtY7F6AAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAMDSURBVHhe7ZnBjdswEEW3gDSQBtJACsgCseWb7Rxy2w62A7eQFlyDm3AXPgVYykCqSDCSKA2/SIqiLESC/wMG2PWIlDR8pkj55YUQQgghhBBCCCGEEEIIeXL2W/N+KMq/Epibiu1XzoG5pWGv9VCYC+YsulbH4v4V86Th57c/n/Ybs98X5twVtpGhMGfJYZtHkSp0jpw5bf4XFPpBHL+bL4eivKHInrjJsdheowsej27Qli50+j31Y8x5u3YUOptGZmcAtLTyNw5oTGo8NhT7bfnL18btzUVfI+ZC5LRBUu/JF77zioh43HDUklPoAaRQKQVyByE8g8SQZYvtQy9hli50iOP2/tbWbnt/w3wICj0jWLAYWn7MpaDX5z92vz+3n69UaHeZNly/R0ChI+iZImXAZZmQW0wRuD1XYa46t0ah9ezc1mTELG2pNuNb8y410X2FNuIUOoIUsyvi8Ayji465IfSXAQdqbUI7SyeRUV0/3luMSmYQGUPvNQQKPYAuaKxAU9bQsPG8YV4Pkg68HszHQmTRbR4hdDUBbMpT12cnm/5c/rbnj6GXcHJ9to08zfS4hPYbWB/SE7Uu7OBbjhGFxFnI1xb7Dx2L+VjYtvb/KUJXgmENPMsLPXNXsSlPeq+AdMf2Jwj99Ay9EcL6kIbD7uPVGYhY7D5esX0IlBkfn5bUJUcO3bnzhO7/0GQusdeW9V6hm3lj59Z9Ys4RujBn+zmFTkQKWG903MFoCnqVXMpj1NKTuTDXUPs5hZ6KvQ+RCgXSTzdfrtrYxe7b+bJzyTEbsYFKoWnfvtKKDaowRmhcIqVGaJacwuQ6wY9a/nBnbwqdQe5A4aZJYkhm4VmFFqo9Sm9ZU8XNd80UOoPcgerJtilPeIyPMUKPxfbrk2MquXUK0dWuv6a2UOgMpgxUM+Ncx7Sj0DUUOhNdlKnxCFGWKvQcdeo9xUaFuVBoD3MM1BSeSWgBc+lBoVfBUoVeIhR6BVDodCj0CqDQ6VBoQgghhBBCCCGEEEIIIYQQksQ/Rq0/8z3UDAUAAAAASUVORK5CYII=",
+  followersLegend: "iVBORw0KGgoAAAANSUhEUgAAAG4AAAAmCAYAAAAlUK76AAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAGbSURBVHhe7ZfNcYMwEIV9kXxJHWkgfaSCdOBzwJNLCqCF1JAm3EImxm4mmfUMeHmRYIU9QMT7Zt7F+gHtZ4TYbAghhBBCCCGErJa63O5Opf+RYNtS0fd83LsnbP93NIuxRBYvY1LE1YX7xHmGImNwHuTrffNwuY/CH65j3flU+jdpw/4UtwBxIqYr7G++9/5Rj8lO3BhSxKVgFVeXrmr7lu6lecKOr/75Ks+du2MobnZxSlqFbfre9FOXpThZSGhRzTaHhdRF0AkVBPtYgtfT6Htttu5Ye2ctuYvTxViiOKHtxyduvDj9ewirjBS677jtLviOK/yhOyZDcZdTWkBcW4TSf+j+c4tb/akytuX1RcbMLU5Y9XfcOHGuGiMuNfcublbipgCFWBMqLvaxRubKWhwu2BKcw0LsyD7E0HstFooLBOewMFZciNiJGMlanJWUd1yIKcThH0zn1msuDlygJTiHBYq7M7hAS3AOYcxpNZa+7U+IiUOy3irbAtz4zUVxE4NFs6SvWFNAcRRHlgjFEUIIIYQQQgghJMovOgT9iYu2T3EAAAAASUVORK5CYII=",
+};
 
 /* ── HTML → 플레인 텍스트 변환 (구글 시트용) ── */
 function stripHtml(html) {
@@ -681,182 +692,181 @@ async function sendInstagramEmailReport({ recipients, username, date, report }) 
   await getTransporter().sendMail(mailOptions);
 }
 
-function buildInstagramTrendChartHtml(report = {}) {
+function buildInstagramTrendChartImage({ report = {}, username = "instagram", date = "" } = {}) {
   const td = Array.isArray(report.trendData) ? report.trendData.filter((d) => d && d.date) : [];
-  if (!td.length) return "";
+  if (!td.length) return { attachment: null, cid: null };
 
-  const chartHeight = 88;
-  const formatDateLabel = (dateStr) => {
-    const parts = String(dateStr || "").split("-");
-    return parts.length === 3 ? `${+parts[1]}/${+parts[2]}` : escapeHtml(dateStr || "—");
-  };
-  const formatMetricLabel = (value, { isCurrent = false } = {}) => {
-    if (value == null) return "—";
-    return Number(value).toLocaleString();
-  };
-
-  const buildMiniChart = ({ title, series, tone, minVisualRange = 1 }) => {
-    const normalizedSeries = trimLeadingNullSeries(series);
-    const values = normalizedSeries.map((item) => item.value).filter((value) => value != null);
-    if (!values.length) return "";
-
-    const scale = computeChartScale(values, { minVisualRange });
-    const range = Math.max(scale.max - scale.min, 1);
-    const baseHeight = values.length === 1 ? Math.round(chartHeight * 0.72) : 14;
-
-    const barCells = normalizedSeries.map((item, index) => {
-      const isCurrent = index === normalizedSeries.length - 1;
-      const normalized = item.value == null ? 0 : ((item.value - scale.min) / range);
-      const barHeight = item.value == null
-        ? 0
-        : Math.max(baseHeight, Math.round(baseHeight + normalized * (chartHeight - baseHeight)));
-      const topSpacerHeight = Math.max(chartHeight - barHeight, 0);
-
-      return `
-        <td style="padding:0 2px 10px 2px;vertical-align:bottom;text-align:center">
-          <table role="presentation" style="width:24px;height:${chartHeight}px;margin:0 auto;border-collapse:collapse;border-radius:10px 10px 6px 6px">
-            <tbody>
-              <tr>
-                <td style="height:${topSpacerHeight}px;padding:0"></td>
-              </tr>
-              <tr>
-                <td style="padding:0;vertical-align:bottom">
-                  ${item.value == null ? "" : `<div style="width:24px;height:${barHeight}px;background:${isCurrent ? tone.barStrong : tone.bar};border-radius:8px 8px 0 0;border:${isCurrent ? `1px solid ${tone.barStrongBorder}` : "none"};box-sizing:border-box"></div>`}
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </td>`;
-    }).join("");
-
-    const dateCells = normalizedSeries.map((item) => `
-      <td style="padding:6px 2px;text-align:center;font-size:10px;color:#64748b">${formatDateLabel(item.date)}</td>
-    `).join("");
-
-    const metricCells = normalizedSeries.map((item, index) => {
-      const isCurrent = index === normalizedSeries.length - 1;
-      return `
-        <td style="padding:6px 2px;text-align:center;font-size:10px;font-weight:${isCurrent ? 700 : 600};color:${isCurrent ? tone.valueStrong : "#374151"};user-select:text">
-          ${formatMetricLabel(item.value, { isCurrent })}
-        </td>`;
-    }).join("");
-
-    return `
-      <div style="margin-bottom:14px">
-        <div style="font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:${tone.heading};margin-bottom:8px">${title}</div>
-        <div style="border:1px solid ${tone.border};border-radius:12px;background:${tone.panel};padding:12px 10px 12px">
-          <table role="presentation" style="width:100%;border-collapse:collapse;table-layout:fixed">
-            <tbody>
-              <tr>
-                <td style="width:44px;padding:0 4px 10px 4px"></td>
-                ${barCells}
-              </tr>
-              <tr>
-                <td style="width:44px;padding:6px 4px;font-size:10px;font-weight:700;color:${tone.valueStrong};background:${tone.labelBg};border-radius:6px">일자</td>
-                ${dateCells}
-              </tr>
-              <tr>
-                <td style="width:44px;padding:6px 4px;font-size:10px;font-weight:700;color:${tone.valueStrong};background:${tone.labelBg};border-radius:6px">지표</td>
-                ${metricCells}
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>`;
-  };
-
-  const followerChart = buildMiniChart({
-    title: "팔로워 추이",
-    series: td.map((item) => ({
-      date: item.date,
-      // 팔로워 0은 실측값보다 누락값일 가능성이 높아서 축 계산에서 제외한다.
-      value: (() => {
-        const n = toChartNumber(item.followerCount);
-        return n != null && n > 0 ? n : null;
-      })(),
-    })),
-    minVisualRange: 12,
-    tone: {
-      heading: "#4f46e5",
-      panel: "#f8faff",
-      border: "#c7d2fe",
-      bar: "#a5b4fc",
-      barStrong: "#4f46e5",
-      barStrongBorder: "#3730a3",
-      valueStrong: "#4338ca",
-      labelBg: "#eef2ff",
-    },
+  const labels = td.map((item) => {
+    const parts = String(item.date || "").split("-");
+    return parts.length === 3 ? `${+parts[1]}/${+parts[2]}` : String(item.date || "—");
+  });
+  const viewsSeries = td.map((item) => {
+    const n = toChartNumber(item.dailyViews);
+    return n != null && n >= 0 ? n : null;
+  });
+  const followerSeries = td.map((item) => {
+    const n = toChartNumber(item.followerCount);
+    return n != null && n > 0 ? n : null;
   });
 
-  const viewsChart = buildMiniChart({
-    title: "오가닉 조회 추이",
-    series: td.map((item) => ({
-      date: item.date,
-      value: (() => {
-        const n = toChartNumber(item.dailyViews);
-        return n != null && n > 0 ? n : null;
-      })(),
-    })),
-    minVisualRange: 200,
-    tone: {
-      heading: "#047857",
-      panel: "#f6fefb",
-      border: "#a7f3d0",
-      bar: "#6ee7b7",
-      barStrong: "#059669",
-      barStrongBorder: "#047857",
-      valueStrong: "#065f46",
-      labelBg: "#e8fff6",
-    },
+  const chartValuesLeft = viewsSeries.filter((value) => value != null);
+  const chartValuesRight = followerSeries.filter((value) => value != null);
+  if (!chartValuesLeft.length && !chartValuesRight.length) {
+    return { attachment: null, cid: null };
+  }
+
+  const leftScale = chartValuesLeft.length
+    ? computeChartScale(chartValuesLeft, { minVisualRange: 200, paddingRatio: 0.16 })
+    : { min: 0, max: 100 };
+  const rightScale = chartValuesRight.length
+    ? computeChartScale(chartValuesRight, { minVisualRange: 12, paddingRatio: 0.12 })
+    : { min: 0, max: 100 };
+
+  const width = 1120;
+  const height = 420;
+  const margin = { top: 74, right: 52, bottom: 56, left: 52 };
+  const chartWidth = width - margin.left - margin.right;
+  const chartHeight = height - margin.top - margin.bottom;
+  const stepX = td.length > 1 ? chartWidth / (td.length - 1) : 0;
+  const barWidth = Math.min(38, Math.max(20, chartWidth / Math.max(td.length * 2.8, 1)));
+  const leftRange = Math.max(leftScale.max - leftScale.min, 1);
+  const rightRange = Math.max(rightScale.max - rightScale.min, 1);
+  const ticks = 5;
+
+  const mapLeftY = (value) => margin.top + chartHeight - (((value - leftScale.min) / leftRange) * chartHeight);
+  const mapRightY = (value) => margin.top + chartHeight - (((value - rightScale.min) / rightRange) * chartHeight);
+
+  const gridLines = Array.from({ length: ticks }, (_, index) => {
+    const ratio = index / (ticks - 1);
+    const y = margin.top + chartHeight - (ratio * chartHeight);
+    return { y };
   });
 
-  return `
-    <div style="border:1px solid #e2e8f0;border-radius:14px;background:#fcfdff;padding:14px 14px 4px">
-      ${followerChart}
-      ${viewsChart}
-    </div>`;
-}
+  const bars = viewsSeries.map((value, index) => {
+    if (value == null) return "";
+    const x = margin.left + (index * stepX) - (barWidth / 2);
+    const y = mapLeftY(value);
+    const barHeight = Math.max((margin.top + chartHeight) - y, 1);
+    return `<rect x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${barWidth.toFixed(2)}" height="${barHeight.toFixed(2)}" rx="8" fill="#6366f1" fill-opacity="0.30" stroke="#6366f1" stroke-width="1.2" />`;
+  }).join("");
 
-function buildInstagramPostCommentRow(post) {
-  if (!post) return "";
+  const viewsValueLabels = viewsSeries.map((value, index) => {
+    if (value == null) return "";
+    const x = margin.left + (index * stepX);
+    const yTop = mapLeftY(value);
+    const barHeight = Math.max((margin.top + chartHeight) - yTop, 1);
+    const y = yTop + (barHeight / 2) + 4;
+    return `<text x="${x.toFixed(2)}" y="${y.toFixed(2)}" text-anchor="middle" font-size="14" font-weight="800" font-family="-apple-system,'Segoe UI','Malgun Gothic',sans-serif" fill="#5b5ff0">${escapeHtml(formatAxisNumber(value))}</text>`;
+  }).join("");
 
-  if (post.aiCommentStatus === "waiting_1d") {
-    return `
-      <tr>
-        <td colspan="12" style="padding:0 6px 12px 6px;border-bottom:1px solid #e2e8f0">
-          <div style="margin:8px 0 0 28px;padding:10px 12px;border-radius:12px;background:#fff7ed;border:1px solid #fdba74">
-            <div style="font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#c2410c;margin-bottom:6px">분석 대기</div>
-            <div style="font-size:12px;line-height:1.65;color:#9a3412">1일 대기 중. 게시 후 하루가 지난 다음 리포트에서 댓글 반응과 성과를 함께 분석합니다.</div>
-          </div>
-        </td>
-      </tr>`;
-  }
+  const lineSegments = [];
+  let currentSegment = [];
+  followerSeries.forEach((value, index) => {
+    if (value == null) {
+      if (currentSegment.length) lineSegments.push(currentSegment);
+      currentSegment = [];
+      return;
+    }
+    currentSegment.push({
+      x: margin.left + (index * stepX),
+      y: mapRightY(value),
+      value,
+    });
+  });
+  if (currentSegment.length) lineSegments.push(currentSegment);
 
-  if (post.aiCommentStatus === "commented" && post.aiComment) {
-    return `
-      <tr>
-        <td colspan="12" style="padding:0 6px 12px 6px;border-bottom:1px solid #e2e8f0">
-          <div style="margin:8px 0 0 28px;padding:10px 12px;border-radius:12px;background:#f5f7ff;border:1px solid #c7d2fe">
-            <div style="font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#6366f1;margin-bottom:6px">AI 코멘트</div>
-            <div style="font-size:12px;line-height:1.65;color:#334155">${escapeHtml(post.aiComment)}</div>
-          </div>
-        </td>
-      </tr>`;
-  }
+  const linePaths = lineSegments.map((segment) => {
+    const d = segment.map((point, index) => `${index === 0 ? "M" : "L"} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`).join(" ");
+    return `<path d="${d}" fill="none" stroke="#f59e0b" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />`;
+  }).join("");
 
-  return "";
+  const pointDots = lineSegments.map((segment) => segment.map((point) => `
+    <circle cx="${point.x.toFixed(2)}" cy="${point.y.toFixed(2)}" r="4.5" fill="#f59e0b" stroke="#ffffff" stroke-width="2" />
+  `).join("")).join("");
+
+  const followerValueLabels = followerSeries.map((value, index) => {
+    if (value == null) return "";
+    const x = margin.left + (index * stepX);
+    const y = Math.max(mapRightY(value) - 14, margin.top + 32);
+    return `<text x="${x.toFixed(2)}" y="${y.toFixed(2)}" text-anchor="middle" font-size="13" font-weight="700" font-family="-apple-system,'Segoe UI','Malgun Gothic',sans-serif" fill="#d97706">${escapeHtml(formatAxisNumber(value))}</text>`;
+  }).join("");
+
+  const labelNodes = labels.map((label, index) => `
+    <text x="${(margin.left + (index * stepX)).toFixed(2)}" y="${(height - 18).toFixed(2)}" text-anchor="middle" font-size="15" font-weight="700" font-family="-apple-system,'Segoe UI','Malgun Gothic',sans-serif" fill="#64748b">${escapeHtml(label)}</text>
+  `).join("");
+
+  const svg = `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-label="Instagram follower and views trend chart">
+  <defs>
+    <linearGradient id="panelBg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.82" />
+      <stop offset="100%" stop-color="#f8fafc" stop-opacity="0.96" />
+    </linearGradient>
+    <radialGradient id="glowBg" cx="86%" cy="8%" r="48%">
+      <stop offset="0%" stop-color="#6366f1" stop-opacity="0.09" />
+      <stop offset="100%" stop-color="#6366f1" stop-opacity="0" />
+    </radialGradient>
+  </defs>
+
+  <rect x="0.5" y="0.5" width="${width - 1}" height="${height - 1}" rx="24" fill="#fcfdff" />
+  <rect x="0.5" y="0.5" width="${width - 1}" height="${height - 1}" rx="24" fill="url(#panelBg)" />
+  <rect x="0.5" y="0.5" width="${width - 1}" height="${height - 1}" rx="24" fill="url(#glowBg)" />
+  <rect x="0.5" y="0.5" width="${width - 1}" height="${height - 1}" rx="24" fill="none" stroke="#94a3b8" stroke-opacity="0.22" />
+  <g>
+    <circle cx="46" cy="31" r="6" fill="#6366f1" />
+    <image x="66" y="16" width="136" height="30" href="data:image/png;base64,${IG_CHART_LABEL_IMAGES.organicViewsLegend}" xlink:href="data:image/png;base64,${IG_CHART_LABEL_IMAGES.organicViewsLegend}" />
+    <circle cx="178" cy="31" r="6" fill="#f59e0b" />
+    <image x="192" y="16" width="74" height="30" href="data:image/png;base64,${IG_CHART_LABEL_IMAGES.followersLegend}" xlink:href="data:image/png;base64,${IG_CHART_LABEL_IMAGES.followersLegend}" />
+  </g>
+
+  <g>
+    ${gridLines.map((tick) => `
+      <line x1="${margin.left}" y1="${tick.y.toFixed(2)}" x2="${(width - margin.right).toFixed(2)}" y2="${tick.y.toFixed(2)}" stroke="#94a3b8" stroke-opacity="0.14" stroke-width="1" />
+    `).join("")}
+
+    ${bars}
+    ${viewsValueLabels}
+    ${linePaths}
+    ${pointDots}
+    ${followerValueLabels}
+    ${labelNodes}
+  </g>
+</svg>`;
+
+  const safeName = String(username || "instagram").replace(/[^a-zA-Z0-9_-]+/g, "_");
+  const safeDate = String(date || "date").replace(/[^0-9-]+/g, "");
+  const cid = `ig-trend-${safeName}-${safeDate}@sociallistener`;
+  const pngBuffer = new Resvg(svg, {
+    fitTo: {
+      mode: "width",
+      value: 960,
+    },
+  }).render().asPng();
+
+  return {
+    cid,
+    attachment: {
+      filename: `instagram-trend-${safeName}-${safeDate}.png`,
+      content: pngBuffer,
+      contentType: "image/png",
+      cid,
+    },
+  };
 }
 
 function buildInstagramEmailHTML({ username, date, report }) {
   const HEADING = "font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#6366f1";
   const displayDate = formatKSTDate(date);
-  const chartHtml = buildInstagramTrendChartHtml(report);
   const attachments = [];
+  const trendChartImage = buildInstagramTrendChartImage({ report, username, date });
+  if (trendChartImage.attachment) attachments.push(trendChartImage.attachment);
 
-  const trendSection = chartHtml ? `
+  const trendSection = trendChartImage.cid ? `
     <div style="margin-bottom:24px">
       <div style="${HEADING};margin-bottom:10px">팔로워 · 조회 트렌드 (최근 14일)</div>
-      ${chartHtml}
+      <div style="border:1px solid rgba(148,163,184,0.22);border-radius:14px;overflow:hidden;background:#fcfdff">
+        <img src="cid:${trendChartImage.cid}" alt="팔로워 및 오가닉 조회 트렌드 차트" style="display:block;width:100%;height:auto;border:0;outline:none;text-decoration:none" />
+      </div>
     </div>` : "";
 
   // ── 포스트 테이블 ──
@@ -890,10 +900,6 @@ function buildInstagramEmailHTML({ username, date, report }) {
     const shares   = p.shares           != null ? p.shares.toLocaleString()           : "—";
     const saves    = p.saves            != null ? p.saves.toLocaleString()            : "—";
     const pv       = p.profileVisits    != null ? p.profileVisits.toLocaleString()    : "—";
-    const follows  = (p.mediaType === "IMAGE" || p.mediaType === "CAROUSEL_ALBUM")
-      ? (p.follows != null ? p.follows.toLocaleString() : "—")
-      : "—";
-    const wt       = p.reelAvgWatchTime != null ? `${(p.reelAvgWatchTime / 1000).toFixed(1)}초` : "—";
     const TD = "padding:6px 6px;border-bottom:1px solid #f1f5f9;font-size:11px";
     const baseRow = `<tr>
       <td style="${TD};color:#64748b;white-space:nowrap">${dateStr}</td>
@@ -905,16 +911,14 @@ function buildInstagramEmailHTML({ username, date, report }) {
       <td style="${TD};text-align:right">${shares}</td>
       <td style="${TD};text-align:right">${saves}</td>
       <td style="${TD};text-align:right">${pv}</td>
-      <td style="${TD};text-align:right">${follows}</td>
-      <td style="${TD};text-align:right;color:#6366f1">${wt}</td>
       <td style="${TD};text-align:right;font-weight:600;color:${erColor}">${erText}</td>
     </tr>`;
-    return baseRow + buildInstagramPostCommentRow(p);
+    return baseRow;
   }).join("");
 
   const postTable = (report.posts || []).length > 0 ? `
     <div style="margin-bottom:24px">
-      <div style="${HEADING};margin-bottom:10px">최근 1주 포스트</div>
+      <div style="${HEADING};margin-bottom:10px">최근 1주 포스트 (AI 코멘트는 대시보드에서 확인)</div>
       <div style="overflow-x:auto">
         <table style="width:100%;border-collapse:collapse;font-size:11px;min-width:680px">
           <thead>
@@ -927,9 +931,7 @@ function buildInstagramEmailHTML({ username, date, report }) {
               <th style="padding:6px 6px;text-align:right;color:#475569;font-weight:600">댓글</th>
               <th style="padding:6px 6px;text-align:right;color:#475569;font-weight:600">공유</th>
               <th style="padding:6px 6px;text-align:right;color:#475569;font-weight:600">저장</th>
-              <th style="padding:6px 6px;text-align:right;color:#475569;font-weight:600">프로필</th>
-              <th style="padding:6px 6px;text-align:right;color:#475569;font-weight:600">팔로우</th>
-              <th style="padding:6px 6px;text-align:right;color:#6366f1;font-weight:600">평균시청</th>
+              <th style="padding:6px 6px;text-align:right;color:#475569;font-weight:600">프로필방문</th>
               <th style="padding:6px 6px;text-align:right;color:#475569;font-weight:600">참여율</th>
             </tr>
           </thead>
@@ -998,4 +1000,462 @@ function buildInstagramEmailHTML({ username, date, report }) {
   return { html, attachments };
 }
 
-module.exports = { sendEmailReport, appendToGoogleSheet, sendWeeklyEmailReport, sendInstagramEmailReport };
+// ─────────────────────────────────────────────────────────────────────────────
+//  Facebook 그룹 일일 리포트 이메일
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Facebook 그룹 리포트 HTML 빌드
+ */
+function buildFacebookEmailHTML({ groupName, groupUrl, date, report }) {
+  const displayDate = (() => {
+    const parts = String(date || "").split("-");
+    if (parts.length === 3) {
+      const d = new Date(Date.UTC(+parts[0], +parts[1] - 1, +parts[2]));
+      const dow = ["일", "월", "화", "수", "목", "금", "토"][d.getUTCDay()];
+      return `${+parts[1]}월 ${+parts[2]}일 (${dow})`;
+    }
+    return date || "";
+  })();
+
+  // 핵심 수치 카드
+  const stats = [
+    { label: "수집 게시글", value: String(report.postCount || 0) },
+    { label: "총 반응 수",  value: (report.totalReactions || 0).toLocaleString() },
+    { label: "총 댓글 수",  value: (report.totalComments  || 0).toLocaleString() },
+  ];
+  const statCards = stats.map((s) => `
+    <td style="width:33%;padding:0 8px;text-align:center">
+      <div style="background:#f1f5f9;border-radius:12px;padding:16px 10px">
+        <div style="font-size:22px;font-weight:700;color:#1e293b">${escapeHtml(s.value)}</div>
+        <div style="font-size:11px;color:#64748b;margin-top:4px">${escapeHtml(s.label)}</div>
+      </div>
+    </td>`).join("");
+
+  // 이슈 목록
+  const issues = report.aiIssues || [];
+  const issueRows = issues.map((issue) => {
+    const postUrl = issue.postIndex
+      ? (report.posts || [])[issue.postIndex - 1]?.postUrl || null
+      : null;
+    const linkBtn = postUrl
+      ? `<a href="${escapeHtml(postUrl)}" style="display:inline-block;font-size:11px;color:#6366f1;text-decoration:none;border:1px solid #c7d2fe;border-radius:4px;padding:1px 6px">게시글 보기 ↗</a>`
+      : "";
+    return `
+    <div style="padding:12px 14px;background:#fff7ed;border-left:3px solid #f97316;border-radius:0 8px 8px 0;margin-bottom:8px">
+      <div style="font-size:13px;font-weight:600;color:#c2410c">${escapeHtml(issue.title || "")}</div>
+      ${linkBtn ? `<div style="margin-top:4px">${linkBtn}</div>` : ""}
+      <div style="font-size:12px;color:#78350f;margin-top:4px">${escapeHtml(issue.description || "")}</div>
+    </div>`;
+  }).join("");
+
+  const crawlStatusBadge = (() => {
+    const s = report.crawlStatus || "ok";
+    if (s === "ok")      return `<span style="color:#16a34a;font-size:11px">● 정상 수집</span>`;
+    if (s === "partial") return `<span style="color:#d97706;font-size:11px">● 부분 수집</span>`;
+    return `<span style="color:#dc2626;font-size:11px">● ${escapeHtml(s)}</span>`;
+  })();
+
+  const html = `<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Facebook 그룹 리포트 - ${escapeHtml(groupName)} (${date})</title>
+</head>
+<body style="margin:0;padding:0;background:#f8fafc;font-family:-apple-system,'Malgun Gothic','맑은 고딕',sans-serif">
+  <div style="display:none;max-height:0;overflow:hidden;mso-hide:all">${escapeHtml(groupName)} Facebook 그룹 ${displayDate} 일일 리포트</div>
+  <div style="max-width:620px;margin:32px auto;background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.1)">
+
+    <!-- 헤더 -->
+    <div style="background:linear-gradient(135deg,#6366f1 0%,#818cf8 100%);padding:28px 32px">
+      <div style="color:#c7d2fe;font-size:11px;letter-spacing:.08em;margin-bottom:6px">AI SOCIAL LISTENING · DAILY REPORT</div>
+      <a href="${escapeHtml(groupUrl)}" style="color:#fff;font-size:22px;font-weight:700;text-decoration:none">${escapeHtml(groupName)}</a>
+      <div style="color:#c7d2fe;font-size:14px;margin-top:4px">Facebook 그룹 &nbsp;·&nbsp; ${displayDate} &nbsp;${crawlStatusBadge}</div>
+    </div>
+
+    <!-- 본문 -->
+    <div style="padding:28px 32px">
+
+      <!-- 핵심 수치 카드 -->
+      <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:24px">
+        <tr>${statCards}</tr>
+      </table>
+
+      <!-- AI 요약 -->
+      ${report.aiSummary ? `
+      <div style="margin-bottom:24px">
+        <div style="font-size:13px;font-weight:700;color:#1e293b;margin-bottom:10px">📋 AI 동향 요약</div>
+        <div style="font-size:13px;color:#374151;line-height:1.8;padding:16px;background:#f8fafc;border-radius:10px;border-left:3px solid #1877f2">
+          ${sanitizeReportHtml(report.aiSummary)}
+        </div>
+      </div>` : ""}
+
+      <!-- 이슈 -->
+      ${issueRows ? `
+      <div style="margin-bottom:24px">
+        <div style="font-size:13px;font-weight:700;color:#1e293b;margin-bottom:10px">🚨 주요 이슈</div>
+        ${issueRows}
+      </div>` : ""}
+
+      <!-- 토큰/비용 -->
+      ${(report.model || report.totalTokens) ? `
+      <div style="padding-top:12px;border-top:1px dashed #e2e8f0;font-size:11px;color:#94a3b8;text-align:right">
+        ${report.model ? `<span style="margin-right:10px;font-weight:500">${escapeHtml(report.model)}</span>` : ""}
+        ${report.totalTokens ? `<span style="margin-right:10px">입력 ${(report.promptTokens || 0).toLocaleString()} / 출력 ${(report.completionTokens || 0).toLocaleString()} / 합계 ${(report.totalTokens || 0).toLocaleString()} 토큰</span>` : ""}
+        ${report.cost != null ? `<span>비용 $${Number(report.cost).toFixed(4)}</span>` : ""}
+      </div>` : ""}
+
+    </div>
+
+    <!-- 푸터 -->
+    <div style="background:#f8fafc;padding:16px 32px;border-top:1px solid #e2e8f0;font-size:12px;color:#94a3b8;text-align:center">
+      Social Listener by 사업전략팀 &nbsp;·&nbsp; 이 메일은 자동 발송됩니다
+    </div>
+  </div>
+</body>
+</html>`;
+
+  return html;
+}
+
+/**
+ * Facebook 그룹 일일 이메일 발송
+ * @param {{ recipients, groupName, groupUrl, date, report }} opts
+ */
+async function sendFacebookEmailReport({ recipients, groupName, groupUrl, date, report }) {
+  const html = buildFacebookEmailHTML({ groupName, groupUrl, date, report });
+
+  const mailOptions = {
+    from:    `Social Listener <${process.env.GMAIL_USER}>`,
+    to:      recipients.join(", "),
+    subject: `[Social Listener] ${groupName} - Facebook 그룹 일일 리포트 (${date})`,
+    html,
+  };
+
+  await getTransporter().sendMail(mailOptions);
+}
+
+/**
+ * 네이버 라운지 리포트 HTML 빌드
+ */
+function buildNaverLoungeEmailHTML({ loungeName, loungeUrl, date, report }) {
+  const displayDate = (() => {
+    const parts = String(date || "").split("-");
+    if (parts.length === 3) {
+      const d = new Date(Date.UTC(+parts[0], +parts[1] - 1, +parts[2]));
+      const dow = ["일", "월", "화", "수", "목", "금", "토"][d.getUTCDay()];
+      return `${+parts[1]}월 ${+parts[2]}일 (${dow})`;
+    }
+    return date || "";
+  })();
+
+  // 핵심 수치 카드
+  const stats = [
+    { label: "수집 게시글", value: String(report.postCount || 0) },
+    { label: "총 댓글 수",  value: (report.totalComments || 0).toLocaleString() },
+  ];
+  const statCards = stats.map((s) => `
+    <td style="width:50%;padding:0 8px;text-align:center">
+      <div style="background:#f1f5f9;border-radius:12px;padding:16px 10px">
+        <div style="font-size:22px;font-weight:700;color:#1e293b">${escapeHtml(s.value)}</div>
+        <div style="font-size:11px;color:#64748b;margin-top:4px">${escapeHtml(s.label)}</div>
+      </div>
+    </td>`).join("");
+
+  // 이슈 목록
+  const issues = report.aiIssues || [];
+  const issueRows = issues.map((issue) => {
+    const postUrl = issue.postIndex
+      ? (report.posts || [])[issue.postIndex - 1]?.postUrl || null
+      : null;
+    const linkBtn = postUrl
+      ? `<a href="${escapeHtml(postUrl)}" style="display:inline-block;font-size:11px;color:#6366f1;text-decoration:none;border:1px solid #c7d2fe;border-radius:4px;padding:1px 6px">게시글 보기 ↗</a>`
+      : "";
+    return `
+    <div style="padding:12px 14px;background:#fff7ed;border-left:3px solid #f97316;border-radius:0 8px 8px 0;margin-bottom:8px">
+      <div style="font-size:13px;font-weight:600;color:#c2410c">${escapeHtml(issue.title || "")}</div>
+      ${linkBtn ? `<div style="margin-top:4px">${linkBtn}</div>` : ""}
+      <div style="font-size:12px;color:#78350f;margin-top:4px">${escapeHtml(issue.description || "")}</div>
+    </div>`;
+  }).join("");
+
+  const crawlStatusBadge = (() => {
+    const s = report.crawlStatus || "ok";
+    if (s === "ok")      return `<span style="color:#16a34a;font-size:11px">● 정상 수집</span>`;
+    if (s === "partial") return `<span style="color:#d97706;font-size:11px">● 부분 수집</span>`;
+    return `<span style="color:#dc2626;font-size:11px">● ${escapeHtml(s)}</span>`;
+  })();
+
+  const html = `<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>네이버 라운지 리포트 - ${escapeHtml(loungeName)} (${date})</title>
+</head>
+<body style="margin:0;padding:0;background:#f8fafc;font-family:-apple-system,'Malgun Gothic','맑은 고딕',sans-serif">
+  <div style="display:none;max-height:0;overflow:hidden;mso-hide:all">${escapeHtml(loungeName)} 네이버 라운지 ${displayDate} 일일 리포트</div>
+  <div style="max-width:620px;margin:32px auto;background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.1)">
+
+    <!-- 헤더 -->
+    <div style="background:linear-gradient(135deg,#03C75A 0%,#00a845 100%);padding:28px 32px">
+      <div style="color:#d1fae5;font-size:11px;letter-spacing:.08em;margin-bottom:6px">AI SOCIAL LISTENING · DAILY REPORT</div>
+      <div style="color:#fff;font-size:22px;font-weight:700">${escapeHtml(loungeName)}</div>
+      <div style="color:#d1fae5;font-size:14px;margin-top:4px">네이버 라운지 &nbsp;·&nbsp; ${displayDate} &nbsp;${crawlStatusBadge}</div>
+    </div>
+
+    <!-- 본문 -->
+    <div style="padding:28px 32px">
+
+      <!-- 핵심 수치 카드 -->
+      <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:24px">
+        <tr>${statCards}</tr>
+      </table>
+
+      <!-- AI 요약 -->
+      ${report.aiSummary ? `
+      <div style="margin-bottom:24px">
+        <div style="font-size:13px;font-weight:700;color:#1e293b;margin-bottom:10px">📋 AI 동향 요약</div>
+        <div style="font-size:13px;color:#374151;line-height:1.8;padding:16px;background:#f8fafc;border-radius:10px;border-left:3px solid #03C75A">
+          ${sanitizeReportHtml(report.aiSummary)}
+        </div>
+      </div>` : ""}
+
+      <!-- 이슈 -->
+      ${issueRows ? `
+      <div style="margin-bottom:24px">
+        <div style="font-size:13px;font-weight:700;color:#1e293b;margin-bottom:10px">🚨 주요 이슈</div>
+        ${issueRows}
+      </div>` : ""}
+
+      <!-- 토큰/비용 -->
+      ${(report.model || report.totalTokens) ? `
+      <div style="padding-top:12px;border-top:1px dashed #e2e8f0;font-size:11px;color:#94a3b8;text-align:right">
+        ${report.model ? `<span style="margin-right:10px;font-weight:500">${escapeHtml(report.model)}</span>` : ""}
+        ${report.totalTokens ? `<span style="margin-right:10px">입력 ${(report.promptTokens || 0).toLocaleString()} / 출력 ${(report.completionTokens || 0).toLocaleString()} / 합계 ${(report.totalTokens || 0).toLocaleString()} 토큰</span>` : ""}
+        ${report.cost != null ? `<span>비용 $${Number(report.cost).toFixed(4)}</span>` : ""}
+      </div>` : ""}
+
+    </div>
+
+    <!-- 푸터 -->
+    <div style="background:#f8fafc;padding:16px 32px;border-top:1px solid #e2e8f0;font-size:12px;color:#94a3b8;text-align:center">
+      Social Listener by 사업전략팀 &nbsp;·&nbsp; 이 메일은 자동 발송됩니다
+    </div>
+  </div>
+</body>
+</html>`;
+
+  return html;
+}
+
+/**
+ * 네이버 라운지 일일 이메일 발송
+ * @param {{ recipients, loungeName, loungeUrl, date, report }} opts
+ */
+async function sendNaverLoungeEmailReport({ recipients, loungeName, loungeUrl, date, report }) {
+  const html = buildNaverLoungeEmailHTML({ loungeName, loungeUrl, date, report });
+
+  const mailOptions = {
+    from:    `Social Listener <${process.env.GMAIL_USER}>`,
+    to:      recipients.join(", "),
+    subject: `[Social Listener] ${loungeName} - 네이버 라운지 일일 리포트 (${date})`,
+    html,
+  };
+
+  await getTransporter().sendMail(mailOptions);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  통합 프리셋 이메일
+// ─────────────────────────────────────────────────────────────────────────────
+
+const PLATFORM_META = {
+  discord:     { label: "Discord",      color: "#5865F2", icon: "🎮" },
+  instagram:   { label: "Instagram",    color: "#E1306C", icon: "📸" },
+  facebook:    { label: "Facebook 그룹", color: "#1877F2", icon: "👥" },
+  naver_lounge:{ label: "네이버 라운지",  color: "#03C75A", icon: "🏪" },
+};
+
+/** Discord 섹션 내용 HTML (인라인 스타일) */
+function buildDiscordSection(targetName, report) {
+  const summary = report.summary || "";
+  const issues  = (report.issues || []).slice(0, 3);
+  const msgCount = report.messageCount || 0;
+
+  const issueRows = issues.map((iss) => `
+    <div style="padding:10px 12px;background:#fff7ed;border-left:3px solid #f97316;border-radius:0 8px 8px 0;margin-bottom:6px">
+      <div style="font-size:12px;font-weight:600;color:#c2410c">${escapeHtml(iss.title || "")}</div>
+      <div style="font-size:11px;color:#78350f;margin-top:2px">${escapeHtml(iss.description || "")}</div>
+    </div>`).join("");
+
+  return `
+    <div style="margin-bottom:10px">
+      <span style="display:inline-block;background:#eff1ff;color:#4f46e5;font-size:11px;font-weight:600;padding:3px 8px;border-radius:999px">${escapeHtml(String(msgCount))}개 메시지</span>
+    </div>
+    ${summary ? `
+    <div style="font-size:13px;color:#374151;line-height:1.8;padding:14px 16px;background:#f8fafc;border-radius:10px;border-left:3px solid #5865F2;margin-bottom:12px">
+      ${sanitizeReportHtml(summary)}
+    </div>` : ""}
+    ${issueRows ? `
+    <div>
+      <div style="font-size:11px;font-weight:700;color:#64748b;margin-bottom:6px">🚨 주요 이슈</div>
+      ${issueRows}
+    </div>` : ""}`;
+}
+
+/** Instagram 섹션 내용 HTML */
+function buildInstagramSection(targetName, report) {
+  const review = report.aiPerformanceReview || "";
+  const posts  = (report.posts || []).slice(0, 3);
+
+  const postRows = posts.map((p) => {
+    const views    = p.videoViewCount   != null ? `${(p.videoViewCount || 0).toLocaleString()}뷰` : null;
+    const likes    = p.likeCount        != null ? `❤️ ${(p.likeCount || 0).toLocaleString()}` : null;
+    const comments = p.commentsCount    != null ? `💬 ${(p.commentsCount || 0).toLocaleString()}` : null;
+    const stats    = [views, likes, comments].filter(Boolean).join(" &nbsp; ");
+    const caption  = normalizeCaptionText(p.caption || "").slice(0, 60) + (p.caption?.length > 60 ? "…" : "");
+    return `
+    <div style="padding:8px 12px;border:1px solid #fce7f3;border-radius:8px;margin-bottom:6px">
+      <div style="font-size:12px;color:#374151">${escapeHtml(caption)}</div>
+      ${stats ? `<div style="font-size:11px;color:#9d174d;margin-top:3px">${stats}</div>` : ""}
+    </div>`;
+  }).join("");
+
+  return `
+    ${review ? `
+    <div style="font-size:13px;color:#374151;line-height:1.8;padding:14px 16px;background:#fdf2f8;border-radius:10px;border-left:3px solid #E1306C;margin-bottom:12px">
+      ${escapeHtml(review)}
+    </div>` : ""}
+    ${postRows ? `
+    <div>
+      <div style="font-size:11px;font-weight:700;color:#64748b;margin-bottom:6px">📋 최근 게시물</div>
+      ${postRows}
+    </div>` : ""}`;
+}
+
+/** Facebook / Naver Lounge 섹션 내용 HTML (구조 동일) */
+function buildCrawlerSection(targetName, report, accentColor) {
+  const summary = report.aiSummary || "";
+  const issues  = (report.aiIssues || []).slice(0, 3);
+  const postCount = report.postCount || 0;
+
+  const issueRows = issues.map((iss) => `
+    <div style="padding:10px 12px;background:#fff7ed;border-left:3px solid #f97316;border-radius:0 8px 8px 0;margin-bottom:6px">
+      <div style="font-size:12px;font-weight:600;color:#c2410c">${escapeHtml(iss.title || "")}</div>
+      <div style="font-size:11px;color:#78350f;margin-top:2px">${escapeHtml(iss.description || "")}</div>
+    </div>`).join("");
+
+  return `
+    <div style="margin-bottom:10px">
+      <span style="display:inline-block;background:#f0fdf4;color:#166534;font-size:11px;font-weight:600;padding:3px 8px;border-radius:999px">${escapeHtml(String(postCount))}개 게시글</span>
+    </div>
+    ${summary ? `
+    <div style="font-size:13px;color:#374151;line-height:1.8;padding:14px 16px;background:#f8fafc;border-radius:10px;border-left:3px solid ${accentColor};margin-bottom:12px">
+      ${sanitizeReportHtml(summary)}
+    </div>` : ""}
+    ${issueRows ? `
+    <div>
+      <div style="font-size:11px;font-weight:700;color:#64748b;margin-bottom:6px">🚨 주요 이슈</div>
+      ${issueRows}
+    </div>` : ""}`;
+}
+
+/**
+ * 통합 프리셋 이메일 HTML 빌드
+ * @param {{ presetName, date, sections: [{platform, targetName, report}] }} opts
+ */
+function buildUnifiedEmailHTML({ presetName, date, sections }) {
+  const displayDate = formatKSTDate(date);
+
+  const sectionHtmls = sections.map(({ platform, targetName, report }, idx) => {
+    const meta = PLATFORM_META[platform] || { label: platform, color: "#6366f1", icon: "📋" };
+
+    let bodyHtml = "";
+    if (platform === "discord") {
+      bodyHtml = buildDiscordSection(targetName, report);
+    } else if (platform === "instagram") {
+      bodyHtml = buildInstagramSection(targetName, report);
+    } else if (platform === "facebook") {
+      bodyHtml = buildCrawlerSection(targetName, report, meta.color);
+    } else if (platform === "naver_lounge") {
+      bodyHtml = buildCrawlerSection(targetName, report, meta.color);
+    }
+
+    const divider = idx > 0
+      ? `<div style="border-top:2px dashed #e2e8f0;margin:0 32px 28px"></div>`
+      : "";
+
+    return `
+      ${divider}
+      <div style="padding:0 32px 28px">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:14px">
+          <span style="display:inline-block;width:4px;height:20px;background:${meta.color};border-radius:2px"></span>
+          <span style="font-size:11px;font-weight:700;color:${meta.color};letter-spacing:.05em;text-transform:uppercase">${meta.icon} ${meta.label}</span>
+          <span style="font-size:13px;font-weight:600;color:#1e293b">${escapeHtml(targetName)}</span>
+        </div>
+        ${bodyHtml}
+      </div>`;
+  }).join("");
+
+  return `<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>${escapeHtml(presetName)} 통합 리포트 (${date})</title>
+</head>
+<body style="margin:0;padding:0;background:#f8fafc;font-family:-apple-system,'Malgun Gothic','맑은 고딕',sans-serif">
+  <div style="display:none;max-height:0;overflow:hidden;mso-hide:all">${escapeHtml(presetName)} 통합 리포트 ${displayDate}</div>
+  <div style="max-width:640px;margin:32px auto;background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.1)">
+
+    <!-- 헤더 -->
+    <div style="background:linear-gradient(135deg,#6366f1 0%,#4f46e5 100%);padding:28px 32px">
+      <div style="color:#c7d2fe;font-size:11px;letter-spacing:.08em;margin-bottom:6px">AI SOCIAL LISTENING · INTEGRATED REPORT</div>
+      <div style="color:#fff;font-size:22px;font-weight:700">${escapeHtml(presetName)}</div>
+      <div style="color:#c7d2fe;font-size:14px;margin-top:4px">통합 리포트 &nbsp;·&nbsp; ${displayDate}</div>
+    </div>
+
+    <!-- 섹션 목차 -->
+    <div style="padding:18px 32px 0;border-bottom:1px solid #f1f5f9">
+      <div style="display:flex;flex-wrap:wrap;gap:6px;padding-bottom:18px">
+        ${sections.map(({ platform, targetName }) => {
+          const meta = PLATFORM_META[platform] || { label: platform, color: "#6366f1", icon: "📋" };
+          return `<span style="display:inline-block;padding:3px 10px;border-radius:999px;background:${meta.color}1a;color:${meta.color};font-size:11px;font-weight:600">${meta.icon} ${escapeHtml(targetName)}</span>`;
+        }).join("")}
+      </div>
+    </div>
+
+    <!-- 본문 섹션들 -->
+    <div style="padding-top:28px">
+      ${sectionHtmls}
+    </div>
+
+    <!-- 푸터 -->
+    <div style="background:#f8fafc;padding:16px 32px;border-top:1px solid #e2e8f0;font-size:12px;color:#94a3b8;text-align:center">
+      Social Listener by 사업전략팀 &nbsp;·&nbsp; 이 메일은 자동 발송됩니다
+    </div>
+  </div>
+</body>
+</html>`;
+}
+
+/**
+ * 통합 프리셋 이메일 발송
+ * @param {{ recipients, presetName, date, sections }} opts
+ */
+async function sendUnifiedEmailReport({ recipients, presetName, date, sections }) {
+  const html = buildUnifiedEmailHTML({ presetName, date, sections });
+
+  const mailOptions = {
+    from:    `Social Listener <${process.env.GMAIL_USER}>`,
+    to:      recipients.join(", "),
+    subject: `[Social Listener] ${presetName} - 통합 리포트 (${date})`,
+    html,
+  };
+
+  await getTransporter().sendMail(mailOptions);
+}
+
+module.exports = { sendEmailReport, appendToGoogleSheet, sendWeeklyEmailReport, sendInstagramEmailReport, sendFacebookEmailReport, sendNaverLoungeEmailReport, sendUnifiedEmailReport };

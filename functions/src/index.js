@@ -2,18 +2,40 @@ const { onRequest } = require("firebase-functions/v2/https");
 const { onSchedule } = require("firebase-functions/v2/scheduler");
 const { setGlobalOptions } = require("firebase-functions/v2");
 const admin = require("firebase-admin");
-const { runPipeline, reDeliver } = require("./pipeline");
-const { runAlertPipeline }       = require("./alertPipeline");
-const { getChannelInfo, getGuildInfo } = require("./collectors/discord");
-const { sendEmailReport, appendToGoogleSheet } = require("./delivery");
-const { runInsightCollector } = require("./insightCollector");
-const { runWeeklyPipeline }   = require("./weeklyPipeline");
+const { google } = require("googleapis");
+const { runPipeline, reDeliver } = require("./discordDailyPipeline");
+const { runAlertPipeline }       = require("./discordAlertPipeline");
+const { getChannelInfo, getGuildInfo } = require("./collectors/discordCollector");
+const { sendEmailReport, appendToGoogleSheet } = require("./reportDelivery");
+const { runInsightCollector } = require("./collectors/discordInsightCollector");
+const { runWeeklyPipeline }   = require("./discordWeeklyPipeline");
 const {
   listConnectedInstagramAccounts,
   refreshToken: refreshIgToken,
   debugToken: debugIgToken,
-} = require("./collectors/instagram");
-const { runInstagramPipeline, runInstagramEmailSender } = require("./instagramPipeline");
+  fetchAllPosts: fetchAllIgFacebookPosts,
+} = require("./collectors/instagramCollector");
+const {
+  debugIgDirectToken,
+  refreshDirectToken,
+  fetchAllPosts: fetchAllIgDirectPosts,
+} = require("./collectors/instagramDirectCollector");
+const { runInstagramPipeline, runInstagramEmailSender } = require("./instagramDailyPipeline");
+const { runFacebookGroupPipeline, runFacebookGroupEmailSender } = require("./facebookGroupDailyPipeline");
+const {
+  loadSessionFromFirestore: loadFbSession,
+  saveSessionToFirestore: saveFbSession,
+  markSessionInvalid: markFbSessionInvalid,
+  launchBrowser: launchFbBrowser,
+  applyCookiesToContext: applyFbCookies,
+  verifySessionAlive: verifyFbSessionAlive,
+} = require("./collectors/facebookGroupCollector");
+const { runNaverLoungePipeline, runNaverLoungeEmailSender } = require("./naverLoungeDailyPipeline");
+const { runReportPresetPipeline } = require("./reportPresetDailyPipeline");
+const {
+  loadSessionFromFirestore: loadNlSession,
+  saveSessionToFirestore: saveNlSession,
+} = require("./collectors/naverLoungeCollector");
 
 admin.initializeApp();
 
@@ -31,9 +53,20 @@ function resolveWorkspaceId(value, fallback = "ws_antigravity") {
 
 const IG_PERFORMANCE_REVIEW_MODELS = new Set([
   "google/gemini-3-flash-preview",
-  "openai/gpt-5-mini",
+  "openai/gpt-5.4-mini",
+  "google/gemini-3.1-flash-lite-preview",
 ]);
-const DEFAULT_IG_PERFORMANCE_REVIEW_MODEL = "openai/gpt-5-mini";
+const FB_ANALYSIS_MODELS = new Set([
+  "openai/gpt-5.4-mini",
+  "google/gemini-3-flash-preview",
+  "google/gemini-3.1-flash-lite-preview",
+]);
+const NL_ANALYSIS_MODELS = new Set([
+  "openai/gpt-5.4-mini",
+  "google/gemini-3-flash-preview",
+  "google/gemini-3.1-flash-lite-preview",
+]);
+const DEFAULT_IG_PERFORMANCE_REVIEW_MODEL = "openai/gpt-5.4-mini";
 const DEFAULT_IG_POST_COMMENT_PROMPT = `당신은 Instagram 콘텐츠 분석가입니다.
 이메일 리포트의 게시물 표 아래에 붙일 아주 짧은 코멘트 1~2문장만 작성하세요.
 반드시 아래 원칙을 지키세요.
@@ -51,7 +84,7 @@ const DEFAULT_IG_POST_COMMENT_PROMPT = `당신은 Instagram 콘텐츠 분석가�
 //  모든 관리 엔드포인트를 단일 함수로 묶어 Cold Start 최소화
 // ═══════════════════════════════════════════════════════
 exports.api = onRequest(
-  { timeoutSeconds: 540, memory: "512MiB", invoker: "public" },
+  { timeoutSeconds: 800, memory: "2GiB", invoker: "public" },
   async (req, res) => {
     // CORS 허용 (개발 편의)
     res.set("Access-Control-Allow-Origin", "*");
@@ -69,7 +102,7 @@ exports.api = onRequest(
     }
 
     // ── 이하 모든 엔드포인트는 Admin Secret 필요 ──
-    if (req.headers["x-admin-secret"] !== process.env.ADMIN_SECRET) {
+    if (req.headers["x-admin-secret"] !== (process.env.ADMIN_SECRET || "").trim()) {
       return res.status(403).json({ error: "Forbidden" });
     }
 
@@ -743,6 +776,7 @@ exports.api = onRequest(
           return {
             docId: d.id,
             ...safeData,
+            apiType: safeData.apiType || "facebook",
             tokenExpiresAt: safeData.tokenExpiresAt?.toDate?.()?.toISOString() ?? null,
             tokenRefreshedAt: safeData.tokenRefreshedAt?.toDate?.()?.toISOString() ?? null,
             createdAt: safeData.createdAt?.toDate?.()?.toISOString() ?? null,
@@ -761,77 +795,117 @@ exports.api = onRequest(
     if (req.method === "POST" && path === "/instagram/accounts") {
       try {
         const db = admin.firestore();
-        const { workspaceId: _wsId1, accessToken, appId, appSecret, igUserId: selectedIgUserId } = req.body;
+        const { workspaceId: _wsId1, accessToken, appId, appSecret, igUserId: selectedIgUserId, apiType: reqApiType } = req.body;
         const workspaceId = resolveWorkspaceId(_wsId1);
+        const apiType = reqApiType === "instagram" ? "instagram" : "facebook";
         if (!accessToken) return res.status(400).json({ error: "accessToken 필수" });
-        if (!appId)       return res.status(400).json({ error: "appId 필수" });
-        if (!appSecret)   return res.status(400).json({ error: "appSecret 필수" });
 
-        // 토큰 검증 + 연결 가능한 IG 계정 조회
-        let candidates;
-        try {
-          candidates = await listConnectedInstagramAccounts(accessToken);
-        } catch (e) {
-          return res.status(400).json({ error: `토큰 검증 실패: ${e.message}` });
-        }
-        if (!candidates.length) {
-          return res.status(400).json({ error: "연결된 Instagram 비즈니스/크리에이터 계정을 찾을 수 없습니다." });
-        }
+        let igUserId, username, pageId = "", pageName = "";
+        let tokenExpiresAt = new Date(Date.now() + 60 * 24 * 60 * 60 * 1000);
 
-        let selectedAccount = null;
-        if (selectedIgUserId) {
-          selectedAccount = candidates.find((c) => c.igUserId === selectedIgUserId) || null;
-          if (!selectedAccount) {
-            return res.status(400).json({ error: "선택한 Instagram 계정을 현재 토큰에서 찾을 수 없습니다." });
+        if (apiType === "instagram") {
+          // ── Instagram Graph API (Business Login for Instagram) ──
+          // /me 엔드포인트로 토큰 유효성 검증 + igUserId/username 직접 획득
+          let tokenInfo;
+          try {
+            tokenInfo = await debugIgDirectToken(accessToken);
+          } catch (e) {
+            return res.status(400).json({ error: `토큰 검증 실패: ${e.message}` });
           }
-        } else if (candidates.length === 1) {
-          selectedAccount = candidates[0];
+          igUserId = tokenInfo.igUserId;
+          username = tokenInfo.username;
         } else {
-          return res.json({
-            success: false,
-            requiresSelection: true,
-            candidates: candidates.map((c) => ({
-              igUserId: c.igUserId,
-              username: c.username,
-              pageId: c.pageId,
-              pageName: c.pageName,
-            })),
-          });
-        }
+          // ── Facebook Graph API (Facebook Login for Business) ──
+          if (!appId)     return res.status(400).json({ error: "appId 필수" });
+          if (!appSecret) return res.status(400).json({ error: "appSecret 필수" });
 
-        const { igUserId, username } = selectedAccount;
+          // 토큰 검증 + 연결 가능한 IG 계정 조회
+          let candidates;
+          try {
+            candidates = await listConnectedInstagramAccounts(accessToken);
+          } catch (e) {
+            return res.status(400).json({ error: `토큰 검증 실패: ${e.message}` });
+          }
+          if (!candidates.length) {
+            return res.status(400).json({ error: "연결된 Instagram 비즈니스/크리에이터 계정을 찾을 수 없습니다." });
+          }
+
+          let selectedAccount = null;
+          if (selectedIgUserId) {
+            selectedAccount = candidates.find((c) => c.igUserId === selectedIgUserId) || null;
+            if (!selectedAccount) {
+              return res.status(400).json({ error: "선택한 Instagram 계정을 현재 토큰에서 찾을 수 없습니다." });
+            }
+          } else if (candidates.length === 1) {
+            selectedAccount = candidates[0];
+          } else {
+            return res.json({
+              success: false,
+              requiresSelection: true,
+              candidates: candidates.map((c) => ({
+                igUserId: c.igUserId,
+                username: c.username,
+                pageId: c.pageId,
+                pageName: c.pageName,
+              })),
+            });
+          }
+
+          ({ igUserId, username, pageId = "", pageName = "" } = selectedAccount);
+
+          // debug_token으로 실제 만료일 조회 (실패 시 60일 fallback)
+          try {
+            const tokenDbgInfo = await debugIgToken(accessToken, appId, appSecret);
+            if (tokenDbgInfo.expiresAt) tokenExpiresAt = tokenDbgInfo.expiresAt;
+          } catch (e) {
+            console.warn(`[POST /instagram/accounts] debug_token 실패, 60일 fallback: ${e.message}`);
+          }
+        }
 
         const docId = `instagram_${igUserId}`;
         const ref = db.collection("workspaces").doc(workspaceId).collection("instagram_accounts").doc(docId);
-        if ((await ref.get()).exists) {
-          return res.status(409).json({ error: "이미 등록된 계정입니다." });
+        const existingSnap = await ref.get();
+        if (existingSnap.exists) {
+          const existingData = existingSnap.data() || {};
+          return res.status(409).json({
+            error: "이미 등록된 계정입니다.",
+            duplicate: {
+              selected: { igUserId, username, pageId, pageName },
+              existing: {
+                docId,
+                igUserId: existingData.igUserId || igUserId,
+                username: existingData.username || username,
+                pageId: existingData.pageId || "",
+                pageName: existingData.pageName || "",
+              },
+            },
+          });
         }
 
-        // debug_token으로 실제 만료일 조회 (실패 시 60일 fallback)
-        let tokenExpiresAt = new Date(Date.now() + 60 * 24 * 60 * 60 * 1000);
-        try {
-          const tokenInfo = await debugIgToken(accessToken, appId, appSecret);
-          if (tokenInfo.expiresAt) tokenExpiresAt = tokenInfo.expiresAt;
-        } catch (e) {
-          console.warn(`[POST /instagram/accounts] debug_token 실패, 60일 fallback: ${e.message}`);
-        }
-
-        await ref.set({
+        const docData = {
           platform: "instagram",
+          apiType,
           username,
           igUserId,
+          pageId,
+          pageName,
           accessToken,
-          appId,
-          appSecret,
           tokenExpiresAt: admin.firestore.Timestamp.fromDate(tokenExpiresAt),
           tokenRefreshedAt: admin.firestore.Timestamp.fromDate(new Date()),
           isActive: true,
           deliveryConfig: { email: { isEnabled: false, recipients: [] } },
+          analyticsSheet: { spreadsheetUrl: "" },
           performanceReviewModel: DEFAULT_IG_PERFORMANCE_REVIEW_MODEL,
           postCommentPrompt: DEFAULT_IG_POST_COMMENT_PROMPT,
           createdAt: admin.firestore.FieldValue.serverTimestamp(),
-        });
+        };
+        // Facebook API 계정에만 appId/appSecret 저장 (토큰 갱신에 필요)
+        if (apiType === "facebook") {
+          docData.appId = appId;
+          docData.appSecret = appSecret;
+        }
 
+        await ref.set(docData);
         return res.json({ success: true, docId, username });
       } catch (err) {
         console.error("[POST /instagram/accounts] 오류:", err.message);
@@ -863,7 +937,13 @@ exports.api = onRequest(
         const { workspaceId: _wsId, docId } = req.query;
         if (!docId) return res.status(400).json({ error: "docId 필수" });
         const workspaceId = resolveWorkspaceId(_wsId);
-        const { deliveryConfig, performanceReviewPrompt, performanceReviewModel, postCommentPrompt } = req.body;
+        const {
+          deliveryConfig,
+          analyticsSheet,
+          performanceReviewPrompt,
+          performanceReviewModel,
+          postCommentPrompt,
+        } = req.body;
 
         const updates = {};
         if (deliveryConfig !== undefined) {
@@ -871,6 +951,21 @@ exports.api = onRequest(
             return res.status(400).json({ error: 'deliveryConfig는 객체여야 합니다' });
           }
           updates.deliveryConfig = deliveryConfig;
+        }
+        if (analyticsSheet !== undefined) {
+          if (typeof analyticsSheet !== "object" || analyticsSheet === null || Array.isArray(analyticsSheet)) {
+            return res.status(400).json({ error: "analyticsSheet는 객체여야 합니다" });
+          }
+          if (
+            analyticsSheet.spreadsheetUrl !== undefined &&
+            analyticsSheet.spreadsheetUrl !== null &&
+            typeof analyticsSheet.spreadsheetUrl !== "string"
+          ) {
+            return res.status(400).json({ error: "analyticsSheet.spreadsheetUrl은 문자열이어야 합니다" });
+          }
+          updates.analyticsSheet = {
+            spreadsheetUrl: analyticsSheet.spreadsheetUrl || "",
+          };
         }
         if (performanceReviewPrompt !== undefined)  updates.performanceReviewPrompt  = performanceReviewPrompt || null;
         if (postCommentPrompt !== undefined) updates.postCommentPrompt = postCommentPrompt || DEFAULT_IG_POST_COMMENT_PROMPT;
@@ -924,6 +1019,79 @@ exports.api = onRequest(
       }
     }
 
+    // ── POST /instagram/posts/init ── 전체 게시물 초기화 (최초 1회 전수 수집)
+    if (req.method === "POST" && path === "/instagram/posts/init") {
+      try {
+        const db = admin.firestore();
+        const { workspaceId: _wsId, docId } = req.body;
+        if (!docId) return res.status(400).json({ error: "docId 필수" });
+        const workspaceId = resolveWorkspaceId(_wsId);
+
+        const accRef = db.collection("workspaces").doc(workspaceId)
+          .collection("instagram_accounts").doc(docId);
+        const accSnap = await accRef.get();
+        if (!accSnap.exists) return res.status(404).json({ error: "계정 없음" });
+
+        const acc = accSnap.data();
+        const { igUserId, accessToken, apiType = "facebook" } = acc;
+        if (!igUserId || !accessToken) {
+          return res.status(400).json({ error: "igUserId 또는 accessToken 없음" });
+        }
+
+        const fetchFn = apiType === "instagram" ? fetchAllIgDirectPosts : fetchAllIgFacebookPosts;
+        const allPosts = await fetchFn(igUserId, accessToken);
+        console.log(`[/instagram/posts/init] ${docId}: ${allPosts.length}개 포스트 수집 완료`);
+
+        const postsColRef = accRef.collection("posts");
+        const now = admin.firestore.FieldValue.serverTimestamp();
+        const BATCH_SIZE = 400;
+        for (let i = 0; i < allPosts.length; i += BATCH_SIZE) {
+          const chunk = allPosts.slice(i, i + BATCH_SIZE);
+          const batch = db.batch();
+          for (const post of chunk) {
+            const postRef = postsColRef.doc(post.id);
+            batch.set(postRef, {
+              id: post.id,
+              igUserId,
+              timestamp: post.timestamp || null,
+              permalink: post.permalink || null,
+              mediaType: (() => {
+                const t = String(post.media_type || "").toUpperCase();
+                if (!t) return null;
+                if (t === "REELS") return "VIDEO";
+                return t;
+              })(),
+              caption: post.caption || null,
+              views: post.views != null && Number.isFinite(Number(post.views)) ? Math.round(Number(post.views)) : null,
+              reach: post.reach != null && Number.isFinite(Number(post.reach)) ? Math.round(Number(post.reach)) : null,
+              likes: post.likes != null && Number.isFinite(Number(post.likes)) ? Math.round(Number(post.likes)) : null,
+              comments: post.comments != null && Number.isFinite(Number(post.comments)) ? Math.round(Number(post.comments)) : null,
+              shares: post.shares != null && Number.isFinite(Number(post.shares)) ? Math.round(Number(post.shares)) : null,
+              saves: post.saves != null && Number.isFinite(Number(post.saves)) ? Math.round(Number(post.saves)) : null,
+              follows: post.follows != null && Number.isFinite(Number(post.follows)) ? Math.round(Number(post.follows)) : null,
+              profileVisits: post.profileVisits != null && Number.isFinite(Number(post.profileVisits)) ? Math.round(Number(post.profileVisits)) : null,
+              reelAvgWatchTime: post.reelAvgWatchTime ?? null,
+              totalInteractions: post.totalInteractions != null && Number.isFinite(Number(post.totalInteractions)) ? Math.round(Number(post.totalInteractions)) : null,
+              engagementRate: post.engagementRate ?? 0,
+              firstSyncedAt: now,
+              lastUpdatedAt: now,
+            }, { merge: true });
+          }
+          await batch.commit();
+        }
+
+        await accRef.update({
+          postsInitialized: true,
+          postsLastSyncedAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+
+        return res.json({ success: true, count: allPosts.length });
+      } catch (err) {
+        console.error("[POST /instagram/posts/init] 오류:", err.message);
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
     // ── GET /instagram/report ── 리포트 조회
     if (req.method === "GET" && path === "/instagram/report") {
       try {
@@ -945,6 +1113,200 @@ exports.api = onRequest(
         });
         return res.json({ date, accounts });
       } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── GET /instagram/analytics ── 기간별 트렌드 + 게시물 목록
+    if (req.method === "GET" && path === "/instagram/analytics") {
+      try {
+        const db = admin.firestore();
+        const workspaceId = resolveWorkspaceId(req.query.workspaceId);
+        const { startDate, endDate, docId } = req.query;
+        if (!startDate || !endDate) {
+          return res.status(400).json({ error: "startDate, endDate 필수 (YYYY-MM-DD)" });
+        }
+
+        const start = new Date(startDate + "T00:00:00Z");
+        const end = new Date(endDate + "T00:00:00Z");
+        const diffDays = Math.round((end - start) / 86400000) + 1;
+        if (diffDays < 1) return res.status(400).json({ error: "종료일이 시작일보다 앞섬" });
+        if (diffDays > 90) return res.status(400).json({ error: "최대 90일 범위까지 조회 가능합니다" });
+
+        const trendDates = Array.from({ length: diffDays }, (_, i) => {
+          const d = new Date(start);
+          d.setUTCDate(start.getUTCDate() + i);
+          return d.toISOString().split("T")[0];
+        });
+        const trendDateSet = new Set(trendDates);
+
+        const postLookaheadDays = 6;
+        const todayKst = new Date(Date.now() + 9 * 60 * 60 * 1000);
+        const todayKstDate = todayKst.toISOString().split("T")[0];
+        const scanEnd = new Date(end);
+        scanEnd.setUTCDate(scanEnd.getUTCDate() + postLookaheadDays);
+        const effectiveScanEnd = scanEnd.toISOString().split("T")[0] > todayKstDate
+          ? new Date(todayKstDate + "T00:00:00Z")
+          : scanEnd;
+        const scanDiffDays = Math.round((effectiveScanEnd - start) / 86400000) + 1;
+        const reportScanDates = Array.from({ length: Math.max(scanDiffDays, diffDays) }, (_, i) => {
+          const d = new Date(start);
+          d.setUTCDate(start.getUTCDate() + i);
+          return d.toISOString().split("T")[0];
+        });
+
+        const toNumberOrNull = (value) => {
+          if (value === null || value === undefined || value === "") return null;
+          const n = Number(value);
+          return Number.isFinite(n) ? n : null;
+        };
+
+        const pickLatestByReportDate = (existing, candidate) => {
+          if (!existing) return candidate;
+          if ((candidate._reportDate || "") >= (existing._reportDate || "")) return candidate;
+          return existing;
+        };
+
+        // KST startDate 00:00 → UTC, KST endDate 23:59:59 → UTC 로 변환하여 timestamp 범위 필터링
+        const startUtc = new Date(startDate + "T00:00:00+09:00").toISOString();
+        const endUtc = new Date(endDate + "T23:59:59+09:00").toISOString();
+
+        const readFirestorePosts = async (accountDocId) => {
+          const snap = await wsRef
+            .collection("instagram_accounts").doc(accountDocId)
+            .collection("posts")
+            .where("timestamp", ">=", startUtc)
+            .where("timestamp", "<=", endUtc)
+            .orderBy("timestamp", "desc")
+            .get();
+          return snap.docs.map((d) => {
+            const data = d.data();
+            if (data.firstSyncedAt?.toDate) data.firstSyncedAt = data.firstSyncedAt.toDate().toISOString();
+            if (data.lastUpdatedAt?.toDate) data.lastUpdatedAt = data.lastUpdatedAt.toDate().toISOString();
+            return data;
+          });
+        };
+
+        const sanitizeCommentOverlay = (post, reportDate) => ({
+          aiComment: post.aiComment || null,
+          aiCommentStatus: post.aiCommentStatus || null,
+          aiCommentedAt: post.aiCommentedAt || null,
+          aiCommentSourceCommentsCount: toNumberOrNull(post.aiCommentSourceCommentsCount),
+          _reportDate: reportDate,
+        });
+
+        const wsRef = db.collection("workspaces").doc(workspaceId);
+        const accountMap = new Map();
+        const accountSnap = await wsRef
+          .collection("instagram_accounts")
+          .orderBy("createdAt", "asc")
+          .get();
+
+        for (const accountDoc of accountSnap.docs) {
+          if (docId && accountDoc.id !== docId) continue;
+          const data = accountDoc.data();
+          accountMap.set(accountDoc.id, {
+            id: accountDoc.id,
+            docId: accountDoc.id,
+            igUserId: data.igUserId || null,
+            username: data.username || null,
+            _trendByDate: new Map(),
+            _aiCommentsByPostId: new Map(),
+          });
+        }
+
+        for (const date of reportScanDates) {
+          const snap = await wsRef
+            .collection("instagram_reports").doc(date)
+            .collection("accounts")
+            .get();
+
+          for (const accountDoc of snap.docs) {
+            if (docId && accountDoc.id !== docId) continue;
+
+            const data = accountDoc.data();
+            if (!accountMap.has(accountDoc.id)) {
+              accountMap.set(accountDoc.id, {
+                id: accountDoc.id,
+                docId: accountDoc.id,
+                igUserId: data.igUserId || null,
+                username: data.username || null,
+                _trendByDate: new Map(),
+                _aiCommentsByPostId: new Map(),
+              });
+            }
+
+            const acc = accountMap.get(accountDoc.id);
+            if (!acc.username && data.username) acc.username = data.username;
+            if (!acc.igUserId && data.igUserId) acc.igUserId = data.igUserId;
+
+            if (trendDateSet.has(date)) {
+              acc._trendByDate.set(date, {
+                date,
+                followerCount: toNumberOrNull(data.followerCount),
+                dailyViews: toNumberOrNull(data.dailyViews),
+              });
+            }
+
+            for (const post of Array.isArray(data.posts) ? data.posts : []) {
+              if (!post?.id || !post.aiComment) continue;
+              const candidate = sanitizeCommentOverlay(post, date);
+              const existing = acc._aiCommentsByPostId.get(post.id);
+              acc._aiCommentsByPostId.set(post.id, pickLatestByReportDate(existing, candidate));
+            }
+          }
+        }
+
+        const accounts = await Promise.all(Array.from(accountMap.values()).map(async (acc) => {
+          let posts = [];
+          try {
+            posts = await readFirestorePosts(acc.docId);
+          } catch (fsErr) {
+            console.warn(`[instagram/analytics] Firestore 게시물 로드 실패 — ${acc.docId}: ${fsErr.message}`);
+          }
+
+          const mergedPosts = posts
+            .map((post) => {
+              const comment = post.id ? acc._aiCommentsByPostId.get(post.id) : null;
+              if (!comment) return post;
+              return {
+                ...post,
+                aiComment: comment.aiComment,
+                aiCommentStatus: comment.aiCommentStatus,
+                aiCommentedAt: comment.aiCommentedAt,
+                aiCommentSourceCommentsCount: comment.aiCommentSourceCommentsCount,
+              };
+            })
+            .sort((a, b) => {
+              const ta = a.timestamp ? new Date(a.timestamp).getTime() : 0;
+              const tb = b.timestamp ? new Date(b.timestamp).getTime() : 0;
+              return tb - ta;
+            });
+
+          return {
+            id: acc.id,
+            docId: acc.docId,
+            igUserId: acc.igUserId,
+            username: acc.username || acc.igUserId || acc.id,
+            trendChart: trendDates.map((date) => acc._trendByDate.get(date) || {
+              date,
+              followerCount: null,
+              dailyViews: null,
+            }),
+            posts: mergedPosts,
+          };
+        }));
+
+        const filteredAccounts = accounts
+          .filter((acc) =>
+            acc.trendChart.some((row) => row.followerCount !== null || row.dailyViews !== null) ||
+            acc.posts.length > 0
+          )
+          .sort((a, b) => String(a.username || "").localeCompare(String(b.username || "")));
+
+        return res.json({ startDate, endDate, accounts: filteredAccounts });
+      } catch (err) {
+        console.error("[/instagram/analytics] 오류:", err.message);
         return res.status(500).json({ error: err.message });
       }
     }
@@ -1024,6 +1386,7 @@ exports.api = onRequest(
             docId: d.id,
             username: data.username,
             isActive: data.isActive,
+            apiType: data.apiType || "facebook",
             tokenExpiresAt: expiresAt?.toISOString() ?? null,
             tokenRefreshedAt: refreshedAt?.toISOString() ?? null,
             daysUntilExpiry,
@@ -1049,15 +1412,26 @@ exports.api = onRequest(
         const doc = await ref.get();
         if (!doc.exists) return res.status(404).json({ error: "계정을 찾을 수 없습니다." });
 
-        const { accessToken: currentToken, appId, appSecret, username } = doc.data();
-        const { accessToken: newToken, expiresIn } = await refreshIgToken(currentToken, appId, appSecret);
+        const { accessToken: currentToken, appId, appSecret, username, apiType: accApiType } = doc.data();
+        const isDirectApi = accApiType === "instagram";
 
-        // debug_token으로 실제 만료일 확인 (실패 시 expiresIn fallback)
+        let newToken, expiresIn;
+        if (isDirectApi) {
+          // Instagram API: ig_refresh_token 방식 (appId/appSecret 불필요)
+          ({ accessToken: newToken, expiresIn } = await refreshDirectToken(currentToken));
+        } else {
+          // Facebook API: fb_exchange_token 방식
+          ({ accessToken: newToken, expiresIn } = await refreshIgToken(currentToken, appId, appSecret));
+        }
+
+        // 만료일 계산 (Facebook API만 debug_token으로 실제 만료일 확인)
         let newExpiresAt = new Date(Date.now() + (expiresIn || 5184000) * 1000);
-        try {
-          const tokenInfo = await debugIgToken(newToken, appId, appSecret);
-          if (tokenInfo.expiresAt) newExpiresAt = tokenInfo.expiresAt;
-        } catch (_) { /* fallback to expiresIn */ }
+        if (!isDirectApi) {
+          try {
+            const tokenInfo = await debugIgToken(newToken, appId, appSecret);
+            if (tokenInfo.expiresAt) newExpiresAt = tokenInfo.expiresAt;
+          } catch (_) { /* fallback to expiresIn */ }
+        }
 
         await ref.update({
           accessToken: newToken,
@@ -1068,6 +1442,620 @@ exports.api = onRequest(
         return res.json({ success: true, username, newExpiresAt: newExpiresAt.toISOString() });
       } catch (err) {
         console.error("[POST /instagram/tokens/refresh] 오류:", err.message);
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ════════════════════════════════════════════════════════
+    //  Facebook 그룹 API
+    // ════════════════════════════════════════════════════════
+
+    // ── GET /facebook/groups ── 그룹 목록 조회
+    if (req.method === "GET" && path === "/facebook/groups") {
+      try {
+        const db = admin.firestore();
+        const workspaceId = resolveWorkspaceId(req.query.workspaceId);
+        const snap = await db
+          .collection("workspaces").doc(workspaceId)
+          .collection("facebook_groups")
+          .orderBy("createdAt", "asc")
+          .get();
+        const groups = snap.docs.map((d) => {
+          const { ...data } = d.data();
+          return { docId: d.id, ...data };
+        });
+        return res.json({ groups });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── POST /facebook/groups ── 그룹 추가
+    if (req.method === "POST" && path === "/facebook/groups") {
+      try {
+        const db = admin.firestore();
+        const { workspaceId: _wsId, groupUrl, groupName } = req.body || {};
+        if (!groupUrl) return res.status(400).json({ error: "groupUrl 필수" });
+        const workspaceId = resolveWorkspaceId(_wsId);
+
+        // groupId: URL에서 추출 (/groups/{id} or /groups/{name})
+        const groupIdMatch = String(groupUrl).match(/\/groups\/([^/?#]+)/);
+        const groupId = groupIdMatch ? groupIdMatch[1] : groupUrl;
+
+        // 중복 확인
+        const existing = await db
+          .collection("workspaces").doc(workspaceId)
+          .collection("facebook_groups")
+          .where("groupId", "==", groupId)
+          .get();
+        if (!existing.empty) {
+          return res.status(409).json({ error: "이미 등록된 그룹입니다", docId: existing.docs[0].id });
+        }
+
+        const docRef = await db
+          .collection("workspaces").doc(workspaceId)
+          .collection("facebook_groups")
+          .add({
+            platform: "facebook",
+            groupId,
+            groupName: groupName || groupId,
+            groupUrl: String(groupUrl).replace(/\/$/, ""),
+            isActive: true,
+            deliveryConfig: { email: { isEnabled: false, recipients: [] } },
+            analysisPrompt: "",
+            analysisModel: "",
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+
+        return res.json({ success: true, docId: docRef.id, groupId });
+      } catch (err) {
+        console.error("[POST /facebook/groups] 오류:", err.message);
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── PATCH /facebook/groups ── isActive 토글
+    if (req.method === "PATCH" && path === "/facebook/groups") {
+      try {
+        const db = admin.firestore();
+        const { workspaceId: _wsId, docId } = req.query;
+        if (!docId) return res.status(400).json({ error: "docId 필수" });
+        const { isActive } = req.body || {};
+        const workspaceId = resolveWorkspaceId(_wsId);
+        await db.collection("workspaces").doc(workspaceId)
+          .collection("facebook_groups").doc(docId)
+          .update({ isActive: Boolean(isActive) });
+        return res.json({ success: true });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── PATCH /facebook/groups/settings ── 그룹 설정 수정
+    if (req.method === "PATCH" && path === "/facebook/groups/settings") {
+      try {
+        const db = admin.firestore();
+        const { workspaceId: _wsId, docId } = req.query;
+        if (!docId) return res.status(400).json({ error: "docId 필수" });
+        const workspaceId = resolveWorkspaceId(_wsId);
+        const { deliveryConfig, analysisPrompt, analysisModel, groupName } = req.body || {};
+        const update = {};
+        if (deliveryConfig !== undefined) update.deliveryConfig = deliveryConfig;
+        if (analysisPrompt !== undefined) update.analysisPrompt = String(analysisPrompt);
+        if (analysisModel  !== undefined) {
+          if (!FB_ANALYSIS_MODELS.has(analysisModel)) {
+            return res.status(400).json({ error: "지원하지 않는 AI 모델입니다" });
+          }
+          update.analysisModel = analysisModel;
+        }
+        if (groupName      !== undefined) update.groupName      = String(groupName);
+        await db.collection("workspaces").doc(workspaceId)
+          .collection("facebook_groups").doc(docId)
+          .update(update);
+        return res.json({ success: true });
+      } catch (err) {
+        console.error("[PATCH /facebook/groups/settings] 오류:", err.message);
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── DELETE /facebook/groups ── 그룹 삭제 + 리포트 정리
+    if (req.method === "DELETE" && path === "/facebook/groups") {
+      try {
+        const db = admin.firestore();
+        const { workspaceId: _wsId, docId } = req.query;
+        if (!docId) return res.status(400).json({ error: "docId 필수" });
+        const workspaceId = resolveWorkspaceId(_wsId);
+        await db.collection("workspaces").doc(workspaceId)
+          .collection("facebook_groups").doc(docId).delete();
+        const reportsSnap = await db.collection("workspaces").doc(workspaceId)
+          .collection("facebook_reports").get();
+        const deleteOps = [];
+        for (const dateDoc of reportsSnap.docs) {
+          const ref = dateDoc.ref.collection("groups").doc(docId);
+          const snap = await ref.get();
+          if (snap.exists) deleteOps.push(ref.delete());
+        }
+        if (deleteOps.length) await Promise.all(deleteOps);
+        return res.json({ success: true, reportsDeleted: deleteOps.length });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── GET /facebook/report ── 리포트 조회
+    if (req.method === "GET" && path === "/facebook/report") {
+      try {
+        const db = admin.firestore();
+        const workspaceId = resolveWorkspaceId(req.query.workspaceId);
+        const { date } = req.query;
+        if (!date) return res.status(400).json({ error: "date 필수 (YYYY-MM-DD)" });
+        const snap = await db
+          .collection("workspaces").doc(workspaceId)
+          .collection("facebook_reports").doc(date)
+          .collection("groups").get();
+        const reports = snap.docs.map((d) => ({ docId: d.id, ...d.data() }));
+        return res.json({ date, reports });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── GET /facebook/available-dates ── 리포트 존재 날짜 목록
+    if (req.method === "GET" && path === "/facebook/available-dates") {
+      try {
+        const db = admin.firestore();
+        const workspaceId = resolveWorkspaceId(req.query.workspaceId);
+        const snap = await db
+          .collection("workspaces").doc(workspaceId)
+          .collection("facebook_reports")
+          .orderBy("updatedAt", "desc")
+          .limit(60)
+          .get();
+        const dates = snap.docs.map((d) => d.id);
+        return res.json({ dates });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── POST /facebook/pipeline/trigger ── 파이프라인 수동 실행 (이메일 미발송)
+    if (req.method === "POST" && path === "/facebook/pipeline/trigger") {
+      try {
+        const { workspaceId, date } = req.body || {};
+        const results = await runFacebookGroupPipeline(workspaceId || null, date || null, { skipEmail: true });
+        return res.json({ success: true, results });
+      } catch (err) {
+        console.error("[/facebook/pipeline/trigger] 오류:", err.message);
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── POST /facebook/email/trigger ── 이메일 수동 발송 (주의: 실제 발송)
+    if (req.method === "POST" && path === "/facebook/email/trigger") {
+      try {
+        const { workspaceId, date } = req.body || {};
+        const result = await runFacebookGroupEmailSender(workspaceId || null, date || null);
+        return res.json({ success: true, result });
+      } catch (err) {
+        console.error("[/facebook/email/trigger] 오류:", err.message);
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── PATCH /facebook/session ── 쿠키 JSON 저장
+    if (req.method === "PATCH" && path === "/facebook/session") {
+      try {
+        const db = admin.firestore();
+        const { workspaceId: _wsId, cookies, userAgent } = req.body || {};
+        if (!cookies || !Array.isArray(cookies)) {
+          return res.status(400).json({ error: "cookies 배열 필수" });
+        }
+        const workspaceId = resolveWorkspaceId(_wsId);
+        await saveFbSession(db, workspaceId, { cookies, userAgent: userAgent || "" });
+        return res.json({ success: true, cookieCount: cookies.length });
+      } catch (err) {
+        console.error("[PATCH /facebook/session] 오류:", err.message);
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── GET /facebook/session/status ── 세션 상태 조회
+    if (req.method === "GET" && path === "/facebook/session/status") {
+      try {
+        const db = admin.firestore();
+        const workspaceId = resolveWorkspaceId(req.query.workspaceId);
+        const session = await loadFbSession(db, workspaceId);
+        if (!session) return res.json({ exists: false, isValid: false });
+        return res.json({
+          exists: true,
+          isValid: session.isValid ?? false,
+          cookieCount: (session.cookies || []).length,
+          savedAt: session.savedAt?.toDate?.()?.toISOString() ?? null,
+          lastValidatedAt: session.lastValidatedAt?.toDate?.()?.toISOString() ?? null,
+        });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── DELETE /facebook/session ── 세션 삭제
+    if (req.method === "DELETE" && path === "/facebook/session") {
+      try {
+        const db = admin.firestore();
+        const workspaceId = resolveWorkspaceId(req.query.workspaceId);
+        await db.collection("workspaces").doc(workspaceId)
+          .collection("facebook_session").doc("main").delete();
+        return res.json({ success: true });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── POST /facebook/session/verify ── 세션 유효성 재검증 (브라우저 실행)
+    if (req.method === "POST" && path === "/facebook/session/verify") {
+      try {
+        const db = admin.firestore();
+        const workspaceId = resolveWorkspaceId(req.body?.workspaceId || req.query.workspaceId);
+        const session = await loadFbSession(db, workspaceId);
+        if (!session || !(session.cookies || []).length) {
+          return res.status(404).json({ error: "저장된 세션 없음" });
+        }
+
+        let browser;
+        try {
+          browser = await launchFbBrowser();
+          const context = await browser.newContext({
+            userAgent: session.userAgent || undefined,
+            locale: "ko-KR",
+            extraHTTPHeaders: { "Accept-Language": "ko-KR,ko;q=0.9" },
+          });
+          await applyFbCookies(context, session.cookies);
+          const page = await context.newPage();
+          const isValid = await verifyFbSessionAlive(page);
+
+          await db
+            .collection("workspaces").doc(workspaceId)
+            .collection("facebook_session").doc("main")
+            .set({ isValid, lastValidatedAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
+
+          return res.json({ isValid, lastValidatedAt: new Date().toISOString() });
+        } finally {
+          try { await browser?.close(); } catch (_) {}
+        }
+      } catch (err) {
+        console.error("[POST /facebook/session/verify] 오류:", err.message);
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ════════════════════════════════════════════════════════
+    //  네이버 라운지 API
+    // ════════════════════════════════════════════════════════
+
+    // ── GET /naver/lounges ── 라운지 목록 조회
+    if (req.method === "GET" && path === "/naver/lounges") {
+      try {
+        const db = admin.firestore();
+        const workspaceId = resolveWorkspaceId(req.query.workspaceId);
+        const snap = await db
+          .collection("workspaces").doc(workspaceId)
+          .collection("naver_lounges")
+          .orderBy("createdAt", "asc")
+          .get();
+        const lounges = snap.docs.map((d) => ({ docId: d.id, ...d.data() }));
+        return res.json({ lounges });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── POST /naver/lounges ── 라운지 등록
+    if (req.method === "POST" && path === "/naver/lounges") {
+      try {
+        const db = admin.firestore();
+        const { workspaceId: _wsId, loungeUrl, loungeName } = req.body || {};
+        if (!loungeUrl) return res.status(400).json({ error: "loungeUrl 필수" });
+        const workspaceId = resolveWorkspaceId(_wsId);
+
+        // loungeId: URL에서 추출 (/lounge/{id}/board)
+        const loungeIdMatch = String(loungeUrl).match(/\/lounge\/([^/?#]+)/);
+        const loungeId = loungeIdMatch ? loungeIdMatch[1] : loungeUrl;
+
+        // 중복 확인
+        const existing = await db
+          .collection("workspaces").doc(workspaceId)
+          .collection("naver_lounges")
+          .where("loungeId", "==", loungeId)
+          .get();
+        if (!existing.empty) {
+          return res.status(409).json({ error: "이미 등록된 라운지입니다", docId: existing.docs[0].id });
+        }
+
+        const docRef = await db
+          .collection("workspaces").doc(workspaceId)
+          .collection("naver_lounges")
+          .add({
+            platform: "naver_lounge",
+            loungeId,
+            loungeName: loungeName || loungeId,
+            loungeUrl: String(loungeUrl).replace(/\/$/, ""),
+            isActive: true,
+            deliveryConfig: { email: { isEnabled: false, recipients: [] } },
+            analysisPrompt: "",
+            analysisModel: "",
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+
+        return res.json({ success: true, docId: docRef.id, loungeId });
+      } catch (err) {
+        console.error("[POST /naver/lounges] 오류:", err.message);
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── PATCH /naver/lounges ── isActive 토글
+    if (req.method === "PATCH" && path === "/naver/lounges") {
+      try {
+        const db = admin.firestore();
+        const { workspaceId: _wsId, docId } = req.query;
+        if (!docId) return res.status(400).json({ error: "docId 필수" });
+        const { isActive } = req.body || {};
+        const workspaceId = resolveWorkspaceId(_wsId);
+        await db.collection("workspaces").doc(workspaceId)
+          .collection("naver_lounges").doc(docId)
+          .update({ isActive: Boolean(isActive) });
+        return res.json({ success: true });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── PATCH /naver/lounges/settings ── 라운지 설정 수정
+    if (req.method === "PATCH" && path === "/naver/lounges/settings") {
+      try {
+        const db = admin.firestore();
+        const { workspaceId: _wsId, docId } = req.query;
+        if (!docId) return res.status(400).json({ error: "docId 필수" });
+        const workspaceId = resolveWorkspaceId(_wsId);
+        const { deliveryConfig, analysisPrompt, analysisModel, loungeName } = req.body || {};
+        const update = {};
+        if (deliveryConfig  !== undefined) update.deliveryConfig  = deliveryConfig;
+        if (analysisPrompt  !== undefined) update.analysisPrompt  = String(analysisPrompt);
+        if (analysisModel   !== undefined) {
+          if (!NL_ANALYSIS_MODELS.has(analysisModel)) {
+            return res.status(400).json({ error: "지원하지 않는 AI 모델입니다" });
+          }
+          update.analysisModel = analysisModel;
+        }
+        if (loungeName !== undefined) update.loungeName = String(loungeName);
+        await db.collection("workspaces").doc(workspaceId)
+          .collection("naver_lounges").doc(docId)
+          .update(update);
+        return res.json({ success: true });
+      } catch (err) {
+        console.error("[PATCH /naver/lounges/settings] 오류:", err.message);
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── DELETE /naver/lounges ── 라운지 삭제 + 리포트 정리
+    if (req.method === "DELETE" && path === "/naver/lounges") {
+      try {
+        const db = admin.firestore();
+        const { workspaceId: _wsId, docId } = req.query;
+        if (!docId) return res.status(400).json({ error: "docId 필수" });
+        const workspaceId = resolveWorkspaceId(_wsId);
+        await db.collection("workspaces").doc(workspaceId)
+          .collection("naver_lounges").doc(docId).delete();
+        const reportsSnap = await db.collection("workspaces").doc(workspaceId)
+          .collection("naver_reports").get();
+        const deleteOps = [];
+        for (const dateDoc of reportsSnap.docs) {
+          const ref = dateDoc.ref.collection("lounges").doc(docId);
+          const snap = await ref.get();
+          if (snap.exists) deleteOps.push(ref.delete());
+        }
+        if (deleteOps.length) await Promise.all(deleteOps);
+        return res.json({ success: true, reportsDeleted: deleteOps.length });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── GET /naver/report ── 리포트 조회
+    if (req.method === "GET" && path === "/naver/report") {
+      try {
+        const db = admin.firestore();
+        const workspaceId = resolveWorkspaceId(req.query.workspaceId);
+        const { date } = req.query;
+        if (!date) return res.status(400).json({ error: "date 필수 (YYYY-MM-DD)" });
+        const snap = await db
+          .collection("workspaces").doc(workspaceId)
+          .collection("naver_reports").doc(date)
+          .collection("lounges").get();
+        const reports = snap.docs.map((d) => ({ docId: d.id, ...d.data() }));
+        return res.json({ date, reports });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── GET /naver/available-dates ── 리포트 존재 날짜 목록
+    if (req.method === "GET" && path === "/naver/available-dates") {
+      try {
+        const db = admin.firestore();
+        const workspaceId = resolveWorkspaceId(req.query.workspaceId);
+        const snap = await db
+          .collection("workspaces").doc(workspaceId)
+          .collection("naver_reports")
+          .orderBy("updatedAt", "desc")
+          .limit(60)
+          .get();
+        const dates = snap.docs.map((d) => d.id);
+        return res.json({ dates });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── POST /naver/pipeline/trigger ── 파이프라인 수동 실행 (이메일 미발송)
+    if (req.method === "POST" && path === "/naver/pipeline/trigger") {
+      try {
+        const { workspaceId, date } = req.body || {};
+        const results = await runNaverLoungePipeline(workspaceId || null, date || null, { skipEmail: true });
+        return res.json({ success: true, results });
+      } catch (err) {
+        console.error("[/naver/pipeline/trigger] 오류:", err.message);
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── POST /naver/email/trigger ── 이메일 수동 발송 (주의: 실제 발송)
+    if (req.method === "POST" && path === "/naver/email/trigger") {
+      try {
+        const { workspaceId, date } = req.body || {};
+        const result = await runNaverLoungeEmailSender(workspaceId || null, date || null);
+        return res.json({ success: true, result });
+      } catch (err) {
+        console.error("[/naver/email/trigger] 오류:", err.message);
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── PATCH /naver/session ── 쿠키 JSON 저장
+    if (req.method === "PATCH" && path === "/naver/session") {
+      try {
+        const db = admin.firestore();
+        const { workspaceId: _wsId, cookies, userAgent } = req.body || {};
+        if (!cookies || !Array.isArray(cookies)) {
+          return res.status(400).json({ error: "cookies 배열 필수" });
+        }
+        const workspaceId = resolveWorkspaceId(_wsId);
+        await saveNlSession(db, workspaceId, { cookies, userAgent: userAgent || "" });
+        return res.json({ success: true, cookieCount: cookies.length });
+      } catch (err) {
+        console.error("[PATCH /naver/session] 오류:", err.message);
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── GET /naver/session/status ── 세션 상태 조회
+    if (req.method === "GET" && path === "/naver/session/status") {
+      try {
+        const db = admin.firestore();
+        const workspaceId = resolveWorkspaceId(req.query.workspaceId);
+        const session = await loadNlSession(db, workspaceId);
+        if (!session) return res.json({ exists: false, isValid: false });
+        return res.json({
+          exists: true,
+          isValid: session.isValid ?? false,
+          cookieCount: (session.cookies || []).length,
+          savedAt: session.savedAt?.toDate?.()?.toISOString() ?? null,
+          lastValidatedAt: session.lastValidatedAt?.toDate?.()?.toISOString() ?? null,
+        });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── DELETE /naver/session ── 세션 삭제
+    if (req.method === "DELETE" && path === "/naver/session") {
+      try {
+        const db = admin.firestore();
+        const workspaceId = resolveWorkspaceId(req.query.workspaceId);
+        await db.collection("workspaces").doc(workspaceId)
+          .collection("naver_session").doc("main").delete();
+        return res.json({ success: true });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── GET /report-presets ── 프리셋 목록 조회
+    if (req.method === "GET" && path === "/report-presets") {
+      try {
+        const db = admin.firestore();
+        const workspaceId = resolveWorkspaceId(req.query.workspaceId);
+        const snap = await db.collection("workspaces").doc(workspaceId)
+          .collection("report_presets")
+          .orderBy("createdAt", "desc")
+          .get();
+        const presets = snap.docs.map((d) => ({ presetId: d.id, ...d.data() }));
+        return res.json({ presets });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── POST /report-presets ── 프리셋 생성
+    if (req.method === "POST" && path === "/report-presets") {
+      try {
+        const db = admin.firestore();
+        const { workspaceId: _wsId, name, items = [], recipients = [] } = req.body || {};
+        if (!name) return res.status(400).json({ error: "name 필수" });
+        const workspaceId = resolveWorkspaceId(_wsId);
+        const ref = await db.collection("workspaces").doc(workspaceId)
+          .collection("report_presets")
+          .add({
+            name,
+            items,
+            recipients,
+            isActive: true,
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+        return res.json({ success: true, presetId: ref.id });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── PATCH /report-presets ── 프리셋 수정
+    if (req.method === "PATCH" && path === "/report-presets") {
+      try {
+        const db = admin.firestore();
+        const { workspaceId: _wsId, presetId, ...fields } = req.body || {};
+        if (!presetId) return res.status(400).json({ error: "presetId 필수" });
+        const workspaceId = resolveWorkspaceId(_wsId);
+        const allowed = ["name", "items", "recipients", "isActive"];
+        const update = { updatedAt: admin.firestore.FieldValue.serverTimestamp() };
+        for (const key of allowed) {
+          if (fields[key] !== undefined) update[key] = fields[key];
+        }
+        await db.collection("workspaces").doc(workspaceId)
+          .collection("report_presets").doc(presetId)
+          .update(update);
+        return res.json({ success: true });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── DELETE /report-presets ── 프리셋 삭제
+    if (req.method === "DELETE" && path === "/report-presets") {
+      try {
+        const db = admin.firestore();
+        const { workspaceId: _wsId, presetId } = req.body || {};
+        if (!presetId) return res.status(400).json({ error: "presetId 필수" });
+        const workspaceId = resolveWorkspaceId(_wsId);
+        await db.collection("workspaces").doc(workspaceId)
+          .collection("report_presets").doc(presetId)
+          .delete();
+        return res.json({ success: true });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── POST /report-presets/email/trigger ── 통합 이메일 수동 발송 (주의: 실제 발송)
+    if (req.method === "POST" && path === "/report-presets/email/trigger") {
+      try {
+        const { workspaceId, presetId, date } = req.body || {};
+        const results = await runReportPresetPipeline(workspaceId || null, date || null, presetId || null);
+        return res.json({ success: true, results });
+      } catch (err) {
+        console.error("[/report-presets/email/trigger] 오류:", err.message);
         return res.status(500).json({ error: err.message });
       }
     }
@@ -1134,6 +2122,32 @@ exports.instagramPipeline = onSchedule(
     console.log("[instagramPipeline] 스케줄 실행 시작 (KST 09:00)");
     await runInstagramPipeline(null, null, { skipEmail: false });
     console.log("[instagramPipeline] 스케줄 실행 완료");
+  }
+);
+
+// ══════════════════════════════════════════════════════
+//  Cloud Scheduler — 매일 KST 09:00 (Facebook 그룹 크롤링 + 리포트 생성 + 이메일 발송)
+//  UTC 00:00 = KST 09:00 | memory: 2GiB (Chromium 안정성 확보)
+// ══════════════════════════════════════════════════════
+exports.facebookGroupPipeline = onSchedule(
+  { schedule: "0 0 * * *", timeoutSeconds: 800, memory: "2GiB" },
+  async () => {
+    console.log("[facebookGroupPipeline] 스케줄 실행 시작 (KST 09:00)");
+    await runFacebookGroupPipeline(null, null, { skipEmail: false });
+    console.log("[facebookGroupPipeline] 스케줄 실행 완료");
+  }
+);
+
+// ══════════════════════════════════════════════════════
+//  Cloud Scheduler — 매일 KST 10:30 (통합 프리셋 이메일)
+//  UTC 01:30 = KST 10:30 | 모든 개별 파이프라인 완료 후 실행
+// ══════════════════════════════════════════════════════
+exports.presetPipeline = onSchedule(
+  { schedule: "30 1 * * *", timeoutSeconds: 300, memory: "512MiB" },
+  async () => {
+    console.log("[presetPipeline] 스케줄 실행 시작 (KST 10:30)");
+    await runReportPresetPipeline();
+    console.log("[presetPipeline] 스케줄 실행 완료");
   }
 );
 

@@ -293,22 +293,28 @@ async function analyzeInstagramPostPerformance({ username, posts, accountAvgEnga
     const captionSnippet = rawCaption
       ? (rawCaption.length > 18 ? `'${rawCaption.slice(0, 18)}…'` : `'${rawCaption}'`)
       : null;
+    const views = p.views != null ? p.views : p.reach;
     const parts = [
-      `도달 ${p.reach != null ? p.reach.toLocaleString() : "—"}`,
+      `조회 ${views != null ? views.toLocaleString() : "—"}`,
       `좋아요 ${p.likes != null ? p.likes.toLocaleString() : "—"}`,
       `댓글 ${p.comments != null ? p.comments.toLocaleString() : "—"}`,
       `공유 ${p.shares != null ? p.shares.toLocaleString() : "—"}`,
       `저장 ${p.saves != null ? p.saves.toLocaleString() : "—"}`,
+      `프로필방문 ${p.profileVisits != null ? p.profileVisits.toLocaleString() : "—"}`,
       `참여율 ${p.engagementRate != null ? p.engagementRate + "%" : "—"}`,
     ];
-    if (p.profileVisits != null) parts.push(`프로필방문 ${p.profileVisits.toLocaleString()}`);
-    if (p.reelAvgWatchTime != null) parts.push(`릴스시청 ${(p.reelAvgWatchTime / 1000).toFixed(1)}초`);
     const captionPart = captionSnippet ? ` ${captionSnippet}` : "";
     return `[${i + 1}] ${dateLabel}(${type})${captionPart}: ${parts.join(", ")}`;
   }).join("\n");
 
-  const defaultSystemPrompt = `당신은 Instagram 마케팅 전문가입니다.
-계정의 최근 1주 게시물 전체 성과 데이터를 종합 분석하고, 아래 세 항목으로 나누어 각 2~3문장씩 구체적인 수치 근거를 포함해 작성하세요.
+  const hardConstraintPrompt = `당신은 Instagram 마케팅 전문가입니다.
+이번 성과 리뷰에서는 반드시 입력에 제공된 최근 게시물 테이블 정보만 근거로 해석하세요.
+허용 근거는 각 게시물의 날짜, 유형, 본문 텍스트, 조회, 좋아요, 댓글, 공유, 저장, 프로필방문, 참여율뿐입니다.
+입력에 없는 지표나 화면에 표시되지 않는 지표를 추정하거나 언급하면 안 됩니다.
+예를 들어 도달, 평균 시청시간, 팔로워 증감, 저장 외 내부 지표, 별도 계정 지표를 근거처럼 해석하면 안 됩니다.
+숫자가 없는 항목은 모른다고 간주하고, 보이는 값만 비교해서 해석하세요.`;
+
+  const defaultInstructionPrompt = `계정의 최근 1주 게시물 전체 성과 데이터를 종합 분석하고, 아래 세 항목으로 나누어 각 2~3문장씩 구체적인 수치 근거를 포함해 작성하세요.
 트렌드, 패턴, 포스트 유형별 성과 차이 등을 구체적으로 언급하세요.
 마크다운이나 HTML 없이 순수 텍스트로만 응답하세요.
 특정 게시물을 언급할 때는 반드시 날짜와 본문 앞부분을 함께 표기하세요. 예: 2/26(목) '댄스챌린지…'에서 참여율이 높았습니다.
@@ -317,19 +323,16 @@ async function analyzeInstagramPostPerformance({ username, posts, accountAvgEnga
 ✅ 잘된 점: (내용)
 ⚠️ 아쉬운 점: (내용)
 💡 개선 제안: (내용)`;
-  const systemPrompt = (customPrompt && customPrompt.trim()) ? customPrompt.trim() : defaultSystemPrompt;
+  const instructionPrompt = (customPrompt && customPrompt.trim()) ? customPrompt.trim() : defaultInstructionPrompt;
 
-  const userContent = `@${username} 계정 정보:
-- 팔로워: ${followerCount != null ? followerCount.toLocaleString() : "—"}
-- 최근 1주 평균 참여율: ${accountAvgEngagementRate != null ? accountAvgEngagementRate + "%" : "—"}
-
-최근 1주 게시물 성과 지표 (${(posts || []).length}건):
+  const userContent = `@${username} 최근 1주 게시물 테이블 (${(posts || []).length}건):
 ${postLines || "  (포스트 없음)"}`;
 
   const payload = {
     model: resolvedModel,
     messages: [
-      { role: "system", content: systemPrompt },
+      { role: "system", content: hardConstraintPrompt },
+      { role: "system", content: instructionPrompt },
       { role: "user", content: userContent },
     ],
   };
@@ -437,10 +440,161 @@ ${commentLines || "(댓글 없음)"}`;
   return { comment, usage: data.usage };
 }
 
+/**
+ * Facebook 그룹 게시글 + 댓글 통합 분석
+ *
+ * @param {object} opts
+ * @param {string}   opts.groupName    - Facebook 그룹 이름
+ * @param {string}   opts.date         - 'YYYY-MM-DD' (분석 날짜)
+ * @param {Array}    opts.posts        - 수집된 게시글 배열
+ *   각 post: { postUrl, authorName, text, publishedAt, reactions, commentCount, comments[] }
+ * @param {string}   [opts.customPrompt] - 사용자 커스텀 분석 지시사항
+ * @param {string}   [opts.model]        - 사용할 모델 (기본: OPENROUTER_MODEL)
+ * @returns {Promise<{ summary, sentiment, keywords, issues, usage }>}
+ */
+async function analyzeFacebookGroupPosts({ groupName, date, posts, customPrompt, model }) {
+  const resolvedModel = model || process.env.OPENROUTER_MODEL;
+
+  // 게시글 텍스트 구성 (본문 200자 + 댓글 최대 20개)
+  const postsText = (posts || [])
+    .slice(0, 50) // 최대 50개
+    .map((p, i) => {
+      const text = (p.text || "").slice(0, 200);
+      const commentLines = (p.comments || [])
+        .slice(0, 20)
+        .map((c) => `    - ${c.author || "익명"}: ${(c.text || "").slice(0, 100)}`)
+        .join("\n");
+      return [
+        `[${i + 1}] ${p.authorName || "익명"} (반응 ${p.reactions || 0}, 댓글 ${p.commentCount || 0}개)`,
+        `    본문: ${text || "(없음)"}`,
+        commentLines ? `    댓글:\n${commentLines}` : "    댓글: 없음",
+      ].join("\n");
+    })
+    .join("\n\n");
+
+  const summaryFormatGuide = `
+[summary 필드 HTML 형식 규칙]
+- summary 값은 HTML 태그가 포함된 문자열입니다.
+- 각 섹션은 이모지 + <strong>섹션명</strong>으로 시작하세요.
+- 섹션 사이는 <br><br>로 구분하세요.
+- 중요한 표현·수치·키워드는 <strong>굵게</strong> 처리하세요.
+- 사용할 섹션 (내용이 없으면 해당 섹션 생략):
+  📊 <strong>전체 동향</strong> — 오늘 그룹의 핵심 흐름 2-3문장
+  📢 <strong>주요 의견/건의</strong> — 멤버들의 요구나 건의사항`;
+
+  const defaultInstruction = `그룹 멤버들의 게시글과 댓글 반응을 분석하여 오늘 해당 그룹의 동향을 파악하세요.
+${customPrompt ? `\n추가 지시사항: ${customPrompt}` : ""}`;
+
+  const systemPrompt = `당신은 소셜 미디어 동향 분석 전문가입니다.
+Facebook 그룹의 게시글과 댓글 데이터를 분석하여 아래 JSON 형식으로만 응답하세요.
+마크다운 코드블록 없이 순수 JSON만 출력하세요.
+${summaryFormatGuide}
+
+[issues 필드 규칙]
+- 포함해야 하는 이슈: 분쟁, 논란, 불만 급증, 스팸, 부적절한 콘텐츠, 주요 민원
+- 중요한 이슈가 없으면 반드시 빈 배열 []로 작성
+- postIndex: 해당 이슈가 포함된 게시글 번호 (1-based), 특정 불가하면 null
+
+{
+  "summary": "${defaultInstruction} (위 HTML 형식 규칙 적용)",
+  "sentiment": {
+    "positive": 0에서100사이정수,
+    "neutral": 0에서100사이정수,
+    "negative": 0에서100사이정수
+  },
+  "keywords": ["핵심키워드1", "핵심키워드2", "핵심키워드3", "핵심키워드4", "핵심키워드5"],
+  "issues": [
+    { "title": "이슈 제목", "description": "이슈 설명 1-2문장", "count": 언급횟수정수, "postIndex": 게시글번호또는null }
+  ]
+}`;
+
+  // ── vision: 이미지 블록 수집 (포스트당 최대 3장, 전체 최대 10장) ──
+  const MAX_TOTAL_IMAGES = 10;
+  const imageBlocks = [];
+  for (const p of (posts || []).slice(0, 50)) {
+    if (imageBlocks.length >= MAX_TOTAL_IMAGES) break;
+    for (const img of p.images || []) {
+      if (!img || imageBlocks.length >= MAX_TOTAL_IMAGES) break;
+      imageBlocks.push({
+        type: "image_url",
+        image_url: { url: `data:${img.mimeType || "image/jpeg"};base64,${img.base64}` },
+      });
+    }
+  }
+
+  const userTextContent = `그룹명: ${groupName}
+날짜: ${date}
+게시글 수: ${(posts || []).length}개${imageBlocks.length > 0 ? `\n첨부 이미지: ${imageBlocks.length}장 (아래 게시글에서 수집된 순서)` : ""}
+
+${postsText || "(게시글 없음)"}`;
+
+  // 이미지가 있으면 vision 포맷(배열 content), 없으면 텍스트만
+  const userMessage = imageBlocks.length > 0
+    ? { role: "user", content: [{ type: "text", text: userTextContent }, ...imageBlocks] }
+    : { role: "user", content: userTextContent };
+
+  if (imageBlocks.length > 0) {
+    console.log(`[openrouter] Facebook 그룹 vision 분석: 이미지 ${imageBlocks.length}장 포함`);
+  }
+
+  const payload = {
+    model: resolvedModel,
+    messages: [
+      { role: "system", content: systemPrompt },
+      userMessage,
+    ],
+  };
+
+  const { data } = await axios.post(OPENROUTER_API, payload, {
+    headers: {
+      Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+      "Content-Type": "application/json",
+      "HTTP-Referer": "https://sociallistener-8efde.web.app",
+      "X-Title": "AI Social Listening",
+    },
+    timeout: 120000,
+  });
+
+  if (!data.choices || !data.choices.length)
+    throw new Error("OpenRouter 응답에 choices가 없습니다");
+
+  const content = data.choices[0].message.content || "";
+  const parsed = extractJson(content);
+
+  if (!parsed) {
+    console.warn("[openrouter] Facebook 그룹 리포트 JSON 파싱 실패. 원문:", content.slice(0, 300));
+    return {
+      summary: content,
+      sentiment: { positive: 0, neutral: 100, negative: 0 },
+      keywords: [],
+      issues: [],
+      usage: data.usage,
+    };
+  }
+
+  // sentiment 타입 보정
+  if (parsed.sentiment) {
+    parsed.sentiment = {
+      positive: Math.min(100, Math.max(0, Number(parsed.sentiment.positive) || 0)),
+      neutral:  Math.min(100, Math.max(0, Number(parsed.sentiment.neutral)  || 0)),
+      negative: Math.min(100, Math.max(0, Number(parsed.sentiment.negative) || 0)),
+    };
+  }
+
+  return {
+    summary:   parsed.summary   || "",
+    sentiment: parsed.sentiment || { positive: 0, neutral: 100, negative: 0 },
+    keywords:  parsed.keywords  || [],
+    issues:    parsed.issues    || [],
+    usage: data.usage,
+  };
+}
+
 module.exports = {
   analyzeGuildMessages,
   analyzeWeeklySummary,
   analyzeInstagramPostPerformance,
   analyzeInstagramPostComment,
+  analyzeFacebookGroupPosts,
   DEFAULT_IG_POST_COMMENT_PROMPT,
 };

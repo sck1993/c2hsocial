@@ -1,9 +1,9 @@
 "use strict";
 
 const admin = require("firebase-admin");
-const { analyzeGuildMessages }               = require("./analyzers/openrouter");
-const { sendEmailReport, appendToGoogleSheet } = require("./delivery");
-const { getKSTYesterdayString } = require("./utils/kst");
+const { analyzeGuildMessages }               = require("./analyzers/openrouterAnalyzer");
+const { sendEmailReport, appendToGoogleSheet } = require("./reportDelivery");
+const { getKSTYesterdayString } = require("./utils/dateUtils");
 
 /**
  * 전체 파이프라인 실행.

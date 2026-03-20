@@ -2,8 +2,8 @@
 
 const admin = require("firebase-admin");
 const axios  = require("axios");
-const { fetchChannelMessages, fetchForumMessages } = require("./collectors/discord");
-const { getKSTDateString, getKSTMidnightMs, getKSTDateFromMs } = require("./utils/kst");
+const { fetchChannelMessages, fetchForumMessages } = require("./collectors/discordCollector");
+const { getKSTDateString, getKSTMidnightMs, getKSTDateFromMs } = require("./utils/dateUtils");
 
 const ALERT_COOLDOWN_MS = 4 * 60 * 60 * 1000;  // 4시간
 const CHUNK_TTL_MS      = 48 * 60 * 60 * 1000; // 48시간
