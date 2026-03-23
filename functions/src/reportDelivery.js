@@ -383,12 +383,12 @@ function buildEmailHTML({ guildName, guildId = "", date, report, lang = "ko" }) 
        </div>`
     : "";
 
-  const issuesSection = issues
-    ? `<div style="margin-bottom:20px">
-         <div style="${HEADING};margin-bottom:8px">${L.issuesLabel}</div>
-         <ul style="margin:0;padding-left:20px">${issues}</ul>
-       </div>`
-    : "";
+  const issuesSection = `<div style="margin-bottom:20px">
+    <div style="${HEADING};margin-bottom:8px">${L.issuesLabel}</div>
+    ${issues
+      ? `<ul style="margin:0;padding-left:20px">${issues}</ul>`
+      : `<div style="color:#94a3b8;font-size:13px;line-height:1.7">오늘은 별도로 부각된 주요 이슈가 감지되지 않았습니다.</div>`}
+  </div>`;
 
   // 채널별 요약 섹션
   const importanceLabelMap = { high: L.impHigh, normal: L.impNormal, low: L.impLow };
@@ -1092,11 +1092,10 @@ function buildFacebookEmailHTML({ groupName, groupUrl, date, report }) {
       </div>` : ""}
 
       <!-- 이슈 -->
-      ${issueRows ? `
       <div style="margin-bottom:24px">
         <div style="font-size:13px;font-weight:700;color:#1e293b;margin-bottom:10px">🚨 주요 이슈</div>
-        ${issueRows}
-      </div>` : ""}
+        ${issueRows || `<div style="padding:12px 14px;background:#f8fafc;border-left:3px solid #e2e8f0;border-radius:0 8px 8px 0;font-size:12px;color:#94a3b8">오늘은 별도로 부각된 주요 이슈가 감지되지 않았습니다.</div>`}
+      </div>
 
       <!-- 토큰/비용 -->
       ${(report.model || report.totalTokens) ? `
@@ -1214,11 +1213,10 @@ function buildFacebookPageEmailHTML({ pageName, date, report }) {
         </div>
       </div>` : ""}
 
-      ${issueRows ? `
       <div style="margin-bottom:24px">
         <div style="font-size:13px;font-weight:700;color:#1e293b;margin-bottom:10px">🚨 주요 이슈</div>
-        ${issueRows}
-      </div>` : ""}
+        ${issueRows || `<div style="padding:12px 14px;background:#f8fafc;border-left:3px solid #e2e8f0;border-radius:0 8px 8px 0;font-size:12px;color:#94a3b8">오늘은 별도로 부각된 주요 이슈가 감지되지 않았습니다.</div>`}
+      </div>
 
       ${(report.model || report.totalTokens) ? `
       <div style="padding-top:12px;border-top:1px dashed #e2e8f0;font-size:11px;color:#94a3b8;text-align:right">

@@ -33,6 +33,8 @@ const {
 } = require("./collectors/facebookGroupCollector");
 const {
   discoverManagedFacebookPages,
+  discoverChildPages,
+  lookupChildPagesByIds,
   validatePageAccessToken,
 } = require("./collectors/facebookPageCollector");
 const { runNaverLoungePipeline, runNaverLoungeEmailSender } = require("./naverLoungeDailyPipeline");
@@ -1724,6 +1726,156 @@ exports.api = onRequest(
       } catch (err) {
         console.error("[POST /facebook/pages/discover] 오류:", err.message);
         return res.status(400).json({ error: err.message });
+      }
+    }
+
+    // ── POST /facebook/pages/discover-children ── 글로벌 페이지의 자식 지역 페이지 탐색
+    if (req.method === "POST" && path === "/facebook/pages/discover-children") {
+      try {
+        const db = admin.firestore();
+        const { workspaceId: _wsId, parentDocId } = req.body || {};
+        if (!parentDocId) return res.status(400).json({ error: "parentDocId 필수" });
+        const workspaceId = resolveWorkspaceId(_wsId);
+
+        const parentRef = db
+          .collection("workspaces").doc(workspaceId)
+          .collection("facebook_pages").doc(parentDocId);
+        const parentSnap = await parentRef.get();
+        if (!parentSnap.exists) return res.status(404).json({ error: "등록된 페이지를 찾을 수 없습니다." });
+
+        const { pageId, pageAccessToken, pageName } = parentSnap.data() || {};
+        if (!pageId || !pageAccessToken) return res.status(400).json({ error: "부모 페이지의 pageId 또는 pageAccessToken 누락" });
+
+        const children = await discoverChildPages(pageId, pageAccessToken);
+        return res.json({ success: true, parentPageId: pageId, parentPageName: pageName || pageId, children });
+      } catch (err) {
+        console.error("[POST /facebook/pages/discover-children] 오류:", err.message);
+        return res.status(400).json({ error: err.message });
+      }
+    }
+
+    // ── POST /facebook/pages/lookup-by-ids ── pageId 직접 입력으로 페이지 정보 조회
+    if (req.method === "POST" && path === "/facebook/pages/lookup-by-ids") {
+      try {
+        const db = admin.firestore();
+        const { workspaceId: _wsId, parentDocId, pageIds, userAccessToken } = req.body || {};
+        if (!parentDocId) return res.status(400).json({ error: "parentDocId 필수" });
+        if (!Array.isArray(pageIds) || pageIds.length === 0) return res.status(400).json({ error: "pageIds 배열 필수" });
+        const workspaceId = resolveWorkspaceId(_wsId);
+
+        const parentSnap = await db
+          .collection("workspaces").doc(workspaceId)
+          .collection("facebook_pages").doc(parentDocId)
+          .get();
+        if (!parentSnap.exists) return res.status(404).json({ error: "등록된 페이지를 찾을 수 없습니다." });
+
+        const { pageAccessToken, sourceUserAccessToken } = parentSnap.data() || {};
+        const accessToken = (userAccessToken && String(userAccessToken).trim())
+          || (sourceUserAccessToken && String(sourceUserAccessToken).trim())
+          || pageAccessToken;
+        if (!accessToken) return res.status(400).json({ error: "사용 가능한 액세스 토큰이 없습니다." });
+
+        const children = await lookupChildPagesByIds(pageIds, accessToken);
+        return res.json({ success: true, children });
+      } catch (err) {
+        console.error("[POST /facebook/pages/lookup-by-ids] 오류:", err.message);
+        return res.status(400).json({ error: err.message });
+      }
+    }
+
+    // ── POST /facebook/pages/bulk-register ── 지역 페이지 일괄 등록
+    if (req.method === "POST" && path === "/facebook/pages/bulk-register") {
+      try {
+        const db = admin.firestore();
+        const { workspaceId: _wsId, reportGroupName, pages } = req.body || {};
+        if (!reportGroupName || !String(reportGroupName).trim()) return res.status(400).json({ error: "reportGroupName 필수" });
+        if (!Array.isArray(pages) || pages.length === 0) return res.status(400).json({ error: "pages 배열 필수" });
+        const workspaceId = resolveWorkspaceId(_wsId);
+        const normalizedGroupName = String(reportGroupName).trim();
+
+        const registered = [];
+        const failed = [];
+
+        for (const page of pages) {
+          const { pageId, pageName, pageCategory, pictureUrl, pageAccessToken } = page || {};
+          if (!pageId || !pageAccessToken) {
+            failed.push({ pageId: pageId || "unknown", pageName: pageName || "", reason: "pageId 또는 pageAccessToken 누락" });
+            continue;
+          }
+          try {
+            const validated = await validatePageAccessToken(String(pageId), pageAccessToken);
+            const normalizedPageName = validated.pageName || pageName || pageId;
+            const normalizedCategory = validated.pageCategory || pageCategory || "";
+            const normalizedPictureUrl = validated.pictureUrl || pictureUrl || "";
+
+            const existingSnap = await db
+              .collection("workspaces").doc(workspaceId)
+              .collection("facebook_pages")
+              .where("pageId", "==", String(pageId))
+              .limit(1)
+              .get();
+
+            if (!existingSnap.empty) {
+              const doc = existingSnap.docs[0];
+              await doc.ref.set({
+                pageName: normalizedPageName,
+                pageAccessToken,
+                pageCategory: normalizedCategory,
+                pictureUrl: normalizedPictureUrl,
+                reportGroupName: normalizedGroupName,
+                isActive: true,
+                tokenStatus: "valid",
+                lastValidatedAt: admin.firestore.FieldValue.serverTimestamp(),
+                lastTokenError: admin.firestore.FieldValue.delete(),
+                updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+              }, { merge: true });
+              registered.push({ pageId, pageName: normalizedPageName, docId: doc.id, updated: true });
+            } else {
+              const docRef = await db
+                .collection("workspaces").doc(workspaceId)
+                .collection("facebook_pages")
+                .add({
+                  platform: "facebook_page",
+                  pageId: String(pageId),
+                  pageName: normalizedPageName,
+                  pageAccessToken,
+                  pageCategory: normalizedCategory,
+                  pictureUrl: normalizedPictureUrl,
+                  reportGroupName: normalizedGroupName,
+                  isActive: true,
+                  tokenStatus: "valid",
+                  tokenExpiresAt: null,
+                  pageAccessTokenUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+                  tokenRefreshedAt: null,
+                  lastValidatedAt: admin.firestore.FieldValue.serverTimestamp(),
+                  lastTokenError: "",
+                  sourceUserAccessToken: "",
+                  appId: "",
+                  appSecret: "",
+                  deliveryConfig: { email: { isEnabled: false, recipients: [] } },
+                  analysisPrompt: "",
+                  analysisModel: "",
+                  createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                  updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+                });
+              registered.push({ pageId, pageName: normalizedPageName, docId: docRef.id, updated: false });
+            }
+          } catch (err) {
+            failed.push({ pageId, pageName: pageName || "", reason: err.message });
+          }
+        }
+
+        return res.json({
+          success: true,
+          reportGroupName: normalizedGroupName,
+          registered,
+          failed,
+          registeredCount: registered.length,
+          failedCount: failed.length,
+        });
+      } catch (err) {
+        console.error("[POST /facebook/pages/bulk-register] 오류:", err.message);
+        return res.status(500).json({ error: err.message });
       }
     }
 

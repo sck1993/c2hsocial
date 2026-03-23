@@ -124,6 +124,102 @@ async function discoverManagedFacebookPages(accessToken) {
     }));
 }
 
+async function discoverChildPages(parentPageId, parentPageAccessToken) {
+  if (!parentPageId) throw new Error("parentPageId 필수");
+  if (!parentPageAccessToken) throw new Error("parentPageAccessToken 필수");
+
+  const { items: children } = await collectPagedData(
+    `${parentPageId}/global_brand_children`,
+    {
+      fields: "id,name,category,picture{url}",
+      limit: DEFAULT_LIMIT,
+      access_token: parentPageAccessToken,
+    },
+    10
+  );
+
+  if (!children || children.length === 0) return [];
+
+  const results = await Promise.allSettled(
+    children.map(async (child) => {
+      const base = {
+        pageId: child.id,
+        pageName: child.name || child.id,
+        pageCategory: child.category || "",
+        pictureUrl: child.picture?.data?.url || "",
+        pageAccessToken: null,
+        tokenSource: "unavailable",
+        tokenNote: null,
+      };
+
+      try {
+        const tokenData = await graphGet(`${child.id}`, {
+          fields: "access_token",
+          access_token: parentPageAccessToken,
+        });
+        if (tokenData?.access_token) {
+          base.pageAccessToken = tokenData.access_token;
+          base.tokenSource = "parent_token";
+        }
+      } catch (err) {
+        base.tokenNote = err.message;
+      }
+
+      return base;
+    })
+  );
+
+  return results
+    .filter((r) => r.status === "fulfilled")
+    .map((r) => r.value);
+}
+
+async function lookupChildPagesByIds(pageIds, accessToken) {
+  if (!Array.isArray(pageIds) || pageIds.length === 0) return [];
+  if (!accessToken) throw new Error("accessToken 필수");
+
+  const results = await Promise.allSettled(
+    pageIds.map(async (pageId) => {
+      const id = String(pageId).trim();
+      if (!id) throw new Error("빈 pageId");
+
+      const info = await graphGet(id, {
+        fields: "id,name,category,picture{url}",
+        access_token: accessToken,
+      });
+
+      const base = {
+        pageId: info.id || id,
+        pageName: info.name || id,
+        pageCategory: info.category || "",
+        pictureUrl: info.picture?.data?.url || "",
+        pageAccessToken: null,
+        tokenSource: "unavailable",
+        tokenNote: null,
+      };
+
+      try {
+        const tokenData = await graphGet(id, {
+          fields: "access_token",
+          access_token: accessToken,
+        });
+        if (tokenData?.access_token) {
+          base.pageAccessToken = tokenData.access_token;
+          base.tokenSource = "parent_token";
+        }
+      } catch (err) {
+        base.tokenNote = err.message;
+      }
+
+      return base;
+    })
+  );
+
+  return results
+    .filter((r) => r.status === "fulfilled")
+    .map((r) => r.value);
+}
+
 async function fetchPagePosts(pageId, pageAccessToken, { since, until } = {}) {
   if (!pageId) throw new Error("pageId 필수");
   if (!pageAccessToken) throw new Error("pageAccessToken 필수");
@@ -256,6 +352,8 @@ async function validatePageAccessToken(pageId, pageAccessToken) {
 
 module.exports = {
   discoverManagedFacebookPages,
+  discoverChildPages,
+  lookupChildPagesByIds,
   fetchPagePosts,
   fetchPostComments,
   validatePageAccessToken,

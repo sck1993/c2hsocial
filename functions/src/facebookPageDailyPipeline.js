@@ -210,7 +210,7 @@ async function runFacebookPagePipeline(filterWorkspaceId = null, targetDate = nu
 
       try {
         const validated = await validatePageAccessToken(pageId, pageAccessToken);
-        pageName = validated.pageName || pageName;
+        pageName = pageName || validated.pageName;
         await pageRef.set({
           tokenStatus: "valid",
           lastTokenError: admin.firestore.FieldValue.delete(),

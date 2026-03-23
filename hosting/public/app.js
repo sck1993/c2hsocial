@@ -5,6 +5,7 @@
     let _igRegisteredAccounts = [];
     let _fbPagePendingSelection = null;
     let _fbRegisteredPages = [];
+    let _fbChildPendingSelection = null;
     const DEFAULT_IG_POST_COMMENT_PROMPT = `당신은 Instagram 콘텐츠 분석가입니다.
 이메일 리포트의 게시물 표 아래에 붙일 아주 짧은 코멘트 1~2문장만 작성하세요.
 반드시 아래 원칙을 지키세요.
@@ -3484,7 +3485,7 @@
       if (!$main) return;
       const date = document.getElementById('fbReportDate')?.value;
       if (!date) { $main.innerHTML = '<div class="empty-state">날짜를 선택하세요.</div>'; return; }
-      $main.innerHTML = '<div class="loading-spinner"></div>';
+      $main.innerHTML = skeletonHTML();
       try {
         const { reports } = await apiFetch(`/facebook/report?workspaceId=${WS}&date=${encodeURIComponent(date)}`);
         if (!reports || reports.length === 0) {
@@ -3529,10 +3530,10 @@
         <div style="font-size:.8125rem;color:var(--text);line-height:1.8">${sanitizeReportHtml(r.aiSummary)}</div>
       </div>` : ''}
 
-      ${issues ? `<div class="scard anim d3">
+      <div class="scard anim d3">
         <div class="slabel"><div class="slabel-dot"></div>${SVG.warn}주요 이슈</div>
-        ${issues}
-      </div>` : ''}
+        ${issues || '<div style="color:var(--text-3);font-size:.875rem;line-height:1.8">오늘은 별도로 부각된 주요 이슈가 감지되지 않았습니다.</div>'}
+      </div>
 
       ${(r.model || r.totalTokens) ? `
       <div class="token-info-strip anim d4">
@@ -3792,7 +3793,7 @@
       if (!$main) return;
       const date = document.getElementById('fbPageReportDate')?.value;
       if (!date) { $main.innerHTML = '<div class="empty-state">날짜를 선택하세요.</div>'; return; }
-      $main.innerHTML = '<div class="loading-spinner"></div>';
+      $main.innerHTML = skeletonHTML();
       try {
         const { reports } = await apiFetch(`/facebook/page/report?workspaceId=${WS}&date=${encodeURIComponent(date)}`);
         if (!reports || reports.length === 0) {
@@ -3877,10 +3878,10 @@
         <div style="font-size:.8125rem;color:var(--text);line-height:1.8">${sanitizeReportHtml(r.aiSummary)}</div>
       </div>` : ''}
 
-      ${issues ? `<div class="scard anim d3">
+      <div class="scard anim d3">
         <div class="slabel"><div class="slabel-dot"></div>${SVG.warn}주요 이슈</div>
-        ${issues}
-      </div>` : ''}
+        ${issues || '<div style="color:var(--text-3);font-size:.875rem;line-height:1.8">오늘은 별도로 부각된 주요 이슈가 감지되지 않았습니다.</div>'}
+      </div>
 
       ${(r.model || r.totalTokens) ? `
       <div class="token-info-strip anim d4">
@@ -4035,6 +4036,18 @@
         <div class="ch-settings-panel" id="${panelId}">
           <div class="settings-section">
             <div class="settings-section-title">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/></svg>
+              페이지 이름
+            </div>
+            <label class="settings-field-label" for="fbPageName-${page.docId}">표시 이름</label>
+            <input class="field-input" id="fbPageName-${page.docId}" type="text" value="${escapeHtml(page.pageName || '')}" placeholder="예: Soul Strike_Global">
+            <div style="font-size:.8rem;color:var(--text-muted);margin-top:.35rem">Facebook API에서 가져온 이름을 덮어씁니다. 저장 버튼을 눌러 적용하세요.</div>
+            <button class="btn-save-settings" style="margin-top:.6rem" data-docid="${escapeHtml(page.docId)}"
+                    onclick="saveFbPageSettings(this.dataset.docid)">저장</button>
+            <div class="add-result" id="fbPageNameSaveResult-${page.docId}"></div>
+          </div>
+          <div class="settings-section">
+            <div class="settings-section-title">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
               토큰 관리
             </div>
@@ -4076,6 +4089,24 @@
             </div>
             <label class="settings-field-label" for="fbPageReportGroup-${page.docId}">리포트 그룹명</label>
             <input class="field-input" id="fbPageReportGroup-${page.docId}" type="text" value="${escapeHtml(reportGroupName)}" placeholder="예: Soul Strike Global">
+          </div>
+          <div class="settings-section">
+            <div class="settings-section-title">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M2 12a10 10 0 1 0 20 0"/><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83"/></svg>
+              지역(자식) 페이지
+            </div>
+            <div style="font-size:.8125rem;color:var(--text-muted);line-height:1.7;margin-bottom:.75rem">
+              Global Page 하위에 연결된 지역별 자식 페이지를 자동으로 탐색하고 같은 리포트 그룹으로 일괄 등록합니다.
+            </div>
+            <button class="btn-save-settings"
+                    data-docid="${escapeHtml(page.docId)}"
+                    data-pagename="${escapeHtml(page.pageName || page.pageId)}"
+                    data-groupname="${escapeHtml(reportGroupName)}"
+                    onclick="discoverFbChildPages(this.dataset.docid, this.dataset.pagename, this.dataset.groupname, this)">
+              지역 페이지 탐색
+            </button>
+            <div class="add-result" id="fbChildDiscoverResult-${page.docId}" style="display:none"></div>
+            <div id="fbChildCandidatePicker-${page.docId}"></div>
           </div>
           <div class="settings-section">
             <div class="settings-section-title">
@@ -4124,6 +4155,267 @@
               </button>`).join('')}
           </div>
         </div>`;
+    }
+
+    async function discoverFbChildPages(parentDocId, parentPageName, inheritedReportGroupName, btn) {
+      const $result = document.getElementById(`fbChildDiscoverResult-${parentDocId}`);
+      const $picker = document.getElementById(`fbChildCandidatePicker-${parentDocId}`);
+      if (!$result || !$picker) return;
+
+      $result.style.display = 'none';
+      $result.textContent = '';
+      $picker.innerHTML = '';
+      _fbChildPendingSelection = null;
+
+      const origLabel = btn.textContent;
+      btn.disabled = true;
+      btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="animation:spin .75s linear infinite;width:14px;height:14px"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg> 탐색 중...`;
+
+      try {
+        const res = await apiFetch('/facebook/pages/discover-children', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ workspaceId: WS, parentDocId }),
+        });
+
+        const children = Array.isArray(res.children) ? res.children : [];
+        if (!children.length) {
+          $picker.innerHTML = renderFbChildManualInput(inheritedReportGroupName, parentDocId);
+          return;
+        }
+
+        _fbChildPendingSelection = { parentDocId, parentPageName, inheritedReportGroupName, children };
+        $picker.innerHTML = renderFbChildCandidatePicker(children, inheritedReportGroupName, parentDocId);
+      } catch (err) {
+        $result.className = 'add-result err';
+        $result.style.display = 'block';
+        $result.textContent = err.message;
+      } finally {
+        btn.disabled = false;
+        btn.textContent = origLabel;
+      }
+    }
+
+    function renderFbChildManualInput(defaultReportGroupName, parentDocId) {
+      return `
+        <div class="info-banner ig-picker-banner" style="margin-top:1rem;display:block">
+          <div class="ig-picker-title">자동 탐색 불가 — pageId 직접 입력</div>
+          <div class="ig-picker-desc">Facebook Global Brand Pages로 연결되지 않은 경우 자동 탐색이 되지 않습니다. 지역 페이지 ID를 직접 입력하면 부모 페이지 토큰으로 정보를 조회해 등록합니다.</div>
+          <div style="margin-top:.75rem">
+            <label class="settings-field-label">지역 페이지 ID (줄 바꿈 구분)</label>
+            <textarea class="settings-textarea" id="fbChildManualIds-${escapeHtml(parentDocId)}"
+              rows="3" placeholder="예: 123456789&#10;987654321"></textarea>
+          </div>
+          <div style="margin-top:.5rem">
+            <label class="settings-field-label">User Access Token <span style="font-weight:400;color:var(--text-muted)">(지역 페이지 관리자 토큰 — 저장된 토큰으로 조회 불가 시 입력)</span></label>
+            <textarea class="settings-textarea" id="fbChildManualToken-${escapeHtml(parentDocId)}"
+              rows="2" placeholder="EAAxxxx... (선택사항)"></textarea>
+          </div>
+          <div style="margin-top:.5rem">
+            <label class="settings-field-label" for="fbChildManualGroup-${escapeHtml(parentDocId)}">리포트 그룹명</label>
+            <input class="field-input" id="fbChildManualGroup-${escapeHtml(parentDocId)}"
+              type="text" value="${escapeHtml(defaultReportGroupName)}" placeholder="예: Soul Strike Global">
+          </div>
+          <button class="btn-save-settings" style="margin-top:.5rem"
+            data-docid="${escapeHtml(parentDocId)}"
+            onclick="lookupFbChildPagesByIds(this.dataset.docid, this)">
+            페이지 조회 및 등록
+          </button>
+          <div class="add-result" id="fbChildManualResult-${escapeHtml(parentDocId)}" style="display:none"></div>
+        </div>`;
+    }
+
+    async function lookupFbChildPagesByIds(parentDocId, btn) {
+      const $textarea = document.getElementById(`fbChildManualIds-${parentDocId}`);
+      const $tokenInput = document.getElementById(`fbChildManualToken-${parentDocId}`);
+      const $groupInput = document.getElementById(`fbChildManualGroup-${parentDocId}`);
+      const $result = document.getElementById(`fbChildManualResult-${parentDocId}`);
+      if (!$textarea || !$groupInput || !$result) return;
+
+      const pageIds = $textarea.value.split('\n').map((s) => s.trim()).filter(Boolean);
+      if (!pageIds.length) {
+        $result.className = 'add-result err';
+        $result.style.display = 'block';
+        $result.textContent = '페이지 ID를 하나 이상 입력해 주세요.';
+        return;
+      }
+      const reportGroupName = $groupInput.value.trim();
+      if (!reportGroupName) {
+        $result.className = 'add-result err';
+        $result.style.display = 'block';
+        $result.textContent = '리포트 그룹명을 입력해 주세요.';
+        return;
+      }
+
+      const origLabel = btn.textContent;
+      btn.disabled = true;
+      btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="animation:spin .75s linear infinite;width:14px;height:14px"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg> 조회 중...`;
+      $result.style.display = 'none';
+
+      try {
+        const lookupRes = await apiFetch('/facebook/pages/lookup-by-ids', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            workspaceId: WS,
+            parentDocId,
+            pageIds,
+            userAccessToken: $tokenInput ? $tokenInput.value.trim() : '',
+          }),
+        });
+
+        const children = Array.isArray(lookupRes.children) ? lookupRes.children : [];
+        if (!children.length) {
+          $result.className = 'add-result err';
+          $result.style.display = 'block';
+          $result.textContent = '입력한 pageId로 페이지 정보를 가져올 수 없습니다. pageId를 확인해 주세요.';
+          return;
+        }
+
+        const pages = children.map((c) => ({
+          pageId: c.pageId,
+          pageName: c.pageName,
+          pageCategory: c.pageCategory,
+          pictureUrl: c.pictureUrl,
+          pageAccessToken: c.pageAccessToken || '',
+        }));
+
+        const registerRes = await apiFetch('/facebook/pages/bulk-register', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ workspaceId: WS, reportGroupName, pages }),
+        });
+
+        let msg = `등록 완료: ${registerRes.registeredCount}개 등록`;
+        if (registerRes.failedCount > 0) {
+          msg += `, ${registerRes.failedCount}개 실패`;
+          const failList = (registerRes.failed || []).map((f) => `• ${escapeHtml(f.pageName || f.pageId)}: ${escapeHtml(f.reason)}`).join('\n');
+          msg += `\n${failList}`;
+        }
+
+        $result.className = 'add-result ok';
+        $result.style.display = 'block';
+        $result.style.whiteSpace = 'pre-line';
+        $result.textContent = msg;
+        await loadFbPages();
+      } catch (err) {
+        $result.className = 'add-result err';
+        $result.style.display = 'block';
+        $result.textContent = err.message;
+      } finally {
+        btn.disabled = false;
+        btn.textContent = origLabel;
+      }
+    }
+
+    function renderFbChildCandidatePicker(children, defaultReportGroupName, parentDocId) {
+      return `
+        <div class="info-banner ig-picker-banner" style="margin-top:1rem;display:block">
+          <div class="ig-picker-title">발견된 지역 페이지 (${children.length}개)</div>
+          <div class="ig-picker-desc">등록할 페이지를 선택하고 리포트 그룹명을 확인한 후 일괄 등록하세요.</div>
+          <div class="ig-picker-list" style="display:flex;flex-direction:column;gap:.4rem">
+            ${children.map((c) => `
+              <label class="ig-picker-btn" style="display:flex;align-items:center;gap:.6rem;cursor:pointer">
+                <input type="checkbox" value="${escapeHtml(c.pageId)}" checked
+                  style="width:15px;height:15px;flex-shrink:0">
+                <span class="ig-picker-main">
+                  <span class="ig-picker-account">${escapeHtml(c.pageName || c.pageId)}</span>
+                  <span class="ig-picker-page">${escapeHtml(c.pageCategory || 'Facebook Page')}</span>
+                </span>
+                <span class="ig-picker-debug">
+                  <span><strong>pageId</strong> ${escapeHtml(c.pageId)}</span>
+                  ${!c.pageAccessToken ? `<span style="color:var(--neg)">⚠ 토큰 없음 — 등록 후 수동 입력 필요</span>` : ''}
+                </span>
+              </label>`).join('')}
+          </div>
+          <div style="margin-top:.75rem">
+            <label class="settings-field-label" for="fbChildReportGroup-${escapeHtml(parentDocId)}">리포트 그룹명</label>
+            <input class="field-input" id="fbChildReportGroup-${escapeHtml(parentDocId)}"
+              type="text" value="${escapeHtml(defaultReportGroupName)}" placeholder="예: Soul Strike Global">
+          </div>
+          <button class="btn-save-settings" style="margin-top:.5rem"
+            data-docid="${escapeHtml(parentDocId)}"
+            onclick="confirmFbChildBulkRegister(this.dataset.docid, this)">
+            일괄 등록
+          </button>
+          <div class="add-result" id="fbChildRegisterResult-${escapeHtml(parentDocId)}" style="display:none"></div>
+        </div>`;
+    }
+
+    async function confirmFbChildBulkRegister(parentDocId, btn) {
+      const pending = _fbChildPendingSelection;
+      const $result = document.getElementById(`fbChildRegisterResult-${parentDocId}`);
+      if (!pending || !$result) return;
+      if (pending.parentDocId !== parentDocId) {
+        $result.className = 'add-result err';
+        $result.style.display = 'block';
+        $result.textContent = '탐색 결과가 만료되었습니다. 다시 탐색해 주세요.';
+        return;
+      }
+
+      const $picker = document.getElementById(`fbChildCandidatePicker-${parentDocId}`);
+      const $groupInput = document.getElementById(`fbChildReportGroup-${parentDocId}`);
+      const reportGroupName = $groupInput ? $groupInput.value.trim() : '';
+      if (!reportGroupName) {
+        $result.className = 'add-result err';
+        $result.style.display = 'block';
+        $result.textContent = '리포트 그룹명을 입력해 주세요.';
+        return;
+      }
+
+      const checkboxes = $picker ? $picker.querySelectorAll('input[type="checkbox"]:checked') : [];
+      const selectedIds = new Set([...checkboxes].map((el) => el.value));
+      if (!selectedIds.size) {
+        $result.className = 'add-result err';
+        $result.style.display = 'block';
+        $result.textContent = '등록할 페이지를 하나 이상 선택해 주세요.';
+        return;
+      }
+
+      const pages = pending.children
+        .filter((c) => selectedIds.has(c.pageId))
+        .map((c) => ({
+          pageId: c.pageId,
+          pageName: c.pageName,
+          pageCategory: c.pageCategory,
+          pictureUrl: c.pictureUrl,
+          pageAccessToken: c.pageAccessToken || '',
+        }));
+
+      const origLabel = btn.textContent;
+      btn.disabled = true;
+      btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="animation:spin .75s linear infinite;width:14px;height:14px"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg> 등록 중...`;
+
+      try {
+        const res = await apiFetch('/facebook/pages/bulk-register', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ workspaceId: WS, reportGroupName, pages }),
+        });
+
+        let msg = `등록 완료: ${res.registeredCount}개 등록`;
+        if (res.failedCount > 0) {
+          msg += `, ${res.failedCount}개 실패`;
+          const failList = (res.failed || []).map((f) => `• ${escapeHtml(f.pageName || f.pageId)}: ${escapeHtml(f.reason)}`).join('\n');
+          msg += `\n${failList}`;
+        }
+
+        $result.className = 'add-result ok';
+        $result.style.display = 'block';
+        $result.style.whiteSpace = 'pre-line';
+        $result.textContent = msg;
+
+        if ($picker) $picker.innerHTML = '';
+        _fbChildPendingSelection = null;
+        await loadFbPages();
+      } catch (err) {
+        $result.className = 'add-result err';
+        $result.style.display = 'block';
+        $result.textContent = err.message;
+      } finally {
+        btn.disabled = false;
+        btn.textContent = origLabel;
+      }
     }
 
     async function discoverFbPages() {
@@ -4234,6 +4526,7 @@
       const isEnabled = document.getElementById(`fbPageEmailEnabled-${docId}`)?.checked ?? false;
       const recipients = (document.getElementById(`fbPageRecipients-${docId}`)?.value || '')
         .split(/[,\n]/).map(e => e.trim()).filter(Boolean);
+      const pageName = document.getElementById(`fbPageName-${docId}`)?.value?.trim() || '';
       const reportGroupName = document.getElementById(`fbPageReportGroup-${docId}`)?.value?.trim() || '';
       const analysisPrompt = document.getElementById(`fbPageAnalysisPrompt-${docId}`)?.value || '';
       const analysisModel = document.getElementById(`fbPageAnalysisModel-${docId}`)?.value || FB_ANALYSIS_MODELS[0].value;
@@ -4244,6 +4537,7 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             deliveryConfig: { email: { isEnabled, recipients } },
+            pageName,
             reportGroupName,
             analysisPrompt,
             analysisModel,
@@ -4530,7 +4824,7 @@
       const date = document.getElementById('nlReportDate')?.value;
       const $main = document.getElementById('nl-report-main');
       if (!date || !$main) return;
-      $main.innerHTML = '<div class="loading-state">로딩 중…</div>';
+      $main.innerHTML = skeletonHTML();
       try {
         const { reports } = await apiFetch(`/naver/report?workspaceId=${WS}&date=${date}`);
         if (!reports || !reports.length) {
