@@ -3,6 +3,8 @@
     const WS = 'ws_antigravity';
     let _igPendingAccountSelection = null;
     let _igRegisteredAccounts = [];
+    let _fbPagePendingSelection = null;
+    let _fbRegisteredPages = [];
     const DEFAULT_IG_POST_COMMENT_PROMPT = `당신은 Instagram 콘텐츠 분석가입니다.
 이메일 리포트의 게시물 표 아래에 붙일 아주 짧은 코멘트 1~2문장만 작성하세요.
 반드시 아래 원칙을 지키세요.
@@ -191,22 +193,26 @@
     let _fpAnalyticsStart = null, _fpAnalyticsEnd = null;
     let _fpIgDatePicker = null, _fpIgAnalyticsStart = null, _fpIgAnalyticsEnd = null;
     let _fpFbDatePicker = null;
+    let _fpFbPageDatePicker = null;
     let _fpNlDatePicker = null;
+    let _availableFbPageDates = [];
     let _availableNlDates = [];
     let _availableDailyDates = [], _availableWeeklyDates = [], _availableIgDates = [];
     let _selectedWeekMonday = null; // 주간 picker: 선택된 주의 월요일
 
     async function initAvailableDates() {
       try {
-        const [daily, weekly, ig, nl] = await Promise.all([
+        const [daily, weekly, ig, fbPage, nl] = await Promise.all([
           apiFetch(`/available-dates?workspaceId=${WS}&type=daily`),
           apiFetch(`/available-dates?workspaceId=${WS}&type=weekly`),
           apiFetch(`/instagram/available-dates?workspaceId=${WS}`),
+          apiFetch(`/facebook/page/available-dates?workspaceId=${WS}`),
           apiFetch(`/naver/available-dates?workspaceId=${WS}`),
         ]);
         _availableDailyDates  = daily.dates  || [];
         _availableWeeklyDates = weekly.dates || [];
         _availableIgDates     = ig.dates     || [];
+        _availableFbPageDates = fbPage.dates || [];
         _availableNlDates     = nl.dates     || [];
       } catch (e) {
         console.warn('[available-dates] 로드 실패, 날짜 제한 없이 동작:', e.message);
@@ -348,6 +354,18 @@
         onChange([d]) { if (d) loadFbReport(); },
       });
 
+      _fpFbPageDatePicker = flatpickr('#fbPageReportDate', {
+        dateFormat: 'Y-m-d',
+        maxDate,
+        locale: { firstDayOfWeek: 1 },
+        onDayCreate: onDayCreateBase,
+        onChange([d]) { if (d) loadFbPageReport(); },
+      });
+      if (_availableFbPageDates.length) {
+        _fpFbPageDatePicker.set('enable', _availableFbPageDates);
+        if (!_fpFbPageDatePicker.selectedDates.length) _fpFbPageDatePicker.setDate(_availableFbPageDates[0], false);
+      }
+
       _fpNlDatePicker = flatpickr('#nlReportDate', {
         dateFormat: 'Y-m-d',
         maxDate,
@@ -413,7 +431,9 @@
         'channels': 'nav-channels', 'data': 'nav-data', 'alert': 'nav-alert',
         'ig-report': 'nav-ig-report', 'ig-analytics': 'nav-ig-analytics',
         'ig-accounts': 'nav-ig-accounts', 'ig-tokens': 'nav-ig-tokens',
-        'fb-report': 'nav-fb-report', 'fb-groups': 'nav-fb-groups', 'fb-session': 'nav-fb-session',
+        'fb-report': 'nav-fb-report', 'fb-groups': 'nav-fb-groups',
+        'fb-page-report': 'nav-fb-page-report', 'fb-pages': 'nav-fb-pages',
+        'fb-session': 'nav-fb-session',
         'nl-report': 'nav-nl-report', 'nl-lounges': 'nav-nl-lounges', 'nl-session': 'nav-nl-session',
         'preset-mgmt': 'nav-preset-mgmt',
       };
@@ -439,6 +459,8 @@
       document.getElementById('nav-ig-tokens').classList.toggle('active', view === 'ig-tokens');
       document.getElementById('nav-fb-report').classList.toggle('active', view === 'fb-report');
       document.getElementById('nav-fb-groups').classList.toggle('active', view === 'fb-groups');
+      document.getElementById('nav-fb-page-report').classList.toggle('active', view === 'fb-page-report');
+      document.getElementById('nav-fb-pages').classList.toggle('active', view === 'fb-pages');
       document.getElementById('nav-fb-session').classList.toggle('active', view === 'fb-session');
       document.getElementById('nav-nl-report').classList.toggle('active', view === 'nl-report');
       document.getElementById('nav-nl-lounges').classList.toggle('active', view === 'nl-lounges');
@@ -458,6 +480,8 @@
       document.getElementById('topbar-ig-tokens').classList.toggle('hidden', view !== 'ig-tokens');
       document.getElementById('topbar-fb-report').classList.toggle('hidden', view !== 'fb-report');
       document.getElementById('topbar-fb-groups').classList.toggle('hidden', view !== 'fb-groups');
+      document.getElementById('topbar-fb-page-report').classList.toggle('hidden', view !== 'fb-page-report');
+      document.getElementById('topbar-fb-pages').classList.toggle('hidden', view !== 'fb-pages');
       document.getElementById('topbar-fb-session').classList.toggle('hidden', view !== 'fb-session');
       document.getElementById('topbar-nl-report').classList.toggle('hidden', view !== 'nl-report');
       document.getElementById('topbar-nl-lounges').classList.toggle('hidden', view !== 'nl-lounges');
@@ -478,6 +502,8 @@
       document.getElementById('view-ig-tokens').classList.toggle('hidden', view !== 'ig-tokens');
       document.getElementById('view-fb-report').classList.toggle('hidden', view !== 'fb-report');
       document.getElementById('view-fb-groups').classList.toggle('hidden', view !== 'fb-groups');
+      document.getElementById('view-fb-page-report').classList.toggle('hidden', view !== 'fb-page-report');
+      document.getElementById('view-fb-pages').classList.toggle('hidden', view !== 'fb-pages');
       document.getElementById('view-fb-session').classList.toggle('hidden', view !== 'fb-session');
       document.getElementById('view-nl-report').classList.toggle('hidden', view !== 'nl-report');
       document.getElementById('view-nl-lounges').classList.toggle('hidden', view !== 'nl-lounges');
@@ -498,6 +524,8 @@
       if (view === 'ig-tokens') loadIgTokens();
       if (view === 'fb-report') { refreshFbAvailableDates().then(() => loadFbReport()); }
       if (view === 'fb-groups') loadFbGroups();
+      if (view === 'fb-page-report') { refreshFbPageAvailableDates().then(() => loadFbPageReport()); }
+      if (view === 'fb-pages') loadFbPages();
       if (view === 'fb-session') loadFbSession();
       if (view === 'nl-report') { refreshNlAvailableDates().then(() => loadNlReport()); }
       if (view === 'nl-lounges') loadNlLounges();
@@ -602,7 +630,7 @@
     async function loadChannels() {
       const $list = document.getElementById('channelList');
       const $count = document.getElementById('listCount');
-      $list.innerHTML = `<div class="sk" style="height:72px;border-radius:12px;margin-bottom:.75rem"></div>`.repeat(3);
+      $list.innerHTML = `<div class="sk sk--sm"></div>`.repeat(3);
 
       try {
         const { channels } = await apiFetch(`/channels?workspaceId=${WS}`);
@@ -1040,7 +1068,7 @@
     async function loadAlertMonitor() {
       const $main = document.getElementById('alert-monitor-main');
       $main.innerHTML =
-        `<div class="sk" style="height:108px;border-radius:12px;margin-bottom:1.75rem"></div>` +
+        `<div class="sk sk--md"></div>` +
         `<div class="sk" style="height:220px;border-radius:12px;margin-bottom:.875rem"></div>`.repeat(2);
 
       try {
@@ -1535,8 +1563,8 @@
       </div>
       <div class="sk" style="height:130px;border-radius:12px;margin-bottom:1rem"></div>
       <div class="two-col">
-        <div class="sk" style="height:170px;border-radius:12px"></div>
-        <div class="sk" style="height:170px;border-radius:12px"></div>
+        <div class="sk sk--chart"></div>
+        <div class="sk sk--chart"></div>
       </div>`;
     }
 
@@ -1700,18 +1728,18 @@
           <div class="kw-wrap">
             ${keywords.length
           ? keywords.map(k => `<span class="kw"><span class="kw-hash">#</span>${escapeHtml(k)}</span>`).join('')
-          : `<span style="color:var(--text-3);font-size:.875rem">${L.noKeywords}</span>`}
+          : `<span class="text-sm-muted">${L.noKeywords}</span>`}
           </div>
         </div>
       </div>
 
       ${issues.length ? `
-      <div class="scard anim d5" style="margin-top:1rem">
-        <div class="slabel"><div class="slabel-dot"></div>${SVG.warn}${L.issuesSectionLabel} <span style="color:var(--text-3);margin-left:.25rem;font-weight:400;letter-spacing:0">${issues.length}${isEN ? '' : '건'}</span></div>
+      <div class="scard scard--mt anim d5">
+        <div class="slabel"><div class="slabel-dot"></div>${SVG.warn}${L.issuesSectionLabel} <span class="slabel-count">${issues.length}${isEN ? '' : '건'}</span></div>
         <div class="issues-list">
           ${issues.map(iss => {
             const sev = severity(iss.count);
-            const chLabel = iss.channel ? `<span style="color:var(--accent);font-size:.75rem;margin-left:.375rem">#${iss.channel}</span>` : '';
+            const chLabel = iss.channel ? `<span class="issue-ch-label">#${iss.channel}</span>` : '';
             const msgLink = (iss.channelId && iss.messageId && g.discordGuildId)
               ? `<a href="https://discord.com/channels/${g.discordGuildId}/${iss.channelId}/${iss.messageId}" target="_blank" class="issue-msg-link" title="${L.viewMsg}">↗</a>`
               : '';
@@ -1732,8 +1760,8 @@
       </div>` : ''}
 
       ${channels.length ? `
-      <div class="scard anim d5 guild-report-channels" style="margin-top:1rem">
-        <div class="slabel"><div class="slabel-dot"></div>${SVG.msg}${L.channelsSectionLabel} <span style="color:var(--text-3);margin-left:.25rem;font-weight:400;letter-spacing:0">${channels.length}${isEN ? '' : '개'}</span></div>
+      <div class="scard scard--mt anim d5 guild-report-channels">
+        <div class="slabel"><div class="slabel-dot"></div>${SVG.msg}${L.channelsSectionLabel} <span class="slabel-count">${channels.length}${isEN ? '' : '개'}</span></div>
         ${channelSummaries}
       </div>` : ''}
 
@@ -1816,14 +1844,14 @@
           <div class="kw-wrap">
             ${(ch.keywords || []).length
           ? ch.keywords.map(k => `<span class="kw"><span class="kw-hash">#</span>${escapeHtml(k)}</span>`).join('')
-          : `<span style="color:var(--text-3);font-size:.875rem">키워드 없음</span>`}
+          : `<span class="text-sm-muted">키워드 없음</span>`}
           </div>
         </div>
       </div>
 
       ${issues.length ? `
-      <div class="scard anim d5" style="margin-top:1rem">
-        <div class="slabel"><div class="slabel-dot"></div>${SVG.warn}주요 이슈 <span style="color:var(--text-3);margin-left:.25rem;font-weight:400;letter-spacing:0">${issues.length}건</span></div>
+      <div class="scard scard--mt anim d5">
+        <div class="slabel"><div class="slabel-dot"></div>${SVG.warn}주요 이슈 <span class="slabel-count">${issues.length}건</span></div>
         <div class="issues-list">
           ${issues.map(iss => {
             const sev = severity(iss.count);
@@ -1931,7 +1959,7 @@
 
       const issuesHtml = (g.weeklyIssues || []).length === 0 ? '' : `
         <div class="scard" style="margin-top:16px">
-          <div class="slabel"><div class="slabel-dot"></div>🚨 ${L.weeklyIssues} <span style="color:var(--text-3);margin-left:.25rem;font-weight:400;letter-spacing:0">${(g.weeklyIssues || []).length}${isEN ? '' : '건'}</span></div>
+          <div class="slabel"><div class="slabel-dot"></div>🚨 ${L.weeklyIssues} <span class="slabel-count">${(g.weeklyIssues || []).length}${isEN ? '' : '건'}</span></div>
           ${(g.weeklyIssues || []).map(i => {
             const datePart = Array.isArray(i.dates) && i.dates.length
               ? i.dates.map(d => d.slice(5)).join(' · ')
@@ -1957,15 +1985,15 @@
           </div>
         </div>
         <div style="margin-bottom:32px">
-          <div class="scard" style="margin-bottom:16px">
+          <div class="scard scard--mb">
             <div class="slabel"><div class="slabel-dot"></div>📡 ${L.insights} (${g.weekStart} ~ ${g.weekEnd})</div>
             <canvas id="insightChart_${safeId}" height="80"></canvas>
           </div>
-          <div class="scard" style="margin-bottom:16px">
+          <div class="scard scard--mb">
             <div class="slabel"><div class="slabel-dot"></div>💬 ${L.sentimentTrend}</div>
             <canvas id="sentimentChart_${safeId}" height="80"></canvas>
           </div>
-          <div class="scard" style="margin-bottom:16px">
+          <div class="scard scard--mb">
             <div class="slabel"><div class="slabel-dot"></div>🗓️ ${L.weeklySummary}</div>
             <p class="summary-body">${formatSummary(aiSummaryText)}</p>
           </div>
@@ -2094,12 +2122,12 @@
           </div>
         </div>
         <div style="margin-bottom:32px">
-          <div class="scard" style="margin-bottom:16px">
+          <div class="scard scard--mb">
             <div class="slabel"><div class="slabel-dot"></div>📡 서버 인사이트 (${startDate} ~ ${endDate})</div>
             <canvas id="aInsightChart_${safeId}" height="80"></canvas>
             ${buildInsightTable(safeId, g.insightsChart || [])}
           </div>
-          <div class="scard" style="margin-bottom:16px">
+          <div class="scard scard--mb">
             <div class="slabel"><div class="slabel-dot"></div>💬 감정 분포 추이</div>
             <canvas id="aSentimentChart_${safeId}" height="80"></canvas>
             ${buildSentimentTable(safeId, g.sentimentChart || [])}
@@ -2296,16 +2324,16 @@
           </div>
           <div id="igFacebookFields">
             <div class="field-group">
-              <label class="field-label">Meta 앱 ID <span style="color:var(--neg)">*</span></label>
+              <label class="field-label">Meta 앱 ID <span class="text-neg">*</span></label>
               <input class="field-input" id="igAppIdInput" type="text" placeholder="1234567890" autocomplete="off">
             </div>
             <div class="field-group">
-              <label class="field-label">Meta 앱 시크릿 <span style="color:var(--neg)">*</span></label>
+              <label class="field-label">Meta 앱 시크릿 <span class="text-neg">*</span></label>
               <input class="field-input" id="igAppSecretInput" type="password" placeholder="앱 시크릿 코드" autocomplete="off">
             </div>
           </div>
           <div class="field-group">
-            <label class="field-label" id="igTokenLabel">Long-lived Access Token <span style="color:var(--neg)">*</span></label>
+            <label class="field-label" id="igTokenLabel">Long-lived Access Token <span class="text-neg">*</span></label>
             <textarea class="field-input settings-textarea" id="igTokenInput" rows="4" placeholder="EAAxxxx..."></textarea>
           </div>
           <button class="btn-add" id="igAddBtn" onclick="addIgAccount()">
@@ -2322,7 +2350,7 @@
             <span class="list-title">등록 계정</span>
             <span class="list-count" id="igListCount">-</span>
           </div>
-          <div id="igAccountList"><div class="sk" style="height:72px;border-radius:12px;margin-bottom:.75rem"></div></div>
+          <div id="igAccountList"><div class="sk sk--sm"></div></div>
         </div>
       </div>`;
 
@@ -2334,7 +2362,7 @@
         document.getElementById('igListCount').textContent = accounts.length;
         const $list = document.getElementById('igAccountList');
         if (!accounts.length) {
-          $list.innerHTML = `<div class="ch-empty"><div style="text-align:center;color:var(--text-muted)">등록된 계정 없음</div></div>`;
+          $list.innerHTML = `<div class="ch-empty"><div class="text-center-muted">등록된 계정 없음</div></div>`;
         } else {
           $list.innerHTML = accounts.map(igAccountRowHTML).join('');
         }
@@ -2426,7 +2454,7 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
             이메일 리포트
           </div>
-          <label style="display:flex;align-items:center;gap:.5rem;margin-bottom:.75rem;cursor:pointer">
+          <label class="toggle-row">
             <input type="checkbox" id="igEmailEnabled-${acc.docId}" ${emailEnabled ? 'checked' : ''}
                    data-docid="${escapeHtml(acc.docId)}"
                    onchange="saveIgAccountSettings(this.dataset.docid)">
@@ -3040,7 +3068,7 @@
             const lines = acc.aiPerformanceReview.split('\n').filter(l => l.trim());
             const linesHtml = lines.map(l => `<div style="margin-bottom:4px">${sanitizeReportHtml(l)}</div>`).join('');
             return `<div class="scard anim d5">
-              <div class="slabel"><div class="slabel-dot"></div>${SVG_GRID}AI 성과 리뷰 <span style="color:var(--text-3);margin-left:.25rem;font-weight:400;letter-spacing:0">최근 1주 포스트 종합</span></div>
+              <div class="slabel"><div class="slabel-dot"></div>${SVG_GRID}AI 성과 리뷰 <span class="slabel-count">최근 1주 포스트 종합</span></div>
               <div style="font-size:.8125rem;color:var(--text);line-height:1.6">${linesHtml}</div>
             </div>`;
           })()
@@ -3066,7 +3094,7 @@
 
       <div class="scard anim d4">
         <div class="slabel slabel-with-actions">
-          <div class="slabel-main"><div class="slabel-dot"></div>${SVG_GRID}최근 게시물 <span style="color:var(--text-3);margin-left:.25rem;font-weight:400;letter-spacing:0">${posts.length}건</span></div>
+          <div class="slabel-main"><div class="slabel-dot"></div>${SVG_GRID}최근 게시물 <span class="slabel-count">${posts.length}건</span></div>
           ${renderIgCommentToolbarHTML(tableId, commentRowCount)}
         </div>
         ${igPostTableHTML(posts, { enableCommentControls: true, tableId })}
@@ -3109,7 +3137,7 @@
 
       <div class="scard anim d4">
         <div class="slabel slabel-with-actions">
-          <div class="slabel-main"><div class="slabel-dot"></div>${SVG_GRID}기간 내 게시물 <span style="color:var(--text-3);margin-left:.25rem;font-weight:400;letter-spacing:0">${posts.length}건</span></div>
+          <div class="slabel-main"><div class="slabel-dot"></div>${SVG_GRID}기간 내 게시물 <span class="slabel-count">${posts.length}건</span></div>
           ${renderIgCommentToolbarHTML(tableId, commentRowCount)}
         </div>
         ${igPostTableHTML(posts, { hidePendingAiComment: true, enableCommentControls: true, tableId })}
@@ -3387,6 +3415,21 @@
       } catch (_) {}
     }
 
+    async function refreshFbPageAvailableDates() {
+      try {
+        const { dates } = await apiFetch(`/facebook/page/available-dates?workspaceId=${WS}`);
+        _availableFbPageDates = dates || [];
+        if (!dates.length) return;
+        if (_fpFbPageDatePicker) {
+          _fpFbPageDatePicker.set('enable', dates);
+          if (!_fpFbPageDatePicker.selectedDates.length) _fpFbPageDatePicker.setDate(dates[0], false);
+        } else {
+          const input = document.getElementById('fbPageReportDate');
+          if (input && !input.value) input.value = dates[0];
+        }
+      } catch (_) {}
+    }
+
     // ── 수동 트리거 ───────────────────────────────────────────
     async function triggerFbReport() {
       const date = document.getElementById('fbReportDate')?.value;
@@ -3419,7 +3462,7 @@
           body: JSON.stringify({ workspaceId: WS, date }),
         });
 
-        const detail = `완료 (처리: ${r.result?.processed ?? 0}, 오류: ${r.result?.errors ?? 0})`;
+        const detail = `완료 (처리: ${r.results?.processed ?? 0}, 오류: ${r.results?.errors ?? 0})`;
         $msg.className = 'trigger-msg ok show';
         $msg.textContent = '✓ ' + detail;
         setTimeout(() => loadFbReport(), 1000);
@@ -3511,11 +3554,11 @@
             <div class="panel-title">그룹 추가</div>
             <div class="panel-desc">모니터링할 공개 Facebook 그룹 URL을 등록합니다.</div>
             <div class="field-group">
-              <label class="field-label">그룹 이름 <span style="color:var(--neg)">*</span></label>
+              <label class="field-label">그룹 이름 <span class="text-neg">*</span></label>
               <input class="field-input" id="fbGroupNameInput" type="text" placeholder="예: 안티그래비티 팬 그룹" autocomplete="off">
             </div>
             <div class="field-group">
-              <label class="field-label">그룹 URL <span style="color:var(--neg)">*</span></label>
+              <label class="field-label">그룹 URL <span class="text-neg">*</span></label>
               <input class="field-input" id="fbGroupUrlInput" type="text" placeholder="https://www.facebook.com/groups/..." autocomplete="off">
             </div>
             <button class="btn-add" onclick="addFbGroup()">
@@ -3531,7 +3574,7 @@
               <span class="list-title">등록된 그룹</span>
               <span class="list-count" id="fbGroupListCount">-</span>
             </div>
-            <div id="fb-group-list"><div class="sk" style="height:72px;border-radius:12px;margin-bottom:.75rem"></div></div>
+            <div id="fb-group-list"><div class="sk sk--sm"></div></div>
           </div>
         </div>`;
 
@@ -3540,7 +3583,7 @@
         document.getElementById('fbGroupListCount').textContent = groups.length;
         const $list = document.getElementById('fb-group-list');
         $list.innerHTML = groups.length === 0
-          ? '<div class="ch-empty"><div style="text-align:center;color:var(--text-muted)">등록된 그룹 없음</div></div>'
+          ? '<div class="ch-empty"><div class="text-center-muted">등록된 그룹 없음</div></div>'
           : groups.map(g => fbGroupRowHTML(g)).join('');
       } catch (err) {
         document.getElementById('fb-group-list').innerHTML =
@@ -3604,7 +3647,7 @@
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
               이메일 리포트
             </div>
-            <label style="display:flex;align-items:center;gap:.5rem;margin-bottom:.75rem;cursor:pointer">
+            <label class="toggle-row">
               <input type="checkbox" id="fbEmailEnabled-${g.docId}" ${isEmailEnabled ? 'checked' : ''}>
               <span style="font-size:.875rem">이메일 발송 활성화</span>
             </label>
@@ -3698,6 +3741,592 @@
       } catch (err) { alert('삭제 실패: ' + err.message); }
     }
 
+    // ── 페이지 리포트 ───────────────────────────────────────────
+    async function triggerFbPageReport() {
+      const date = document.getElementById('fbPageReportDate')?.value;
+      if (!date) { alert('날짜를 먼저 선택하세요.'); return; }
+
+      const ok = await showConfirm({
+        platform: 'facebook',
+        icon: '📘',
+        title: 'Facebook 페이지 파이프라인',
+        color: '#1877f2',
+        sub: '재실행 — 기존 리포트 덮어쓰기',
+        badge: date,
+        desc: 'Facebook 페이지 게시물과 댓글 데이터를 다시 수집하고 리포트를 재생성합니다.',
+        confirmLabel: '실행',
+      });
+      if (!ok) return;
+
+      const $btn = document.getElementById('fbPageTriggerBtn');
+      const $msg = document.getElementById('fbPageTriggerMsg');
+
+      $btn.classList.add('spinning');
+      $btn.style.pointerEvents = 'none';
+      $msg.className = 'trigger-msg run show';
+      $msg.textContent = '실행 중...';
+
+      try {
+        const r = await apiFetch('/facebook/page/pipeline/trigger', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ workspaceId: WS, date }),
+        });
+
+        const detail = `완료 (처리: ${r.results?.processed ?? 0}, 오류: ${r.results?.errors ?? 0})`;
+        $msg.className = 'trigger-msg ok show';
+        $msg.textContent = '✓ ' + detail;
+        setTimeout(() => loadFbPageReport(), 1000);
+      } catch (e) {
+        $msg.className = 'trigger-msg err show';
+        $msg.textContent = '✗ ' + (e.message || '실패');
+      } finally {
+        $btn.classList.remove('spinning');
+        $btn.style.pointerEvents = '';
+        setTimeout(() => { $msg.classList.remove('show'); }, 6000);
+      }
+    }
+
+    async function loadFbPageReport() {
+      const $main = document.getElementById('fb-page-report-main');
+      if (!$main) return;
+      const date = document.getElementById('fbPageReportDate')?.value;
+      if (!date) { $main.innerHTML = '<div class="empty-state">날짜를 선택하세요.</div>'; return; }
+      $main.innerHTML = '<div class="loading-spinner"></div>';
+      try {
+        const { reports } = await apiFetch(`/facebook/page/report?workspaceId=${WS}&date=${encodeURIComponent(date)}`);
+        if (!reports || reports.length === 0) {
+          $main.innerHTML = `<div class="empty-state">${date} 리포트가 없습니다.</div>`;
+          return;
+        }
+        $main.innerHTML = reports.map((r, i) => (i > 0 ? '<div class="ch-divider"></div>' : '') + buildFbPageReportCard(r)).join('');
+      } catch (err) {
+        $main.innerHTML = `<div class="error-state">오류: ${err.message}</div>`;
+      }
+    }
+
+    function buildFbPageReportCard(r) {
+      const isNoPosts = r.crawlStatus === 'no_posts' || ((r.postCount || 0) === 0 && (!r.posts || r.posts.length === 0));
+      const sourcePages = Array.isArray(r.sourcePages) ? r.sourcePages : [];
+      const sourcePageNames = sourcePages.map((page) => page.pageName || page.pageId).filter(Boolean);
+      const sourcePageLabel = sourcePageNames.length
+        ? sourcePageNames.join(', ')
+        : '게시물이 존재하지 않습니다';
+      const crawlBadge = isNoPosts
+        ? `<div class="badge">${SVG.doc} 게시물 없음</div>`
+        : r.crawlStatus === 'partial'
+        ? `<div class="badge alert">${SVG.warn} 부분 수집</div>`
+        : r.crawlStatus === 'failed'
+        ? `<div class="badge alert">${SVG.warn} 수집 오류</div>`
+        : '';
+      const issues = (r.aiIssues || []).map(issue => {
+        const postUrl = issue.postIndex ? r.posts?.[issue.postIndex - 1]?.postUrl : null;
+        const link = postUrl
+          ? `<a href="${postUrl}" target="_blank" class="issue-msg-link" title="게시글 보기">↗</a>`
+          : '';
+        return `
+        <div style="padding:10px 12px;background:#eff6ff;border-left:3px solid #2563eb;border-radius:0 8px 8px 0;margin-bottom:6px">
+          <div style="font-size:13px;font-weight:600;color:#1d4ed8">${issue.title || ''}${link}</div>
+          <div style="font-size:12px;color:#1e3a8a;margin-top:3px">${issue.description || ''}</div>
+        </div>`;
+      }).join('');
+      if (isNoPosts) {
+        return `
+      <div class="ch-header anim d1">
+        <div class="ch-platform-icon" style="color:#1877f2">${SVG_FB}</div>
+        <div>
+          <div class="ch-name">${escapeHtml(r.pageName || '')}</div>
+          <div class="ch-row-meta" style="font-size:.75rem;color:var(--text-muted)">소스 페이지 ${sourcePages.length || 1}개 · ${escapeHtml(sourcePageLabel)}</div>
+          <div class="ch-id">Facebook Page &middot; 게시글 0개 &middot; 댓글 0개 &middot; 대댓글 0개</div>
+        </div>
+        <div class="ch-badges">${crawlBadge}</div>
+      </div>
+
+      <div class="scard anim d2">
+        <div class="slabel"><div class="slabel-dot"></div>${SVG.doc}AI 동향 요약</div>
+        <div style="font-size:.8125rem;color:var(--text);line-height:1.8">${sanitizeReportHtml(r.aiSummary || '게시물이 존재하지 않습니다')}</div>
+      </div>
+
+      <div class="scard anim d3">
+        <div class="slabel"><div class="slabel-dot"></div>${SVG.warn}주요 이슈</div>
+        <div style="padding:10px 12px;background:#eff6ff;border-left:3px solid #93c5fd;border-radius:0 8px 8px 0;margin-bottom:6px">
+          <div style="font-size:13px;font-weight:600;color:#1d4ed8">게시물이 존재하지 않습니다</div>
+          <div style="font-size:12px;color:#1e3a8a;margin-top:3px">선택한 날짜에 이 페이지에서 새로 게시된 포스트가 없어 분석할 이슈가 없습니다.</div>
+        </div>
+      </div>
+
+      <div class="token-info-strip anim d4">
+        <span class="token-model">${escapeHtml(r.model || '')}</span>
+        <span>입력 ${(r.promptTokens || 0).toLocaleString()} / 출력 ${(r.completionTokens || 0).toLocaleString()} / 합계 ${(r.totalTokens || 0).toLocaleString()} 토큰</span>
+        <span>비용 $${Number(r.cost || 0).toFixed(4)}</span>
+      </div>`;
+      }
+      return `
+      <div class="ch-header anim d1">
+        <div class="ch-platform-icon" style="color:#1877f2">${SVG_FB}</div>
+        <div>
+          <div class="ch-name">${escapeHtml(r.pageName || '')}</div>
+          <div class="ch-row-meta" style="font-size:.75rem;color:var(--text-muted)">소스 페이지 ${sourcePages.length || 1}개 · ${escapeHtml(sourcePageLabel)}</div>
+          <div class="ch-id">Facebook Page &middot; 게시글 ${r.postCount || 0}개 &middot; 댓글 ${(r.totalComments || 0).toLocaleString()} &middot; 대댓글 ${(r.totalReplies || 0).toLocaleString()}</div>
+        </div>
+        <div class="ch-badges">${crawlBadge}</div>
+      </div>
+
+      ${r.aiSummary ? `<div class="scard anim d2">
+        <div class="slabel"><div class="slabel-dot"></div>${SVG.doc}AI 동향 요약</div>
+        <div style="font-size:.8125rem;color:var(--text);line-height:1.8">${sanitizeReportHtml(r.aiSummary)}</div>
+      </div>` : ''}
+
+      ${issues ? `<div class="scard anim d3">
+        <div class="slabel"><div class="slabel-dot"></div>${SVG.warn}주요 이슈</div>
+        ${issues}
+      </div>` : ''}
+
+      ${(r.model || r.totalTokens) ? `
+      <div class="token-info-strip anim d4">
+        ${r.model ? `<span class="token-model">${escapeHtml(r.model)}</span>` : ''}
+        ${r.totalTokens ? `<span>입력 ${(r.promptTokens || 0).toLocaleString()} / 출력 ${(r.completionTokens || 0).toLocaleString()} / 합계 ${(r.totalTokens || 0).toLocaleString()} 토큰</span>` : ''}
+        ${r.cost != null ? `<span>비용 $${Number(r.cost).toFixed(4)}</span>` : ''}
+      </div>` : ''}`;
+    }
+
+    // ── 페이지 관리 ───────────────────────────────────────────
+    async function loadFbPages() {
+      const $main = document.getElementById('fb-pages-main');
+      if (!$main) return;
+
+      $main.innerHTML = `
+        <div class="ch-mgmt-grid">
+          <div class="add-panel">
+            <div class="panel-title">페이지 추가</div>
+            <div class="panel-desc">관리자 User Access Token으로 운영 중인 Facebook 페이지 목록을 조회한 뒤 등록합니다.</div>
+            <div class="info-banner" style="margin-bottom:1rem">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+              </svg>
+              <span>토큰 관리/갱신까지 쓰려면 Meta 앱 ID, 앱 시크릿, User Access Token을 함께 저장합니다.</span>
+            </div>
+            <div class="field-group">
+              <label class="field-label">Meta 앱 ID <span class="text-neg">*</span></label>
+              <input class="field-input" id="fbPageAppIdInput" type="text" placeholder="1234567890" autocomplete="off">
+            </div>
+            <div class="field-group">
+              <label class="field-label">Meta 앱 시크릿 <span class="text-neg">*</span></label>
+              <input class="field-input" id="fbPageAppSecretInput" type="password" placeholder="앱 시크릿 코드" autocomplete="off">
+            </div>
+            <div class="field-group">
+              <label class="field-label">관리자 User Access Token <span class="text-neg">*</span></label>
+              <textarea class="field-input settings-textarea" id="fbPageTokenInput" rows="4" placeholder="EAAxxxx..."></textarea>
+            </div>
+            <button class="btn-add" id="fbPageDiscoverBtn" onclick="discoverFbPages()">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+              </svg>
+              페이지 불러오기
+            </button>
+            <div id="fbPageCandidatePicker"></div>
+            <div class="add-result" id="fbPageAddResult"></div>
+          </div>
+          <div class="list-panel">
+            <div class="list-header">
+              <span class="list-title">등록된 페이지</span>
+              <span class="list-count" id="fbPageListCount">-</span>
+            </div>
+            <div id="fb-page-list"><div class="sk sk--sm"></div></div>
+          </div>
+        </div>`;
+
+      try {
+        const { pages } = await apiFetch(`/facebook/pages?workspaceId=${WS}`);
+        _fbRegisteredPages = Array.isArray(pages) ? pages : [];
+        document.getElementById('fbPageListCount').textContent = _fbRegisteredPages.length;
+        const $list = document.getElementById('fb-page-list');
+        $list.innerHTML = !_fbRegisteredPages.length
+          ? '<div class="ch-empty"><div class="text-center-muted">등록된 페이지 없음</div></div>'
+          : _fbRegisteredPages.map(fbPageRowHTML).join('');
+      } catch (err) {
+        _fbRegisteredPages = [];
+        document.getElementById('fb-page-list').innerHTML =
+          `<div class="state-wrap"><div class="state-title">불러오기 실패</div><div class="state-desc">${escapeHtml(err.message)}</div></div>`;
+      }
+    }
+
+    function fbPageRowHTML(page) {
+      const isActive = page.isActive !== false;
+      const recipients = (page.deliveryConfig?.email?.recipients || []).join(', ');
+      const isEmailEnabled = page.deliveryConfig?.email?.isEnabled ?? false;
+      const panelId = `fb-page-settings-${page.docId}`;
+      const reportGroupName = page.reportGroupName || page.pageName || page.pageId || '';
+      const selectedModel = FB_ANALYSIS_MODELS.some(m => m.value === page.analysisModel)
+        ? page.analysisModel
+        : FB_ANALYSIS_MODELS[0].value;
+      const normalizedValidatedAt = (() => {
+        const v = page.lastValidatedAt;
+        if (!v) return null;
+        if (typeof v === 'string') return v;
+        if (typeof v === 'object') {
+          const secs = v._seconds ?? v.seconds;
+          if (secs != null) return new Date(secs * 1000).toISOString();
+          if (typeof v.toDate === 'function') return v.toDate().toISOString();
+        }
+        return null;
+      })();
+      const tokenStatus = page.tokenStatus || 'unknown';
+      const tokenStatusMeta = tokenStatus === 'valid'
+        ? { label: '토큰 유효', color: '#16a34a', bg: '#f0fdf4' }
+        : tokenStatus === 'invalid'
+        ? { label: '토큰 오류', color: '#dc2626', bg: '#fef2f2' }
+        : tokenStatus === 'missing'
+        ? { label: '토큰 누락', color: '#d97706', bg: '#fffbeb' }
+        : { label: '상태 미확인', color: '#64748b', bg: '#f8fafc' };
+      const expiry = tokenExpiryLabel(page.tokenExpiresAt);
+      const validatedAt = normalizedValidatedAt
+        ? new Date(normalizedValidatedAt).toLocaleString('ko-KR', { month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' })
+        : '검증 이력 없음';
+
+      return `
+        <div class="ch-row ${isActive ? '' : 'inactive'}" id="fb-page-row-${page.docId}">
+          <div class="ch-row-icon">
+            <svg viewBox="0 0 24 24" fill="currentColor" style="width:18px;height:18px;color:#1877F2">
+              <path d="M24 12.073C24 5.405 18.627 0 12 0S0 5.405 0 12.073C0 18.1 4.388 23.094 10.125 24v-8.437H7.078v-3.49h3.047V9.41c0-3.025 1.792-4.697 4.533-4.697 1.312 0 2.686.236 2.686.236v2.97h-1.513c-1.491 0-1.956.93-1.956 1.886v2.267h3.328l-.532 3.49h-2.796V24C19.612 23.094 24 18.1 24 12.073z"/>
+            </svg>
+          </div>
+          <div class="ch-row-info">
+            <div class="ch-row-name">${escapeHtml(page.pageName || page.pageId)}</div>
+            <div class="ch-row-meta">Facebook Page${page.pageCategory ? ` · ${escapeHtml(page.pageCategory)}` : ''}</div>
+            <div class="ch-row-meta" style="font-size:.75rem;color:var(--text-muted)">pageId · ${escapeHtml(page.pageId || '-')}</div>
+            <div class="ch-row-meta" style="font-size:.75rem;color:var(--text-muted)">리포트 그룹 · ${escapeHtml(reportGroupName)}</div>
+            <div class="ig-debug-meta">
+              <span style="display:inline-block;padding:.1rem .45rem;border-radius:4px;font-size:.7rem;font-weight:700;background:${tokenStatusMeta.bg};color:${tokenStatusMeta.color}">${tokenStatusMeta.label}</span>
+              <span><strong>만료</strong> ${escapeHtml(expiry.text)}</span>
+              <span><strong>검증</strong> ${escapeHtml(validatedAt)}</span>
+            </div>
+          </div>
+          <div class="ch-row-status ${isActive ? 'active' : 'inactive'}">${isActive ? '활성' : '비활성'}</div>
+          <div class="ch-row-actions">
+            <div class="action-btn settings" data-docid="${escapeHtml(page.docId)}"
+                 onclick="toggleFbPageSettings(this.dataset.docid)" title="설정">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="3"/>
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+              </svg>
+            </div>
+            <div class="action-btn ${isActive ? 'toggle-on' : 'toggle-off'}"
+                 data-docid="${escapeHtml(page.docId)}"
+                 onclick="toggleFbPage(this.dataset.docid, ${isActive})"
+                 title="${isActive ? '비활성화' : '활성화'}">
+              ${isActive
+                ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18.364 18.364A9 9 0 0 0 5.636 5.636m12.728 12.728L5.636 5.636"/></svg>`
+                : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>`}
+            </div>
+            <div class="action-btn del"
+                 data-docid="${escapeHtml(page.docId)}" data-name="${escapeHtml(page.pageName || page.pageId)}"
+                 onclick="deleteFbPage(this.dataset.docid, this.dataset.name)"
+                 title="페이지 삭제">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="3 6 5 6 21 6"/>
+                <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
+                <path d="M10 11v6M14 11v6"/>
+                <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/>
+              </svg>
+            </div>
+          </div>
+        </div>
+        <div class="ch-settings-panel" id="${panelId}">
+          <div class="settings-section">
+            <div class="settings-section-title">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+              토큰 관리
+            </div>
+            <div style="font-size:.8125rem;color:var(--text-muted);line-height:1.7;margin-bottom:.75rem">
+              상태: <strong style="color:${tokenStatusMeta.color}">${tokenStatusMeta.label}</strong><br>
+              만료: <strong>${escapeHtml(expiry.text)}</strong><br>
+              마지막 검증: <strong>${escapeHtml(validatedAt)}</strong>
+            </div>
+            <div style="display:flex;gap:.5rem;flex-wrap:wrap">
+              <button class="btn-save-settings" data-docid="${escapeHtml(page.docId)}"
+                      onclick="checkFbPageToken(this.dataset.docid, this)">상태 확인</button>
+              <button class="btn-save-settings" data-docid="${escapeHtml(page.docId)}"
+                      onclick="refreshFbPageToken(this.dataset.docid, this)">토큰 갱신</button>
+            </div>
+            <div class="add-result" id="fbPageTokenResult-${page.docId}"></div>
+          </div>
+          <div class="settings-section">
+            <div class="settings-section-title">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+              이메일 리포트
+            </div>
+            <label class="toggle-row">
+              <input type="checkbox" id="fbPageEmailEnabled-${page.docId}" ${isEmailEnabled ? 'checked' : ''}>
+              <span style="font-size:.875rem">이메일 발송 활성화</span>
+            </label>
+            <textarea class="settings-textarea" id="fbPageRecipients-${page.docId}"
+              placeholder="수신자 이메일 (쉼표 구분)">${escapeHtml(recipients)}</textarea>
+            <button class="btn-save-settings" data-docid="${escapeHtml(page.docId)}"
+                    onclick="saveFbPageSettings(this.dataset.docid)">저장</button>
+            <div class="add-result" id="fbPageSaveResult-${page.docId}"></div>
+          </div>
+          <div class="settings-section">
+            <div class="settings-section-title">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7h18"/><path d="M3 12h18"/><path d="M3 17h18"/></svg>
+              리포트 그룹
+            </div>
+            <div style="font-size:.8125rem;color:var(--text-muted);line-height:1.7;margin-bottom:.75rem">
+              같은 그룹명을 가진 페이지들은 하나의 Facebook 페이지 리포트로 합쳐집니다.
+            </div>
+            <label class="settings-field-label" for="fbPageReportGroup-${page.docId}">리포트 그룹명</label>
+            <input class="field-input" id="fbPageReportGroup-${page.docId}" type="text" value="${escapeHtml(reportGroupName)}" placeholder="예: Soul Strike Global">
+          </div>
+          <div class="settings-section">
+            <div class="settings-section-title">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/></svg>
+              AI 분석 지시문
+            </div>
+            <label class="settings-field-label" for="fbPageAnalysisModel-${page.docId}">AI 모델</label>
+            <select class="settings-select" id="fbPageAnalysisModel-${page.docId}">
+              ${FB_ANALYSIS_MODELS.map(m => `
+                <option value="${escapeHtml(m.value)}" ${selectedModel === m.value ? 'selected' : ''}>
+                  ${escapeHtml(m.label)}
+                </option>
+              `).join('')}
+            </select>
+            <textarea class="settings-textarea" id="fbPageAnalysisPrompt-${page.docId}"
+              rows="3" placeholder="예: 반복 문의와 부정 피드백을 우선적으로 요약해줘.">${escapeHtml(page.analysisPrompt || '')}</textarea>
+            <button class="btn-save-settings" data-docid="${escapeHtml(page.docId)}"
+                    onclick="saveFbPageSettings(this.dataset.docid)">저장</button>
+            ${page.lastTokenError ? `<div class="add-result" style="display:block;color:var(--neg)">${escapeHtml(page.lastTokenError)}</div>` : ''}
+          </div>
+        </div>`;
+    }
+
+    function toggleFbPageSettings(docId) {
+      const panel = document.getElementById(`fb-page-settings-${docId}`);
+      if (panel) panel.classList.toggle('open');
+    }
+
+    function renderFbPageCandidatePicker(pages) {
+      return `
+        <div class="info-banner ig-picker-banner" style="margin-top:1rem;display:block">
+          <div class="ig-picker-title">연결된 Facebook 페이지 선택</div>
+          <div class="ig-picker-desc">이 토큰으로 조회 가능한 페이지 목록입니다. 저장하면 해당 페이지의 Page Access Token이 함께 등록됩니다.</div>
+          <div class="ig-picker-list">
+            ${pages.map((page) => `
+              <button type="button"
+                class="btn-save-settings ig-picker-btn"
+                onclick="confirmFbPageSelection('${escapeHtml(page.pageId)}')">
+                <span class="ig-picker-main">
+                  <span class="ig-picker-account">${escapeHtml(page.pageName || page.pageId)}</span>
+                  <span class="ig-picker-page">${escapeHtml(page.pageCategory || 'Facebook Page')}</span>
+                </span>
+                <span class="ig-picker-debug">
+                  <span><strong>pageId</strong> ${escapeHtml(page.pageId || '-')}</span>
+                </span>
+              </button>`).join('')}
+          </div>
+        </div>`;
+    }
+
+    async function discoverFbPages() {
+      const appId = document.getElementById('fbPageAppIdInput')?.value.trim();
+      const appSecret = document.getElementById('fbPageAppSecretInput')?.value.trim();
+      const token = document.getElementById('fbPageTokenInput')?.value.trim();
+      const $picker = document.getElementById('fbPageCandidatePicker');
+      const $result = document.getElementById('fbPageAddResult');
+      const $btn = document.getElementById('fbPageDiscoverBtn');
+      if (!appId) { $result.className = 'add-result err'; $result.textContent = '앱 ID를 입력해 주세요.'; return; }
+      if (!appSecret) { $result.className = 'add-result err'; $result.textContent = '앱 시크릿을 입력해 주세요.'; return; }
+      if (!token) { $result.className = 'add-result err'; $result.textContent = '액세스 토큰을 입력해 주세요.'; return; }
+
+      _fbPagePendingSelection = null;
+      if ($picker) $picker.innerHTML = '';
+      $btn.disabled = true;
+      $btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="animation:spin .75s linear infinite"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg> 조회 중...`;
+      $result.className = 'add-result';
+      $result.textContent = '';
+
+      try {
+        const res = await apiFetch('/facebook/pages/discover', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ workspaceId: WS, accessToken: token }),
+        });
+        const pages = Array.isArray(res.pages) ? res.pages : [];
+        if (!pages.length) {
+          $result.className = 'add-result err';
+          $result.textContent = '이 토큰으로 조회 가능한 페이지가 없습니다.';
+          return;
+        }
+        _fbPagePendingSelection = { token, appId, appSecret, pages };
+        if ($picker) $picker.innerHTML = renderFbPageCandidatePicker(pages);
+        $result.className = 'add-result';
+        $result.textContent = '등록할 Facebook 페이지를 선택해 주세요.';
+      } catch (err) {
+        $result.className = 'add-result err';
+        $result.textContent = err.message;
+      } finally {
+        $btn.disabled = false;
+        $btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> 페이지 불러오기`;
+      }
+    }
+
+    async function confirmFbPageSelection(pageId) {
+      const pending = _fbPagePendingSelection;
+      const $result = document.getElementById('fbPageAddResult');
+      const $picker = document.getElementById('fbPageCandidatePicker');
+      const $btn = document.getElementById('fbPageDiscoverBtn');
+      if (!pending) return;
+
+      const page = pending.pages.find((candidate) => String(candidate.pageId) === String(pageId));
+      if (!page) {
+        $result.className = 'add-result err';
+        $result.textContent = '선택한 페이지 정보를 찾을 수 없습니다.';
+        return;
+      }
+
+      $btn.disabled = true;
+      $btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="animation:spin .75s linear infinite"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg> 저장 중...`;
+
+      try {
+        const res = await apiFetch('/facebook/pages', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            workspaceId: WS,
+            pageId: page.pageId,
+            pageName: page.pageName,
+            pageAccessToken: page.pageAccessToken,
+            pageCategory: page.pageCategory,
+            pictureUrl: page.pictureUrl,
+            sourceUserAccessToken: pending.token,
+            appId: pending.appId,
+            appSecret: pending.appSecret,
+          }),
+        });
+        _fbPagePendingSelection = null;
+        if ($picker) $picker.innerHTML = '';
+        document.getElementById('fbPageAppIdInput').value = '';
+        document.getElementById('fbPageAppSecretInput').value = '';
+        document.getElementById('fbPageTokenInput').value = '';
+        $result.className = 'add-result ok';
+        $result.textContent = `${res.updated ? '토큰 갱신 완료:' : '페이지 등록 완료:'} ${res.pageName || page.pageName || page.pageId}`;
+        await loadFbPages();
+      } catch (err) {
+        $result.className = 'add-result err';
+        $result.textContent = err.message;
+      } finally {
+        $btn.disabled = false;
+        $btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> 페이지 불러오기`;
+      }
+    }
+
+    async function toggleFbPage(docId, currentActive) {
+      try {
+        await apiFetch(`/facebook/pages?workspaceId=${WS}&docId=${encodeURIComponent(docId)}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ isActive: !currentActive }),
+        });
+        await loadFbPages();
+      } catch (err) { alert('상태 변경 실패: ' + err.message); }
+    }
+
+    async function saveFbPageSettings(docId) {
+      const isEnabled = document.getElementById(`fbPageEmailEnabled-${docId}`)?.checked ?? false;
+      const recipients = (document.getElementById(`fbPageRecipients-${docId}`)?.value || '')
+        .split(/[,\n]/).map(e => e.trim()).filter(Boolean);
+      const reportGroupName = document.getElementById(`fbPageReportGroup-${docId}`)?.value?.trim() || '';
+      const analysisPrompt = document.getElementById(`fbPageAnalysisPrompt-${docId}`)?.value || '';
+      const analysisModel = document.getElementById(`fbPageAnalysisModel-${docId}`)?.value || FB_ANALYSIS_MODELS[0].value;
+      const $result = document.getElementById(`fbPageSaveResult-${docId}`);
+      try {
+        await apiFetch(`/facebook/pages/settings?workspaceId=${WS}&docId=${encodeURIComponent(docId)}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            deliveryConfig: { email: { isEnabled, recipients } },
+            reportGroupName,
+            analysisPrompt,
+            analysisModel,
+          }),
+        });
+        if ($result) {
+          $result.textContent = '✓ 저장됨';
+          $result.style.color = 'var(--pos)';
+          setTimeout(() => { if ($result) $result.textContent = ''; }, 2000);
+        }
+        await loadFbPages();
+      } catch (err) {
+        if ($result) {
+          $result.textContent = '저장 실패: ' + err.message;
+          $result.style.color = 'var(--neg)';
+        }
+      }
+    }
+
+    async function deleteFbPage(docId, pageName) {
+      const ok = await confirmDialog(`페이지 "${pageName}"를 삭제하시겠습니까?\n관련 리포트도 함께 삭제됩니다.`);
+      if (!ok) return;
+      try {
+        await apiFetch(`/facebook/pages?workspaceId=${WS}&docId=${encodeURIComponent(docId)}`, { method: 'DELETE' });
+        await loadFbPages();
+      } catch (err) { alert('삭제 실패: ' + err.message); }
+    }
+
+    async function checkFbPageToken(docId, btn) {
+      const $result = document.getElementById(`fbPageTokenResult-${docId}`);
+      if (!$result) return;
+      btn.disabled = true;
+      $result.className = 'add-result';
+      $result.style.color = '#94a3b8';
+      $result.textContent = '확인 중...';
+      try {
+        const res = await apiFetch(`/facebook/pages/token/check?workspaceId=${WS}&docId=${encodeURIComponent(docId)}`, {
+          method: 'POST',
+        });
+        if (res.valid) {
+          const expiryText = res.tokenExpiresAt
+            ? ` · 만료 ${new Date(res.tokenExpiresAt).toLocaleDateString('ko-KR')}`
+            : '';
+          $result.style.color = 'var(--pos)';
+          $result.textContent = `✓ 유효${expiryText}`;
+        } else {
+          $result.style.color = 'var(--neg)';
+          $result.textContent = `✗ ${res.error || '유효하지 않음'}`;
+        }
+        await loadFbPages();
+      } catch (err) {
+        $result.style.color = 'var(--neg)';
+        $result.textContent = '상태 확인 실패: ' + err.message;
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function refreshFbPageToken(docId, btn) {
+      const $result = document.getElementById(`fbPageTokenResult-${docId}`);
+      if (!$result) return;
+      btn.disabled = true;
+      $result.className = 'add-result';
+      $result.style.color = '#94a3b8';
+      $result.textContent = '갱신 중...';
+      try {
+        const res = await apiFetch(`/facebook/pages/token/refresh?workspaceId=${WS}&docId=${encodeURIComponent(docId)}`, {
+          method: 'POST',
+        });
+        const expiryText = res.tokenExpiresAt
+          ? `새 만료일: ${new Date(res.tokenExpiresAt).toLocaleDateString('ko-KR')}`
+          : '만료일 정보 없음';
+        $result.style.color = 'var(--pos)';
+        $result.textContent = `✓ 토큰 갱신 완료 · ${expiryText}`;
+        await loadFbPages();
+      } catch (err) {
+        $result.style.color = 'var(--neg)';
+        $result.textContent = '토큰 갱신 실패: ' + err.message;
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
     // ── 세션 관리 ─────────────────────────────────────────────
     async function loadFbSession() {
       const $main = document.getElementById('fb-session-main');
@@ -3785,17 +4414,17 @@
               <div class="panel-card" style="padding:20px">
                 <div class="panel-title" style="margin-bottom:12px">저장 정보</div>
                 <div style="display:flex;flex-direction:column;gap:10px">
-                  <div style="display:flex;justify-content:space-between;align-items:center;font-size:12.5px">
+                  <div class="row-between">
                     <span style="color:#64748b">쿠키 수</span>
                     <span style="font-weight:600;color:#1e293b">${status.cookieCount || 0}개</span>
                   </div>
                   ${status.savedAt ? `
-                  <div style="display:flex;justify-content:space-between;align-items:center;font-size:12.5px">
+                  <div class="row-between">
                     <span style="color:#64748b">저장일시</span>
                     <span style="font-weight:500;color:#1e293b">${new Date(status.savedAt).toLocaleString('ko-KR', {month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'})}</span>
                   </div>` : ''}
                   ${status.lastValidatedAt ? `
-                  <div style="display:flex;justify-content:space-between;align-items:center;font-size:12.5px">
+                  <div class="row-between">
                     <span style="color:#64748b">마지막 확인</span>
                     <span style="font-weight:500;color:#1e293b">${new Date(status.lastValidatedAt).toLocaleString('ko-KR', {month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'})}</span>
                   </div>` : ''}
@@ -3989,7 +4618,7 @@
         </div>
 
         <div class="scard anim d4" style="margin-top:1rem">
-          <div class="slabel"><div class="slabel-dot"></div>${SVG.warn}주요 이슈 <span style="color:var(--text-3);margin-left:.25rem;font-weight:400;letter-spacing:0">${r.aiIssues?.length || 0}건</span></div>
+          <div class="slabel"><div class="slabel-dot"></div>${SVG.warn}주요 이슈 <span class="slabel-count">${r.aiIssues?.length || 0}건</span></div>
           ${issues || `<div style="color:var(--text-3);font-size:.875rem;line-height:1.8">오늘은 별도로 부각된 주요 이슈가 감지되지 않았습니다.</div>`}
         </div>
 
@@ -4012,7 +4641,7 @@
               <input class="field-input" id="nlNewLoungeName" type="text" placeholder="예: 소울스트라이크 라운지" autocomplete="off">
             </div>
             <div class="field-group">
-              <label class="field-label">라운지 URL <span style="color:var(--neg)">*</span></label>
+              <label class="field-label">라운지 URL <span class="text-neg">*</span></label>
               <input class="field-input" id="nlNewLoungeUrl" type="text" placeholder="https://game.naver.com/lounge/{id}/board" autocomplete="off">
             </div>
             <button class="btn-add" onclick="addNlLounge()">
@@ -4028,7 +4657,7 @@
               <span class="list-title">등록된 라운지</span>
               <span class="list-count" id="nlLoungeListCount">-</span>
             </div>
-            <div id="nl-lounge-list"><div class="sk" style="height:72px;border-radius:12px;margin-bottom:.75rem"></div></div>
+            <div id="nl-lounge-list"><div class="sk sk--sm"></div></div>
           </div>
         </div>`;
 
@@ -4037,7 +4666,7 @@
         document.getElementById('nlLoungeListCount').textContent = lounges.length;
         const $list = document.getElementById('nl-lounge-list');
         $list.innerHTML = lounges.length === 0
-          ? '<div class="ch-empty"><div style="text-align:center;color:var(--text-muted)">등록된 라운지 없음</div></div>'
+          ? '<div class="ch-empty"><div class="text-center-muted">등록된 라운지 없음</div></div>'
           : lounges.map(nlLoungeRowHTML).join('');
       } catch (err) {
         document.getElementById('nl-lounge-list').innerHTML =
@@ -4099,7 +4728,7 @@
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
               이메일 리포트
             </div>
-            <label style="display:flex;align-items:center;gap:.5rem;margin-bottom:.75rem;cursor:pointer">
+            <label class="toggle-row">
               <input type="checkbox" id="nlEmailEnabled-${g.docId}" ${isEmailEnabled ? 'checked' : ''}>
               <span style="font-size:.875rem">이메일 발송 활성화</span>
             </label>
@@ -4315,11 +4944,11 @@
               <div class="panel-card" style="padding:20px">
                 <div class="panel-title" style="margin-bottom:12px">저장 정보</div>
                 <div style="display:flex;flex-direction:column;gap:10px">
-                  <div style="display:flex;justify-content:space-between;align-items:center;font-size:12.5px">
+                  <div class="row-between">
                     <span style="color:#64748b">쿠키 수</span>
                     <span style="font-weight:600;color:#1e293b">${status.cookieCount || 0}개</span>
                   </div>
-                  <div style="display:flex;justify-content:space-between;align-items:center;font-size:12.5px">
+                  <div class="row-between">
                     <span style="color:#64748b">요청 프로필</span>
                     <span style="font-weight:600;color:#1e293b">${status.hasRequestProfile ? '등록됨' : '미완성'}</span>
                   </div>
@@ -4329,12 +4958,12 @@
                     <span style="font-weight:500;color:#1e293b;font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:180px">${escapeHtml(status.deviceId)}</span>
                   </div>` : ''}
                   ${status.savedAt ? `
-                  <div style="display:flex;justify-content:space-between;align-items:center;font-size:12.5px">
+                  <div class="row-between">
                     <span style="color:#64748b">저장일시</span>
                     <span style="font-weight:500;color:#1e293b">${new Date(status.savedAt).toLocaleString('ko-KR', {month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'})}</span>
                   </div>` : ''}
                   ${status.lastValidatedAt ? `
-                  <div style="display:flex;justify-content:space-between;align-items:center;font-size:12.5px">
+                  <div class="row-between">
                     <span style="color:#64748b">마지막 확인</span>
                     <span style="font-weight:500;color:#1e293b">${new Date(status.lastValidatedAt).toLocaleString('ko-KR', {month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'})}</span>
                   </div>` : ''}
@@ -4455,7 +5084,7 @@
         const data = await apiFetch(`/report-presets?workspaceId=${WS}`);
         renderPresetList(data.presets || []);
       } catch (err) {
-        $list.innerHTML = `<div class="preset-list-empty" style="color:var(--neg)">오류: ${escapeHtml(err.message)}</div>`;
+        $list.innerHTML = `<div class="preset-list-empty text-neg">오류: ${escapeHtml(err.message)}</div>`;
       }
     }
 

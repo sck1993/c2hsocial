@@ -3488,6 +3488,56 @@
 .preset-active-badge--on  { background: #dcfce7; color: #166534; }
 .preset-active-badge--off { background: var(--surface-3); color: var(--text-3); }
 
+/* ─────────────────────────────────────────────────────
+   Report shared utilities
+───────────────────────────────────────────────────── */
+
+/* slabel 내 카운트 뱃지 ("8건", "5개" 등) */
+.slabel-count {
+  color: var(--text-3);
+  margin-left: .25rem;
+  font-weight: 400;
+  letter-spacing: 0;
+}
+
+/* scard 간격 모디파이어 */
+.scard--mt { margin-top: 1rem; }
+.scard--mb { margin-bottom: 16px; }
+
+/* 좌우 분산 flex 행 (리스트 row 헤더 등) */
+.row-between {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12.5px;
+}
+
+/* 토글/접기 행 (설정 패널 헤더 등) */
+.toggle-row {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  margin-bottom: .75rem;
+  cursor: pointer;
+}
+
+/* 텍스트 컬러 시맨틱 클래스 */
+.text-neg          { color: var(--neg); }
+.text-center-muted { text-align: center; color: var(--text-muted); }
+.text-sm-muted     { font-size: .875rem; color: var(--text-3); }
+
+/* 이슈 채널 레이블 (#채널명 인라인 링크) */
+.issue-ch-label {
+  color: var(--accent);
+  font-size: .75rem;
+  margin-left: .375rem;
+}
+
+/* 스켈레톤 로더 크기 모디파이어 */
+.sk--sm    { height: 72px;  border-radius: 12px; margin-bottom: .75rem; }
+.sk--md    { height: 108px; border-radius: 12px; margin-bottom: 1.75rem; }
+.sk--chart { height: 170px; border-radius: 12px; }
+
 /* 반응형 */
 @media (max-width: 900px) {
   .preset-mgmt-grid {

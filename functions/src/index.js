@@ -22,6 +22,7 @@ const {
 } = require("./collectors/instagramDirectCollector");
 const { runInstagramPipeline, runInstagramEmailSender } = require("./instagramDailyPipeline");
 const { runFacebookGroupPipeline, runFacebookGroupEmailSender } = require("./facebookGroupDailyPipeline");
+const { runFacebookPagePipeline, runFacebookPageEmailSender } = require("./facebookPageDailyPipeline");
 const {
   loadSessionFromFirestore: loadFbSession,
   saveSessionToFirestore: saveFbSession,
@@ -30,8 +31,13 @@ const {
   applyCookiesToContext: applyFbCookies,
   verifySessionAlive: verifyFbSessionAlive,
 } = require("./collectors/facebookGroupCollector");
+const {
+  discoverManagedFacebookPages,
+  validatePageAccessToken,
+} = require("./collectors/facebookPageCollector");
 const { runNaverLoungePipeline, runNaverLoungeEmailSender } = require("./naverLoungeDailyPipeline");
 const { runReportPresetPipeline } = require("./reportPresetDailyPipeline");
+const { DEFAULT_NAVER_LOUNGE_ANALYSIS_PROMPT } = require("./analyzers/openrouterAnalyzer");
 const {
   loadSessionFromFirestore: loadNlSession,
   saveSessionToFirestore: saveNlSession,
@@ -1677,6 +1683,416 @@ exports.api = onRequest(
       }
     }
 
+    // ── GET /facebook/pages ── 페이지 목록 조회
+    if (req.method === "GET" && path === "/facebook/pages") {
+      try {
+        const db = admin.firestore();
+        const workspaceId = resolveWorkspaceId(req.query.workspaceId);
+        const snap = await db
+          .collection("workspaces").doc(workspaceId)
+          .collection("facebook_pages")
+          .orderBy("createdAt", "asc")
+          .get();
+        const pages = snap.docs.map((d) => {
+          const data = d.data() || {};
+          const { pageAccessToken, sourceUserAccessToken, appSecret, ...safeData } = data;
+          return { docId: d.id, ...safeData };
+        });
+        return res.json({ pages });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── POST /facebook/pages/discover ── 관리자 토큰으로 관리 페이지 목록 조회
+    if (req.method === "POST" && path === "/facebook/pages/discover") {
+      try {
+        const { accessToken } = req.body || {};
+        if (!accessToken) return res.status(400).json({ error: "accessToken 필수" });
+
+        const pages = await discoverManagedFacebookPages(accessToken);
+        return res.json({
+          success: true,
+          pages: pages.map((page) => ({
+            pageId: page.pageId,
+            pageName: page.pageName,
+            pageCategory: page.pageCategory,
+            pictureUrl: page.pictureUrl,
+            pageAccessToken: page.pageAccessToken,
+          })),
+        });
+      } catch (err) {
+        console.error("[POST /facebook/pages/discover] 오류:", err.message);
+        return res.status(400).json({ error: err.message });
+      }
+    }
+
+    // ── POST /facebook/pages ── 페이지 추가/토큰 갱신
+    if (req.method === "POST" && path === "/facebook/pages") {
+      try {
+        const db = admin.firestore();
+        const {
+          workspaceId: _wsId,
+          pageId,
+          pageName,
+          pageAccessToken,
+          pageCategory,
+          pictureUrl,
+          reportGroupName,
+          sourceUserAccessToken,
+          appId,
+          appSecret,
+        } = req.body || {};
+        if (!pageId) return res.status(400).json({ error: "pageId 필수" });
+        if (!pageAccessToken) return res.status(400).json({ error: "pageAccessToken 필수" });
+        const workspaceId = resolveWorkspaceId(_wsId);
+        const validated = await validatePageAccessToken(String(pageId), pageAccessToken);
+        const normalizedPageName = validated.pageName || pageName || pageId;
+        const normalizedCategory = validated.pageCategory || pageCategory || "";
+        const normalizedPictureUrl = validated.pictureUrl || pictureUrl || "";
+        const requestedReportGroupName = reportGroupName !== undefined
+          ? (String(reportGroupName || "").trim() || normalizedPageName || String(pageId))
+          : null;
+        let tokenExpiresAt = null;
+        if (sourceUserAccessToken && appId && appSecret) {
+          try {
+            const tokenInfo = await debugIgToken(sourceUserAccessToken, appId, appSecret);
+            tokenExpiresAt = tokenInfo.expiresAt || null;
+          } catch (e) {
+            console.warn(`[POST /facebook/pages] debug_token 실패: ${e.message}`);
+          }
+        }
+
+        const existingSnap = await db
+          .collection("workspaces").doc(workspaceId)
+          .collection("facebook_pages")
+          .where("pageId", "==", String(pageId))
+          .limit(1)
+          .get();
+
+        if (!existingSnap.empty) {
+          const doc = existingSnap.docs[0];
+          const existingData = doc.data() || {};
+          await doc.ref.set({
+            pageName: normalizedPageName,
+            pageAccessToken,
+            pageCategory: normalizedCategory,
+            pictureUrl: normalizedPictureUrl,
+            reportGroupName: requestedReportGroupName || existingData.reportGroupName || normalizedPageName,
+            isActive: true,
+            tokenStatus: "valid",
+            tokenExpiresAt: tokenExpiresAt ? admin.firestore.Timestamp.fromDate(tokenExpiresAt) : null,
+            pageAccessTokenUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+            lastValidatedAt: admin.firestore.FieldValue.serverTimestamp(),
+            lastTokenError: admin.firestore.FieldValue.delete(),
+            sourceUserAccessToken: sourceUserAccessToken || admin.firestore.FieldValue.delete(),
+            appId: appId || admin.firestore.FieldValue.delete(),
+            appSecret: appSecret || admin.firestore.FieldValue.delete(),
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          }, { merge: true });
+
+          return res.json({
+            success: true,
+            updated: true,
+            docId: doc.id,
+            pageId,
+            pageName: normalizedPageName,
+          });
+        }
+
+        const docRef = await db
+          .collection("workspaces").doc(workspaceId)
+          .collection("facebook_pages")
+          .add({
+            platform: "facebook_page",
+            pageId: String(pageId),
+            pageName: normalizedPageName,
+            pageAccessToken,
+            pageCategory: normalizedCategory,
+            pictureUrl: normalizedPictureUrl,
+            reportGroupName: requestedReportGroupName || normalizedPageName,
+            isActive: true,
+            tokenStatus: "valid",
+            tokenExpiresAt: tokenExpiresAt ? admin.firestore.Timestamp.fromDate(tokenExpiresAt) : null,
+            pageAccessTokenUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+            tokenRefreshedAt: null,
+            lastValidatedAt: admin.firestore.FieldValue.serverTimestamp(),
+            lastTokenError: "",
+            sourceUserAccessToken: sourceUserAccessToken || "",
+            appId: appId || "",
+            appSecret: appSecret || "",
+            deliveryConfig: { email: { isEnabled: false, recipients: [] } },
+            analysisPrompt: "",
+            analysisModel: "",
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+
+        return res.json({ success: true, docId: docRef.id, pageId, pageName: normalizedPageName });
+      } catch (err) {
+        console.error("[POST /facebook/pages] 오류:", err.message);
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── PATCH /facebook/pages ── isActive 토글
+    if (req.method === "PATCH" && path === "/facebook/pages") {
+      try {
+        const db = admin.firestore();
+        const { workspaceId: _wsId, docId } = req.query;
+        if (!docId) return res.status(400).json({ error: "docId 필수" });
+        const { isActive } = req.body || {};
+        const workspaceId = resolveWorkspaceId(_wsId);
+        await db.collection("workspaces").doc(workspaceId)
+          .collection("facebook_pages").doc(docId)
+          .update({
+            isActive: Boolean(isActive),
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+        return res.json({ success: true });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── POST /facebook/pages/token/check ── 페이지 토큰 유효성 실시간 확인
+    if (req.method === "POST" && path === "/facebook/pages/token/check") {
+      try {
+        const db = admin.firestore();
+        const { workspaceId: _wsId, docId } = req.query;
+        if (!docId) return res.status(400).json({ error: "docId 필수" });
+        const workspaceId = resolveWorkspaceId(_wsId);
+
+        const ref = db.collection("workspaces").doc(workspaceId)
+          .collection("facebook_pages").doc(docId);
+        const doc = await ref.get();
+        if (!doc.exists) return res.status(404).json({ error: "페이지를 찾을 수 없습니다." });
+
+        const data = doc.data() || {};
+        const { pageId, pageAccessToken, pageName, sourceUserAccessToken, appId, appSecret } = data;
+        if (!pageId || !pageAccessToken) {
+          return res.status(400).json({ error: "pageId/pageAccessToken이 없습니다." });
+        }
+
+        let tokenExpiresAt = data.tokenExpiresAt?.toDate?.() || null;
+        try {
+          const validated = await validatePageAccessToken(pageId, pageAccessToken);
+          if (sourceUserAccessToken && appId && appSecret) {
+            try {
+              const tokenInfo = await debugIgToken(sourceUserAccessToken, appId, appSecret);
+              tokenExpiresAt = tokenInfo.expiresAt || tokenExpiresAt;
+            } catch (_) { /* page token validation만으로도 유효 판단 */ }
+          }
+
+          await ref.set({
+            tokenStatus: "valid",
+            tokenExpiresAt: tokenExpiresAt ? admin.firestore.Timestamp.fromDate(tokenExpiresAt) : null,
+            lastValidatedAt: admin.firestore.FieldValue.serverTimestamp(),
+            lastTokenError: admin.firestore.FieldValue.delete(),
+            pageName: validated.pageName || pageName || pageId,
+            pageCategory: validated.pageCategory || data.pageCategory || "",
+            pictureUrl: validated.pictureUrl || data.pictureUrl || "",
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          }, { merge: true });
+
+          return res.json({
+            valid: true,
+            pageName: validated.pageName || pageName || pageId,
+            tokenExpiresAt: tokenExpiresAt ? tokenExpiresAt.toISOString() : null,
+          });
+        } catch (err) {
+          await ref.set({
+            tokenStatus: "invalid",
+            lastValidatedAt: admin.firestore.FieldValue.serverTimestamp(),
+            lastTokenError: err.message,
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          }, { merge: true });
+          return res.json({ valid: false, error: err.message });
+        }
+      } catch (err) {
+        console.error("[POST /facebook/pages/token/check] 오류:", err.message);
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── POST /facebook/pages/token/refresh ── 페이지 토큰 즉시 갱신
+    if (req.method === "POST" && path === "/facebook/pages/token/refresh") {
+      try {
+        const db = admin.firestore();
+        const { workspaceId: _wsId, docId } = req.query;
+        if (!docId) return res.status(400).json({ error: "docId 필수" });
+        const workspaceId = resolveWorkspaceId(_wsId);
+
+        const ref = db.collection("workspaces").doc(workspaceId)
+          .collection("facebook_pages").doc(docId);
+        const doc = await ref.get();
+        if (!doc.exists) return res.status(404).json({ error: "페이지를 찾을 수 없습니다." });
+
+        const data = doc.data() || {};
+        const { pageId, pageName, sourceUserAccessToken, appId, appSecret } = data;
+        if (!sourceUserAccessToken || !appId || !appSecret) {
+          return res.status(400).json({ error: "토큰 갱신을 위해 appId, appSecret, sourceUserAccessToken이 필요합니다." });
+        }
+
+        const { accessToken: newUserToken, expiresIn } = await refreshIgToken(sourceUserAccessToken, appId, appSecret);
+        const discoveredPages = await discoverManagedFacebookPages(newUserToken);
+        const selectedPage = discoveredPages.find((page) => String(page.pageId) === String(pageId));
+        if (!selectedPage) {
+          throw new Error("갱신된 토큰에서 현재 페이지를 찾을 수 없습니다.");
+        }
+
+        let tokenExpiresAt = new Date(Date.now() + (expiresIn || 5184000) * 1000);
+        try {
+          const tokenInfo = await debugIgToken(newUserToken, appId, appSecret);
+          if (tokenInfo.expiresAt) tokenExpiresAt = tokenInfo.expiresAt;
+        } catch (_) { /* expiresIn fallback */ }
+
+        const validated = await validatePageAccessToken(selectedPage.pageId, selectedPage.pageAccessToken);
+
+        await ref.set({
+          pageAccessToken: selectedPage.pageAccessToken,
+          pageName: validated.pageName || selectedPage.pageName || pageName || pageId,
+          pageCategory: validated.pageCategory || selectedPage.pageCategory || data.pageCategory || "",
+          pictureUrl: validated.pictureUrl || selectedPage.pictureUrl || data.pictureUrl || "",
+          sourceUserAccessToken: newUserToken,
+          tokenExpiresAt: tokenExpiresAt ? admin.firestore.Timestamp.fromDate(tokenExpiresAt) : null,
+          tokenRefreshedAt: admin.firestore.FieldValue.serverTimestamp(),
+          pageAccessTokenUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          lastValidatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          tokenStatus: "valid",
+          lastTokenError: admin.firestore.FieldValue.delete(),
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        }, { merge: true });
+
+        return res.json({
+          success: true,
+          pageName: validated.pageName || selectedPage.pageName || pageName || pageId,
+          tokenExpiresAt: tokenExpiresAt ? tokenExpiresAt.toISOString() : null,
+        });
+      } catch (err) {
+        console.error("[POST /facebook/pages/token/refresh] 오류:", err.message);
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── PATCH /facebook/pages/settings ── 페이지 설정 수정
+    if (req.method === "PATCH" && path === "/facebook/pages/settings") {
+      try {
+        const db = admin.firestore();
+        const { workspaceId: _wsId, docId } = req.query;
+        if (!docId) return res.status(400).json({ error: "docId 필수" });
+        const workspaceId = resolveWorkspaceId(_wsId);
+        const { deliveryConfig, analysisPrompt, analysisModel, pageName, reportGroupName } = req.body || {};
+        const update = { updatedAt: admin.firestore.FieldValue.serverTimestamp() };
+        if (deliveryConfig !== undefined) update.deliveryConfig = deliveryConfig;
+        if (analysisPrompt !== undefined) update.analysisPrompt = String(analysisPrompt);
+        if (analysisModel !== undefined) {
+          if (!FB_ANALYSIS_MODELS.has(analysisModel)) {
+            return res.status(400).json({ error: "지원하지 않는 AI 모델입니다" });
+          }
+          update.analysisModel = analysisModel;
+        }
+        if (pageName !== undefined) update.pageName = String(pageName);
+        if (reportGroupName !== undefined) update.reportGroupName = String(reportGroupName || "").trim();
+        await db.collection("workspaces").doc(workspaceId)
+          .collection("facebook_pages").doc(docId)
+          .update(update);
+        return res.json({ success: true });
+      } catch (err) {
+        console.error("[PATCH /facebook/pages/settings] 오류:", err.message);
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── DELETE /facebook/pages ── 페이지 삭제 + 리포트 정리
+    if (req.method === "DELETE" && path === "/facebook/pages") {
+      try {
+        const db = admin.firestore();
+        const { workspaceId: _wsId, docId } = req.query;
+        if (!docId) return res.status(400).json({ error: "docId 필수" });
+        const workspaceId = resolveWorkspaceId(_wsId);
+        await db.collection("workspaces").doc(workspaceId)
+          .collection("facebook_pages").doc(docId).delete();
+
+        const reportsSnap = await db.collection("workspaces").doc(workspaceId)
+          .collection("facebook_page_reports").get();
+        const deleteOps = [];
+        for (const dateDoc of reportsSnap.docs) {
+          const reportPagesSnap = await dateDoc.ref.collection("pages").get();
+          for (const reportDoc of reportPagesSnap.docs) {
+            const reportData = reportDoc.data() || {};
+            const sourcePageDocIds = Array.isArray(reportData.sourcePageDocIds) ? reportData.sourcePageDocIds : [];
+            if (!sourcePageDocIds.includes(docId)) continue;
+            if (sourcePageDocIds.length <= 1) deleteOps.push(reportDoc.ref.delete());
+          }
+        }
+        if (deleteOps.length) await Promise.all(deleteOps);
+
+        return res.json({ success: true, reportsDeleted: deleteOps.length });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── GET /facebook/page/report ── 페이지 리포트 조회
+    if (req.method === "GET" && path === "/facebook/page/report") {
+      try {
+        const db = admin.firestore();
+        const workspaceId = resolveWorkspaceId(req.query.workspaceId);
+        const { date } = req.query;
+        if (!date) return res.status(400).json({ error: "date 필수 (YYYY-MM-DD)" });
+        const snap = await db
+          .collection("workspaces").doc(workspaceId)
+          .collection("facebook_page_reports").doc(date)
+          .collection("pages").get();
+        const reports = snap.docs.map((d) => ({ docId: d.id, ...d.data() }));
+        return res.json({ date, reports });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── GET /facebook/page/available-dates ── 페이지 리포트 존재 날짜 목록
+    if (req.method === "GET" && path === "/facebook/page/available-dates") {
+      try {
+        const db = admin.firestore();
+        const workspaceId = resolveWorkspaceId(req.query.workspaceId);
+        const snap = await db
+          .collection("workspaces").doc(workspaceId)
+          .collection("facebook_page_reports")
+          .orderBy("updatedAt", "desc")
+          .limit(60)
+          .get();
+        return res.json({ dates: snap.docs.map((d) => d.id) });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── POST /facebook/page/pipeline/trigger ── 페이지 파이프라인 수동 실행 (이메일 미발송)
+    if (req.method === "POST" && path === "/facebook/page/pipeline/trigger") {
+      try {
+        const { workspaceId, date } = req.body || {};
+        const results = await runFacebookPagePipeline(workspaceId || null, date || null, { skipEmail: true });
+        return res.json({ success: true, results });
+      } catch (err) {
+        console.error("[/facebook/page/pipeline/trigger] 오류:", err.message);
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── POST /facebook/page/email/trigger ── 페이지 이메일 수동 발송 (주의: 실제 발송)
+    if (req.method === "POST" && path === "/facebook/page/email/trigger") {
+      try {
+        const { workspaceId, date } = req.body || {};
+        const result = await runFacebookPageEmailSender(workspaceId || null, date || null);
+        return res.json({ success: true, result });
+      } catch (err) {
+        console.error("[/facebook/page/email/trigger] 오류:", err.message);
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
     // ── PATCH /facebook/session ── 쿠키 JSON 저장
     if (req.method === "PATCH" && path === "/facebook/session") {
       try {
@@ -1816,7 +2232,7 @@ exports.api = onRequest(
             loungeUrl: String(loungeUrl).replace(/\/$/, ""),
             isActive: true,
             deliveryConfig: { email: { isEnabled: false, recipients: [] } },
-            analysisPrompt: "",
+            analysisPrompt: DEFAULT_NAVER_LOUNGE_ANALYSIS_PROMPT,
             analysisModel: "",
             createdAt: admin.firestore.FieldValue.serverTimestamp(),
           });
@@ -2195,6 +2611,19 @@ exports.facebookGroupPipeline = onSchedule(
     console.log("[facebookGroupPipeline] 스케줄 실행 시작 (KST 09:00)");
     await runFacebookGroupPipeline(null, null, { skipEmail: false });
     console.log("[facebookGroupPipeline] 스케줄 실행 완료");
+  }
+);
+
+// ══════════════════════════════════════════════════════
+//  Cloud Scheduler — 매일 KST 09:05 (Facebook 페이지 API 수집 + 리포트 생성 + 이메일 발송)
+//  UTC 00:05 = KST 09:05 | 그룹 크롤링과 부하 분산
+// ══════════════════════════════════════════════════════
+exports.facebookPagePipeline = onSchedule(
+  { schedule: "5 0 * * *", timeoutSeconds: 800, memory: "512MiB" },
+  async () => {
+    console.log("[facebookPagePipeline] 스케줄 실행 시작 (KST 09:05)");
+    await runFacebookPagePipeline(null, null, { skipEmail: false });
+    console.log("[facebookPagePipeline] 스케줄 실행 완료");
   }
 );
 

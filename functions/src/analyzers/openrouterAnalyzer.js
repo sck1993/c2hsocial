@@ -1,6 +1,13 @@
 const axios = require("axios");
 
 const OPENROUTER_API = "https://openrouter.ai/api/v1/chat/completions";
+const DEFAULT_NAVER_LOUNGE_ANALYSIS_PROMPT = `다음 형식으로 요약하라.
+
+[전체 요약] 오늘 커뮤니티의 전반적인 분위기를 1-2문장으로 기술.
+[플레이 반응] 최근 업데이트 또는 신규 콘텐츠에 대한 유저 반응.
+[요구/건의] 유저들이 게임에 바라는 내용 또는 건의사항.
+
+각 카테고리에 해당 내용이 없으면 "특이사항 없음"으로 기재한다.`;
 
 /**
  * LLM 응답 문자열에서 JSON 객체를 추출. 파싱 실패 시 null 반환.
@@ -450,24 +457,40 @@ ${commentLines || "(댓글 없음)"}`;
  *   각 post: { postUrl, authorName, text, publishedAt, reactions, commentCount, comments[] }
  * @param {string}   [opts.customPrompt] - 사용자 커스텀 분석 지시사항
  * @param {string}   [opts.model]        - 사용할 모델 (기본: OPENROUTER_MODEL)
- * @param {string}   [opts.platform]     - facebook | naver_lounge
+ * @param {string}   [opts.pageName]      - Facebook 페이지 이름
+ * @param {string}   [opts.platform]     - facebook | facebook_page | naver_lounge
  * @returns {Promise<{ summary, sentiment, keywords, issues, usage }>}
  */
-async function analyzeFacebookGroupPosts({ groupName, date, posts, customPrompt, model, platform = "facebook" }) {
+async function analyzeFacebookGroupPosts({ groupName, pageName, date, posts, customPrompt, model, platform = "facebook" }) {
   const resolvedModel = model || process.env.OPENROUTER_MODEL;
   const isNaverLounge = platform === "naver_lounge";
+  const isFacebookPage = platform === "facebook_page";
+  const targetName = pageName || groupName || "";
+  const platformLabel = isNaverLounge ? "네이버 라운지" : (isFacebookPage ? "Facebook 페이지" : "Facebook 그룹");
+  const effectiveCustomPrompt = String(customPrompt || "").trim();
+  const naverSummaryPrompt = effectiveCustomPrompt || DEFAULT_NAVER_LOUNGE_ANALYSIS_PROMPT;
+
+  function flattenCommentLines(comments = []) {
+    const lines = [];
+
+    for (const comment of comments) {
+      lines.push(`    - ${comment.author || "익명"}: ${(comment.text || "").slice(0, 100)}`);
+      for (const reply of comment.replies || []) {
+        lines.push(`      ㄴ ${reply.author || "익명"}: ${(reply.text || "").slice(0, 100)}`);
+      }
+    }
+
+    return lines.slice(0, 20).join("\n");
+  }
 
   // 게시글 텍스트 구성 (본문 200자 + 댓글 최대 20개)
   const postsText = (posts || [])
     .slice(0, 50) // 최대 50개
     .map((p, i) => {
-      const text = (p.text || "").slice(0, 200);
-      const commentLines = (p.comments || [])
-        .slice(0, 20)
-        .map((c) => `    - ${c.author || "익명"}: ${(c.text || "").slice(0, 100)}`)
-        .join("\n");
+      const text = (p.text || p.message || "").slice(0, 200);
+      const commentLines = flattenCommentLines(p.comments || []);
       return [
-        `[${i + 1}] ${p.authorName || "익명"} (반응 ${p.reactions || 0}, 댓글 ${p.commentCount || 0}개)`,
+        `[${i + 1}] ${p.authorName || targetName || "익명"} (반응 ${p.reactions || 0}, 댓글 ${p.commentCount || 0}개)`,
         `    본문: ${text || "(없음)"}`,
         commentLines ? `    댓글:\n${commentLines}` : "    댓글: 없음",
       ].join("\n");
@@ -475,17 +498,12 @@ async function analyzeFacebookGroupPosts({ groupName, date, posts, customPrompt,
     .join("\n\n");
 
   const summaryFormatGuide = isNaverLounge ? `
-[summary 필드 HTML 형식 규칙]
-- summary 값은 HTML 태그가 포함된 문자열입니다.
-- 각 섹션은 이모지 + <strong>섹션명</strong>으로 시작하세요.
-- 섹션 사이는 <br><br>로 구분하세요.
-- 중요한 표현·수치·키워드는 <strong>굵게</strong> 처리하세요.
-- 사용할 섹션 (내용이 없으면 해당 섹션 생략):
-  📊 <strong>전체 동향</strong> — 오늘 라운지의 핵심 흐름 2-3문장
-  🎮 <strong>게임/콘텐츠 반응</strong> — 업데이트, 이벤트, 콘텐츠 관련 반응
-  💬 <strong>전반 감정</strong> — 유저 분위기와 감정 흐름
-  📢 <strong>주요 의견/건의</strong> — 개선 요구, 건의, 반복 요청
-  🚨 <strong>리스크 신호</strong> — 불만 급증, 이탈 조짐, 운영 리스크`
+[summary 필드 작성 규칙]
+- summary 값은 아래 3개 카테고리를 이 순서대로 반드시 모두 포함한 문자열입니다.
+- 각 카테고리 제목은 정확히 [전체 요약], [플레이 반응], [요구/건의] 로 시작하세요.
+- 각 카테고리 내용은 1~2문장 이내로 간결하게 작성하세요.
+- 해당 카테고리에 분석할 내용이 없으면 정확히 "특이사항 없음"이라고 작성하세요.
+- 불필요한 추가 섹션, 이모지, 마크다운 코드블록은 넣지 마세요.`
     : `
 [summary 필드 HTML 형식 규칙]
 - summary 값은 HTML 태그가 포함된 문자열입니다.
@@ -493,19 +511,28 @@ async function analyzeFacebookGroupPosts({ groupName, date, posts, customPrompt,
 - 섹션 사이는 <br><br>로 구분하세요.
 - 중요한 표현·수치·키워드는 <strong>굵게</strong> 처리하세요.
 - 사용할 섹션 (내용이 없으면 해당 섹션 생략):
-  📊 <strong>전체 동향</strong> — 오늘 그룹의 핵심 흐름 2-3문장
-  📢 <strong>주요 의견/건의</strong> — 멤버들의 요구나 건의사항`;
+  📊 <strong>전체 동향</strong> — 오늘 ${isFacebookPage ? "페이지 게시물" : "그룹"}의 핵심 흐름 2-3문장
+  📢 <strong>${isFacebookPage ? "주요 반응/문의" : "주요 의견/건의"}</strong> — ${isFacebookPage ? "유저 댓글에서 반복된 질문, 요청, 불만, 호응" : "멤버들의 요구나 건의사항"}`;
 
-  const defaultInstruction = `${isNaverLounge ? "네이버 라운지 유저들의 게시글과 댓글 반응을 분석하여 오늘 해당 라운지의 동향을 파악하세요." : "그룹 멤버들의 게시글과 댓글 반응을 분석하여 오늘 해당 그룹의 동향을 파악하세요."}
-${customPrompt ? `\n추가 지시사항: ${customPrompt}` : ""}`;
+  const defaultInstruction = isNaverLounge
+    ? `네이버 라운지 유저들의 게시글과 댓글 반응을 분석하여 오늘 해당 라운지의 동향을 파악하세요.
+반드시 아래 기본 요약 형식을 그대로 따르세요.
+${naverSummaryPrompt}`
+    : `${isFacebookPage
+      ? "공식 운영 중인 Facebook 페이지의 게시물과 유저 댓글 반응을 분석하여 오늘 해당 페이지의 여론과 운영 이슈를 파악하세요."
+      : "그룹 멤버들의 게시글과 댓글 반응을 분석하여 오늘 해당 그룹의 동향을 파악하세요."}
+${effectiveCustomPrompt ? `\n추가 지시사항: ${effectiveCustomPrompt}` : ""}`;
 
   const issueGuide = isNaverLounge
     ? `- 포함해야 하는 이슈: 업데이트/이벤트 불만, 버그 제보, 보상/운영 논란, 과금·결제 불만, 고객지원 민원, 분쟁 확산
 - 제외해야 하는 것: 가벼운 잡담, 일반적인 후기, 단순 칭찬`
-    : `- 포함해야 하는 이슈: 분쟁, 논란, 불만 급증, 스팸, 부적절한 콘텐츠, 주요 민원`;
+    : isFacebookPage
+      ? `- 포함해야 하는 이슈: 고객 문의 급증, 불만/클레임, 반복 질문, 배송/예약/구매 문의, 운영 공지 관련 혼선, 논란 확산
+- 제외해야 하는 것: 단순 인사, 짧은 공감, 일반적인 반응`
+      : `- 포함해야 하는 이슈: 분쟁, 논란, 불만 급증, 스팸, 부적절한 콘텐츠, 주요 민원`;
 
   const systemPrompt = `당신은 소셜 미디어 동향 분석 전문가입니다.
-${isNaverLounge ? "네이버 라운지" : "Facebook 그룹"}의 게시글과 댓글 데이터를 분석하여 아래 JSON 형식으로만 응답하세요.
+${platformLabel}의 게시글과 댓글 데이터를 분석하여 아래 JSON 형식으로만 응답하세요.
 마크다운 코드블록 없이 순수 JSON만 출력하세요.
 ${summaryFormatGuide}
 
@@ -541,7 +568,7 @@ ${issueGuide}
     }
   }
 
-  const userTextContent = `그룹명: ${groupName}
+  const userTextContent = `${isFacebookPage ? "페이지명" : "그룹명"}: ${targetName}
 날짜: ${date}
 게시글 수: ${(posts || []).length}개${imageBlocks.length > 0 ? `\n첨부 이미지: ${imageBlocks.length}장 (아래 게시글에서 수집된 순서)` : ""}
 
@@ -553,7 +580,7 @@ ${postsText || "(게시글 없음)"}`;
     : { role: "user", content: userTextContent };
 
   if (imageBlocks.length > 0) {
-    console.log(`[openrouter] Facebook 그룹 vision 분석: 이미지 ${imageBlocks.length}장 포함`);
+    console.log(`[openrouter] ${platformLabel} vision 분석: 이미지 ${imageBlocks.length}장 포함`);
   }
 
   const payload = {
@@ -581,7 +608,7 @@ ${postsText || "(게시글 없음)"}`;
   const parsed = extractJson(content);
 
   if (!parsed) {
-    console.warn("[openrouter] Facebook 그룹 리포트 JSON 파싱 실패. 원문:", content.slice(0, 300));
+    console.warn(`[openrouter] ${platformLabel} 리포트 JSON 파싱 실패. 원문:`, content.slice(0, 300));
     return {
       summary: content,
       sentiment: { positive: 0, neutral: 100, negative: 0 },
@@ -616,4 +643,5 @@ module.exports = {
   analyzeInstagramPostComment,
   analyzeFacebookGroupPosts,
   DEFAULT_IG_POST_COMMENT_PROMPT,
+  DEFAULT_NAVER_LOUNGE_ANALYSIS_PROMPT,
 };

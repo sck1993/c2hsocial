@@ -1137,6 +1137,121 @@ async function sendFacebookEmailReport({ recipients, groupName, groupUrl, date, 
 }
 
 /**
+ * Facebook 페이지 리포트 HTML 빌드
+ */
+function buildFacebookPageEmailHTML({ pageName, date, report }) {
+  const displayDate = formatKSTDate(date);
+  const sourcePages = Array.isArray(report.sourcePages) ? report.sourcePages : [];
+  const sourcePageNames = sourcePages.map((page) => page.pageName || page.pageId).filter(Boolean);
+  const stats = [
+    { label: "수집 게시글", value: String(report.postCount || 0) },
+    { label: "총 댓글 수", value: (report.totalComments || 0).toLocaleString() },
+    { label: "대댓글 수", value: (report.totalReplies || 0).toLocaleString() },
+  ];
+  const statCards = stats.map((s) => `
+    <td style="width:33%;padding:0 8px;text-align:center">
+      <div style="background:#f1f5f9;border-radius:12px;padding:16px 10px">
+        <div style="font-size:22px;font-weight:700;color:#1e293b">${escapeHtml(s.value)}</div>
+        <div style="font-size:11px;color:#64748b;margin-top:4px">${escapeHtml(s.label)}</div>
+      </div>
+    </td>`).join("");
+
+  const issues = report.aiIssues || [];
+  const issueRows = issues.map((issue) => {
+    const postUrl = issue.postIndex
+      ? (report.posts || [])[issue.postIndex - 1]?.postUrl || null
+      : null;
+    const linkBtn = postUrl
+      ? `<a href="${escapeHtml(postUrl)}" style="display:inline-block;font-size:11px;color:#6366f1;text-decoration:none;border:1px solid #c7d2fe;border-radius:4px;padding:1px 6px">게시글 보기 ↗</a>`
+      : "";
+    return `
+    <div style="padding:12px 14px;background:#eff6ff;border-left:3px solid #2563eb;border-radius:0 8px 8px 0;margin-bottom:8px">
+      <div style="font-size:13px;font-weight:600;color:#1d4ed8">${escapeHtml(issue.title || "")}</div>
+      ${linkBtn ? `<div style="margin-top:4px">${linkBtn}</div>` : ""}
+      <div style="font-size:12px;color:#1e3a8a;margin-top:4px">${escapeHtml(issue.description || "")}</div>
+    </div>`;
+  }).join("");
+
+  const crawlStatusBadge = (() => {
+    const s = report.crawlStatus || "ok";
+    if (s === "ok") return `<span style="color:#16a34a;font-size:11px">● 정상 수집</span>`;
+    if (s === "partial") return `<span style="color:#d97706;font-size:11px">● 부분 수집</span>`;
+    return `<span style="color:#dc2626;font-size:11px">● ${escapeHtml(s)}</span>`;
+  })();
+
+  return `<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Facebook 페이지 리포트 - ${escapeHtml(pageName)} (${date})</title>
+</head>
+<body style="margin:0;padding:0;background:#f8fafc;font-family:-apple-system,'Malgun Gothic','맑은 고딕',sans-serif">
+  <div style="display:none;max-height:0;overflow:hidden;mso-hide:all">${escapeHtml(pageName)} Facebook 페이지 ${displayDate} 일일 리포트</div>
+  <div style="max-width:620px;margin:32px auto;background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.1)">
+    <div style="background:linear-gradient(135deg,#1877f2 0%,#60a5fa 100%);padding:28px 32px">
+      <div style="color:#dbeafe;font-size:11px;letter-spacing:.08em;margin-bottom:6px">AI SOCIAL LISTENING · DAILY REPORT</div>
+      <div style="color:#fff;font-size:22px;font-weight:700">${escapeHtml(pageName)}</div>
+      <div style="color:#dbeafe;font-size:14px;margin-top:4px">Facebook 페이지 &nbsp;·&nbsp; ${displayDate} &nbsp;${crawlStatusBadge}</div>
+    </div>
+
+    <div style="padding:28px 32px">
+      ${sourcePageNames.length ? `
+      <div style="margin-bottom:16px;font-size:12px;color:#64748b;line-height:1.7;background:#f8fafc;border:1px solid #dbeafe;border-radius:10px;padding:12px 14px">
+        <strong style="color:#1e293b">소스 페이지 ${sourcePageNames.length}개</strong><br>
+        ${escapeHtml(sourcePageNames.join(", "))}
+      </div>` : ""}
+
+      <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:24px">
+        <tr>${statCards}</tr>
+      </table>
+
+      ${report.aiSummary ? `
+      <div style="margin-bottom:24px">
+        <div style="font-size:13px;font-weight:700;color:#1e293b;margin-bottom:10px">📋 AI 동향 요약</div>
+        <div style="font-size:13px;color:#374151;line-height:1.8;padding:16px;background:#f8fafc;border-radius:10px;border-left:3px solid #1877f2">
+          ${sanitizeReportHtml(report.aiSummary)}
+        </div>
+      </div>` : ""}
+
+      ${issueRows ? `
+      <div style="margin-bottom:24px">
+        <div style="font-size:13px;font-weight:700;color:#1e293b;margin-bottom:10px">🚨 주요 이슈</div>
+        ${issueRows}
+      </div>` : ""}
+
+      ${(report.model || report.totalTokens) ? `
+      <div style="padding-top:12px;border-top:1px dashed #e2e8f0;font-size:11px;color:#94a3b8;text-align:right">
+        ${report.model ? `<span style="margin-right:10px;font-weight:500">${escapeHtml(report.model)}</span>` : ""}
+        ${report.totalTokens ? `<span style="margin-right:10px">입력 ${(report.promptTokens || 0).toLocaleString()} / 출력 ${(report.completionTokens || 0).toLocaleString()} / 합계 ${(report.totalTokens || 0).toLocaleString()} 토큰</span>` : ""}
+        ${report.cost != null ? `<span>비용 $${Number(report.cost).toFixed(4)}</span>` : ""}
+      </div>` : ""}
+    </div>
+
+    <div style="background:#f8fafc;padding:16px 32px;border-top:1px solid #e2e8f0;font-size:12px;color:#94a3b8;text-align:center">
+      Social Listener by 사업전략팀 &nbsp;·&nbsp; 이 메일은 자동 발송됩니다
+    </div>
+  </div>
+</body>
+</html>`;
+}
+
+/**
+ * Facebook 페이지 일일 이메일 발송
+ * @param {{ recipients, pageName, date, report }} opts
+ */
+async function sendFacebookPageEmailReport({ recipients, pageName, date, report }) {
+  const html = buildFacebookPageEmailHTML({ pageName, date, report });
+
+  await getTransporter().sendMail({
+    from: `Social Listener <${process.env.GMAIL_USER}>`,
+    to: recipients.join(", "),
+    subject: `[Social Listener] ${pageName} - Facebook 페이지 일일 리포트 (${date})`,
+    html,
+  });
+}
+
+/**
  * 네이버 라운지 리포트 HTML 빌드
  */
 function buildNaverLoungeEmailHTML({ loungeName, loungeUrl, date, report }) {
@@ -1544,4 +1659,4 @@ async function sendUnifiedEmailReport({ recipients, presetName, date, sections }
   await getTransporter().sendMail(mailOptions);
 }
 
-module.exports = { sendEmailReport, appendToGoogleSheet, sendWeeklyEmailReport, sendInstagramEmailReport, sendFacebookEmailReport, sendNaverLoungeEmailReport, sendUnifiedEmailReport };
+module.exports = { sendEmailReport, appendToGoogleSheet, sendWeeklyEmailReport, sendInstagramEmailReport, sendFacebookEmailReport, sendFacebookPageEmailReport, sendNaverLoungeEmailReport, sendUnifiedEmailReport };
