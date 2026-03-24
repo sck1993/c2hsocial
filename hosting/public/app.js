@@ -5442,11 +5442,15 @@
 
       const issues = (r.aiIssues || []).map(issue => {
         const sev = severity(issue.count || 1);
+        const postUrl = issue.postIndex ? (r.posts || [])[issue.postIndex - 1]?.postUrl || null : null;
+        const linkBtn = postUrl
+          ? `<a href="${postUrl}" target="_blank" rel="noopener" class="issue-msg-link">↗</a>`
+          : '';
         return `<div class="issue-card ${sev.cls}">
           <div class="issue-sev-bar"></div>
           <div class="issue-count-badge">${issue.count || 1}</div>
           <div class="issue-body">
-            <div class="issue-title">${escapeHtml(issue.title || '')}</div>
+            <div class="issue-title">${escapeHtml(issue.title || '')}${linkBtn}</div>
             <div class="issue-desc">${escapeHtml(issue.description || '')}</div>
           </div>
           <div class="issue-sev-label">${sev.label}</div>
