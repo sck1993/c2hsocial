@@ -4,8 +4,8 @@
 
 디스코드, 유튜브 등 각종 소셜 플랫폼에서 등록한 계정 또는 서버의 지표, 유저 댓글, 동향 등을 수집하고 AI로 분석하여 리포트를 발간하는 툴.
 
-**현재 구현된 플랫폼:** Discord, Instagram, Facebook Group, Facebook Page, Naver Lounge
-**예정 플랫폼:** YouTube, 인터넷 사이트 크롤링
+**현재 구현된 플랫폼:** Discord, Instagram, Facebook Group, Facebook Page, Naver Lounge, DCInside
+**예정 플랫폼:** 인터넷 사이트 크롤링
 
 ---
 
@@ -30,7 +30,18 @@
 ### 이메일 발송 금지
 이메일 리포트 발송은 민감한 수신인이 지정되어 있으므로, 테스트 목적으로 임의 발송을 해서는 안 된다.
 이메일 발송이 필요한 경우 사용자에게 이유를 설명하고 명시적인 승낙을 받은 후 진행한다.
-해당 엔드포인트: `/report/trigger`, `/guilds/test-delivery`, `/instagram/email/trigger`, `/weekly-report/trigger`, `/facebook/email/trigger`, `/facebook/page/email/trigger`, `/naver/email/trigger`, `/report-presets/email/trigger`
+해당 엔드포인트: `/report/trigger`, `/guilds/test-delivery`, `/instagram/email/trigger`, `/weekly-report/trigger`, `/facebook/email/trigger`, `/facebook/page/email/trigger`, `/naver/email/trigger`, `/report-presets/email/trigger`, `/dcinside/email/trigger`
+
+### DCInside 수집 아키텍처
+DCInside는 GCP IP(AS15169)를 차단하므로 Cloud Run에서 직접 수집이 불가능하다.
+수집은 **Mac Mini(`judymoon.local`)에서 로컬 실행**하고, Cloud Run은 Firestore에 저장된 수집 데이터를 읽어 AI 분석·이메일 발송만 담당한다.
+
+- **Mac Mini 수집 스크립트**: `mac-collector/dcinsideLocalCollect.js`
+- **수집 데이터 Firestore 경로**: `workspaces/{wsId}/dcinside_collected/{date}/galleries/{docId}`
+- **Mac Mini crontab**: 매일 08:45 KST 자동 실행 (`45 8 * * *`)
+- **프로젝트 경로 (Mac Mini)**: `/Users/judymoon/Desktop/신건호/SocialListener/functions`
+
+수집 관련 버그 수정 시 Mac Mini에서 `git pull` 후 재수집 테스트가 필요하다.
 
 ### 코드 작업 후 처리
 - **규모가 큰 작업**: 완료 후 문법 확인 및 타입체크 실시 → Firebase 배포 진행
@@ -92,6 +103,7 @@ SocialListener/
 │   │   ├── facebookGroupDailyPipeline.js   # Facebook 그룹 크롤링/분석 파이프라인 (Playwright)
 │   │   ├── facebookPageDailyPipeline.js    # Facebook 페이지 Graph API 수집/분석 파이프라인
 │   │   ├── naverLoungeDailyPipeline.js     # 네이버 라운지 수집/분석/저장 파이프라인
+│   │   ├── dcinsideDailyPipeline.js        # DCInside Firestore 수집 데이터 읽기 → AI 분석 → 이메일
 │   │   ├── reportPresetDailyPipeline.js    # 리포트 프리셋 통합 이메일 파이프라인
 │   │   ├── reportDelivery.js               # 이메일(Gmail) + Google Sheets 발송
 │   │   ├── collectors/
@@ -102,12 +114,15 @@ SocialListener/
 │   │   │   ├── instagramCollectorCore.js   # Instagram 공통 factory/기반
 │   │   │   ├── facebookGroupCollector.js   # Playwright 기반 Facebook 그룹 크롤러
 │   │   │   ├── facebookPageCollector.js    # Facebook Graph API v22.0 페이지 수집기
-│   │   │   └── naverLoungeCollector.js     # HTTP(Axios) 기반 네이버 라운지 수집기
+│   │   │   ├── naverLoungeCollector.js     # HTTP(Axios) 기반 네이버 라운지 수집기
+│   │   │   └── dcinsideCollector.js        # cheerio 기반 DCInside HTML 스크래퍼
 │   │   ├── analyzers/
 │   │   │   └── openrouterAnalyzer.js       # OpenRouter AI 분석
 │   │   └── utils/
 │   │       └── dateUtils.js                # KST 날짜 헬퍼
 │   └── .env                                # 환경변수 (커밋 금지)
+├── mac-collector/
+│   └── dcinsideLocalCollect.js             # Mac Mini 전용 수집 스크립트 (GCP IP 차단 우회)
 └── hosting/
     └── public/
         ├── index.html            # SPA 대시보드
@@ -146,6 +161,7 @@ firebase deploy --only hosting
 | `instagramPipeline` | `0 0 * * *` | 09:00 | Instagram 수집/분석/이메일 |
 | `facebookPagePipeline` | `5 0 * * *` | 09:05 | Facebook 페이지 Graph API 수집/분석/이메일, timeout 800s |
 | `naverLoungePipeline` | `10 0 * * *` | 09:10 | 네이버 라운지 HTTP 수집/분석/이메일, timeout 800s |
+| `dcinsidePipeline` | `0 0 * * *` | 09:00 | DCInside: dcinside_collected 읽기 → AI 분석 → 이메일 |
 | `presetPipeline` | `30 0 * * *` | 09:30 | 리포트 프리셋 통합 이메일 발송 |
 
 ---
