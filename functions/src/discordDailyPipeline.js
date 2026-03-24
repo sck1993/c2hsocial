@@ -2,7 +2,7 @@
 
 const admin = require("firebase-admin");
 const { analyzeGuildMessages }               = require("./analyzers/openrouterAnalyzer");
-const { sendEmailReport, appendToGoogleSheet } = require("./reportDelivery");
+const { sendEmailReport, appendToGoogleSheet, logDelivery } = require("./reportDelivery");
 const { getKSTYesterdayString } = require("./utils/dateUtils");
 
 /**
@@ -71,28 +71,27 @@ function resolveIssueMessageIds(issues, channelsWithMessages) {
  * 이메일 발송 블록 (KO/EN 수신자 분리, 오류 격리).
  * runPipeline 과 reDeliver 양쪽에서 공유.
  */
-async function dispatchEmailForGuild(emailCfg, { guildName, guildId, date, report, label }) {
+async function dispatchEmailForGuild(emailCfg, { guildName, guildId, date, report, label }, db = null, workspaceId = null) {
   if (!emailCfg.isEnabled) return;
-  const recipientsKo = emailCfg.recipientsKo || emailCfg.recipients || [];
-  const recipientsEn = emailCfg.recipientsEn || [];
-  if (recipientsKo.length === 0 && recipientsEn.length === 0) {
+  const langRecipients = [
+    { lang: "ko", recipients: emailCfg.recipientsKo || emailCfg.recipients || [] },
+    { lang: "en", recipients: emailCfg.recipientsEn || [] },
+  ];
+  const hasAny = langRecipients.some(({ recipients }) => recipients.length > 0);
+  if (!hasAny) {
     console.log(`${label} 이메일 수신자 없음 — 발송 생략`);
     return;
   }
-  if (recipientsKo.length > 0) {
+  for (const { lang, recipients } of langRecipients) {
+    if (recipients.length === 0) continue;
     try {
-      await sendEmailReport({ recipients: recipientsKo, guildName, guildId, date, report, lang: "ko" });
-      console.log(`${label} 이메일(KO) 발송 완료 (${recipientsKo.length}명)`);
+      await sendEmailReport({ recipients, guildName, guildId, date, report, lang });
+      console.log(`${label} 이메일(${lang.toUpperCase()}) 발송 완료 (${recipients.length}명)`);
+      if (db && workspaceId) {
+        logDelivery(db, workspaceId, { platform: "discord", target: guildName, reportDate: date, lang, recipientCount: recipients.length });
+      }
     } catch (emailErr) {
-      console.error(`${label} 이메일(KO) 발송 실패:`, emailErr.message);
-    }
-  }
-  if (recipientsEn.length > 0) {
-    try {
-      await sendEmailReport({ recipients: recipientsEn, guildName, guildId, date, report, lang: "en" });
-      console.log(`${label} 이메일(EN) 발송 완료 (${recipientsEn.length}명)`);
-    } catch (emailErr) {
-      console.error(`${label} 이메일(EN) 발송 실패:`, emailErr.message);
+      console.error(`${label} 이메일(${lang.toUpperCase()}) 발송 실패:`, emailErr.message);
     }
   }
 }
@@ -210,7 +209,34 @@ async function runPipeline(filterWorkspaceId = null) {
         }
 
         if (channelsWithMessages.length === 0) {
-          console.log(`${guildLabel} 메시지 없음 — 스킵`);
+          console.log(`${guildLabel} 메시지 없음 — 빈 리포트 저장`);
+
+          const reportRef = db
+            .collection("workspaces").doc(workspaceId)
+            .collection("reports").doc(today)
+            .collection("guilds").doc(guildDocId);
+
+          await reportRef.set({
+            discordGuildId:   guildId,
+            guildName,
+            messageCount:     0,
+            noData:           true,
+            summary:          "",
+            summary_en:       "",
+            sentiment:        { positive: 0, neutral: 100, negative: 0 },
+            keywords:         [],
+            keywords_en:      [],
+            issues:           [],
+            channels:         [],
+            isAlertTriggered: false,
+            model:            process.env.OPENROUTER_MODEL || "",
+            promptTokens:     0,
+            completionTokens: 0,
+            totalTokens:      0,
+            cost:             null,
+            createdAt:        admin.firestore.FieldValue.serverTimestamp(),
+          });
+
           results.skipped++;
           continue;
         }
@@ -322,7 +348,7 @@ async function runPipeline(filterWorkspaceId = null) {
           isAlertTriggered,
         };
 
-        await dispatchEmailForGuild(emailCfg, { guildName, guildId, date: today, report: reportPayload, label: guildLabel });
+        await dispatchEmailForGuild(emailCfg, { guildName, guildId, date: today, report: reportPayload, label: guildLabel }, db, workspaceId);
 
         if (sheetsCfg.isEnabled && sheetsCfg.spreadsheetUrl) {
           try {
@@ -406,7 +432,7 @@ async function reDeliver(workspaceId, date) {
         isAlertTriggered: r.isAlertTriggered || false,
       };
 
-      await dispatchEmailForGuild(emailCfg, { guildName: r.guildName, guildId: r.discordGuildId || "", date, report: reportPayload, label: `${guildLabel} [reDeliver]` });
+      await dispatchEmailForGuild(emailCfg, { guildName: r.guildName, guildId: r.discordGuildId || "", date, report: reportPayload, label: `${guildLabel} [reDeliver]` }, db, workspaceId);
 
       if (sheetsCfg.isEnabled && sheetsCfg.spreadsheetUrl) {
         try {

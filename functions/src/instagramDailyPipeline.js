@@ -18,7 +18,7 @@ const {
   analyzeInstagramPostComment,
   DEFAULT_IG_POST_COMMENT_PROMPT,
 } = require("./analyzers/openrouterAnalyzer");
-const { sendInstagramEmailReport } = require("./reportDelivery");
+const { sendInstagramEmailReport, logDelivery } = require("./reportDelivery");
 
 // KST(UTC+9) 기준 어제 날짜 문자열 반환
 function getKSTYesterdayString() {
@@ -595,6 +595,7 @@ async function runInstagramPipeline(filterWorkspaceId = null, targetDate = null,
                 report: reportData,
               });
               console.log(`[instagramPipeline] 이메일 발송 완료 — ${username}`);
+              logDelivery(db, workspaceId, { platform: "instagram", target: username, reportDate: date, recipientCount: emailConfig.recipients.length });
             } catch (mailErr) {
               console.error(`[instagramPipeline] 이메일 발송 실패 — ${username}: ${mailErr.message}`);
             }

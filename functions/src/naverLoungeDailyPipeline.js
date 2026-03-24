@@ -16,7 +16,7 @@ const {
   isAuthError,
 } = require("./collectors/naverLoungeCollector");
 const { analyzeFacebookGroupPosts } = require("./analyzers/openrouterAnalyzer");
-const { sendNaverLoungeEmailReport } = require("./reportDelivery");
+const { sendNaverLoungeEmailReport, logDelivery } = require("./reportDelivery");
 const { getKSTYesterdayString } = require("./utils/dateUtils");
 
 const POST_GAP_MS = 400;     // 게시글별 댓글 수집 간격 ms
@@ -239,6 +239,7 @@ async function runNaverLoungePipeline(
             report: reportData,
           });
           console.log(`[naverLoungePipeline] 이메일 발송 완료: ${loungeName}`);
+          logDelivery(db, workspaceId, { platform: "naver_lounge", target: loungeName, reportDate: date, recipientCount: emailConfig.recipients.length });
         } catch (emailErr) {
           console.error(
             `[naverLoungePipeline] 이메일 발송 실패 (${loungeName}): ${emailErr.message}`

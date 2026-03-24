@@ -38,12 +38,18 @@ const {
   validatePageAccessToken,
 } = require("./collectors/facebookPageCollector");
 const { runNaverLoungePipeline, runNaverLoungeEmailSender } = require("./naverLoungeDailyPipeline");
+const { runDcinsidePipeline, runDcinsideEmailSender } = require("./dcinsideDailyPipeline");
 const { runReportPresetPipeline } = require("./reportPresetDailyPipeline");
-const { DEFAULT_NAVER_LOUNGE_ANALYSIS_PROMPT } = require("./analyzers/openrouterAnalyzer");
+const { DEFAULT_NAVER_LOUNGE_ANALYSIS_PROMPT, DEFAULT_DC_ANALYSIS_PROMPT } = require("./analyzers/openrouterAnalyzer");
 const {
   loadSessionFromFirestore: loadNlSession,
   saveSessionToFirestore: saveNlSession,
 } = require("./collectors/naverLoungeCollector");
+const {
+  loadDcSession,
+  saveDcSession,
+  parseGalleryUrl: parseDcGalleryUrl,
+} = require("./collectors/dcinsideCollector");
 
 admin.initializeApp();
 
@@ -70,6 +76,11 @@ const FB_ANALYSIS_MODELS = new Set([
   "google/gemini-3.1-flash-lite-preview",
 ]);
 const NL_ANALYSIS_MODELS = new Set([
+  "openai/gpt-5.4-mini",
+  "google/gemini-3-flash-preview",
+  "google/gemini-3.1-flash-lite-preview",
+]);
+const DC_ANALYSIS_MODELS = new Set([
   "openai/gpt-5.4-mini",
   "google/gemini-3-flash-preview",
   "google/gemini-3.1-flash-lite-preview",
@@ -2600,6 +2611,257 @@ exports.api = onRequest(
       }
     }
 
+    // ════════════════════════════════════════════════════════
+    //  디시인사이드
+    // ════════════════════════════════════════════════════════
+
+    // ── GET /dcinside/galleries ── 갤러리 목록
+    if (req.method === "GET" && path === "/dcinside/galleries") {
+      try {
+        const db = admin.firestore();
+        const workspaceId = resolveWorkspaceId(req.query.workspaceId);
+        const snap = await db
+          .collection("workspaces").doc(workspaceId)
+          .collection("dcinside_galleries")
+          .orderBy("createdAt", "asc")
+          .get();
+        const galleries = snap.docs.map((d) => ({ docId: d.id, ...d.data() }));
+        return res.json({ galleries });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── POST /dcinside/galleries ── 갤러리 등록
+    if (req.method === "POST" && path === "/dcinside/galleries") {
+      try {
+        const db = admin.firestore();
+        const { workspaceId: _wsId, galleryUrl, galleryName } = req.body || {};
+        if (!galleryUrl) return res.status(400).json({ error: "galleryUrl 필수" });
+        const workspaceId = resolveWorkspaceId(_wsId);
+
+        const { galleryId, galleryType } = parseDcGalleryUrl(galleryUrl);
+        if (!galleryId) return res.status(400).json({ error: "galleryId를 URL에서 추출할 수 없습니다" });
+
+        // 중복 확인
+        const existing = await db
+          .collection("workspaces").doc(workspaceId)
+          .collection("dcinside_galleries")
+          .where("galleryId", "==", galleryId)
+          .get();
+        if (!existing.empty) {
+          return res.status(409).json({ error: "이미 등록된 갤러리입니다", docId: existing.docs[0].id });
+        }
+
+        const docRef = await db
+          .collection("workspaces").doc(workspaceId)
+          .collection("dcinside_galleries")
+          .add({
+            platform: "dcinside",
+            galleryId,
+            galleryType,
+            galleryName: galleryName || galleryId,
+            galleryUrl: String(galleryUrl).replace(/\/$/, ""),
+            isActive: true,
+            deliveryConfig: { email: { isEnabled: false, recipients: [] } },
+            analysisPrompt: DEFAULT_DC_ANALYSIS_PROMPT,
+            analysisModel: "",
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+
+        return res.json({ success: true, docId: docRef.id, galleryId, galleryType });
+      } catch (err) {
+        console.error("[POST /dcinside/galleries] 오류:", err.message);
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── PATCH /dcinside/galleries ── isActive 토글
+    if (req.method === "PATCH" && path === "/dcinside/galleries") {
+      try {
+        const db = admin.firestore();
+        const { workspaceId: _wsId, docId } = req.query;
+        if (!docId) return res.status(400).json({ error: "docId 필수" });
+        const { isActive } = req.body || {};
+        const workspaceId = resolveWorkspaceId(_wsId);
+        await db.collection("workspaces").doc(workspaceId)
+          .collection("dcinside_galleries").doc(docId)
+          .update({ isActive: Boolean(isActive) });
+        return res.json({ success: true });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── PATCH /dcinside/galleries/settings ── 갤러리 설정 수정
+    if (req.method === "PATCH" && path === "/dcinside/galleries/settings") {
+      try {
+        const db = admin.firestore();
+        const { workspaceId: _wsId, docId } = req.query;
+        if (!docId) return res.status(400).json({ error: "docId 필수" });
+        const workspaceId = resolveWorkspaceId(_wsId);
+        const { deliveryConfig, analysisPrompt, analysisModel, galleryName } = req.body || {};
+        const update = {};
+        if (deliveryConfig  !== undefined) update.deliveryConfig  = deliveryConfig;
+        if (analysisPrompt  !== undefined) update.analysisPrompt  = String(analysisPrompt);
+        if (analysisModel   !== undefined) {
+          if (!DC_ANALYSIS_MODELS.has(analysisModel)) {
+            return res.status(400).json({ error: "지원하지 않는 AI 모델입니다" });
+          }
+          update.analysisModel = analysisModel;
+        }
+        if (galleryName !== undefined) update.galleryName = String(galleryName);
+        await db.collection("workspaces").doc(workspaceId)
+          .collection("dcinside_galleries").doc(docId)
+          .update(update);
+        return res.json({ success: true });
+      } catch (err) {
+        console.error("[PATCH /dcinside/galleries/settings] 오류:", err.message);
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── DELETE /dcinside/galleries ── 갤러리 삭제 + 리포트 정리
+    if (req.method === "DELETE" && path === "/dcinside/galleries") {
+      try {
+        const db = admin.firestore();
+        const { workspaceId: _wsId, docId } = req.query;
+        if (!docId) return res.status(400).json({ error: "docId 필수" });
+        const workspaceId = resolveWorkspaceId(_wsId);
+        await db.collection("workspaces").doc(workspaceId)
+          .collection("dcinside_galleries").doc(docId).delete();
+        const reportsSnap = await db.collection("workspaces").doc(workspaceId)
+          .collection("dcinside_reports").get();
+        const deleteOps = [];
+        for (const dateDoc of reportsSnap.docs) {
+          const ref = dateDoc.ref.collection("galleries").doc(docId);
+          const snap = await ref.get();
+          if (snap.exists) deleteOps.push(ref.delete());
+        }
+        if (deleteOps.length) await Promise.all(deleteOps);
+        return res.json({ success: true, reportsDeleted: deleteOps.length });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── GET /dcinside/report ── 리포트 조회
+    if (req.method === "GET" && path === "/dcinside/report") {
+      try {
+        const db = admin.firestore();
+        const workspaceId = resolveWorkspaceId(req.query.workspaceId);
+        const { date } = req.query;
+        if (!date) return res.status(400).json({ error: "date 필수 (YYYY-MM-DD)" });
+        const snap = await db
+          .collection("workspaces").doc(workspaceId)
+          .collection("dcinside_reports").doc(date)
+          .collection("galleries").get();
+        const reports = snap.docs.map((d) => ({ docId: d.id, ...d.data() }));
+        return res.json({ date, reports });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── GET /dcinside/available-dates ── 리포트 존재 날짜 목록
+    if (req.method === "GET" && path === "/dcinside/available-dates") {
+      try {
+        const db = admin.firestore();
+        const workspaceId = resolveWorkspaceId(req.query.workspaceId);
+        const snap = await db
+          .collection("workspaces").doc(workspaceId)
+          .collection("dcinside_reports")
+          .orderBy("updatedAt", "desc")
+          .limit(60)
+          .get();
+        const dates = snap.docs.map((d) => d.id);
+        return res.json({ dates });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── POST /dcinside/pipeline/trigger ── 파이프라인 수동 실행 (이메일 미발송)
+    if (req.method === "POST" && path === "/dcinside/pipeline/trigger") {
+      try {
+        const { workspaceId, date } = req.body || {};
+        const results = await runDcinsidePipeline(workspaceId || null, date || null, { skipEmail: true });
+        return res.json({ success: true, results });
+      } catch (err) {
+        console.error("[/dcinside/pipeline/trigger] 오류:", err.message);
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── POST /dcinside/email/trigger ── 이메일 수동 발송 (주의: 실제 발송)
+    if (req.method === "POST" && path === "/dcinside/email/trigger") {
+      try {
+        const { workspaceId, date } = req.body || {};
+        const result = await runDcinsideEmailSender(workspaceId || null, date || null);
+        return res.json({ success: true, result });
+      } catch (err) {
+        console.error("[/dcinside/email/trigger] 오류:", err.message);
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── PATCH /dcinside/session ── 세션 저장
+    if (req.method === "PATCH" && path === "/dcinside/session") {
+      try {
+        const db = admin.firestore();
+        const { workspaceId: _wsId, cookieHeader, userAgent } = req.body || {};
+        if (!String(cookieHeader || "").trim()) {
+          return res.status(400).json({ error: "cookieHeader 필수" });
+        }
+        if (!String(userAgent || "").trim()) {
+          return res.status(400).json({ error: "userAgent 필수" });
+        }
+        const workspaceId = resolveWorkspaceId(_wsId);
+        await saveDcSession(db, workspaceId, {
+          cookieHeader: String(cookieHeader).trim(),
+          userAgent: String(userAgent).trim(),
+        });
+        const cookieCount = String(cookieHeader).split(";").map((p) => p.trim()).filter(Boolean).length;
+        return res.json({ success: true, cookieCount });
+      } catch (err) {
+        console.error("[PATCH /dcinside/session] 오류:", err.message);
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── GET /dcinside/session/status ── 세션 상태 조회
+    if (req.method === "GET" && path === "/dcinside/session/status") {
+      try {
+        const db = admin.firestore();
+        const workspaceId = resolveWorkspaceId(req.query.workspaceId);
+        const session = await loadDcSession(db, workspaceId);
+        if (!session) return res.json({ exists: false, isValid: false });
+        return res.json({
+          exists: true,
+          isValid: session.isValid ?? false,
+          hasSession: Boolean(session.cookieHeader && session.userAgent),
+          userAgent: session.userAgent || "",
+          savedAt: session.savedAt?.toDate?.()?.toISOString() ?? null,
+          lastValidatedAt: session.lastValidatedAt?.toDate?.()?.toISOString() ?? null,
+        });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── DELETE /dcinside/session ── 세션 삭제
+    if (req.method === "DELETE" && path === "/dcinside/session") {
+      try {
+        const db = admin.firestore();
+        const workspaceId = resolveWorkspaceId(req.query.workspaceId);
+        await db.collection("workspaces").doc(workspaceId)
+          .collection("dcinside_session").doc("main").delete();
+        return res.json({ success: true });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
     // ── GET /report-presets ── 프리셋 목록 조회
     if (req.method === "GET" && path === "/report-presets") {
       try {
@@ -2684,6 +2946,32 @@ exports.api = onRequest(
         return res.json({ success: true, results });
       } catch (err) {
         console.error("[/report-presets/email/trigger] 오류:", err.message);
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── GET /delivery-logs ── 리포트 발송 기록 조회
+    if (req.method === "GET" && path === "/delivery-logs") {
+      try {
+        const db = admin.firestore();
+        const workspaceId = resolveWorkspaceId(req.query.workspaceId);
+        const limit = Math.min(parseInt(req.query.limit) || 200, 500);
+        const snap = await db
+          .collection("workspaces").doc(workspaceId)
+          .collection("delivery_logs")
+          .orderBy("sentAt", "desc")
+          .limit(limit)
+          .get();
+        const logs = snap.docs.map(d => {
+          const data = d.data();
+          return {
+            id: d.id,
+            ...data,
+            sentAt: data.sentAt?.toDate?.()?.toISOString() || null,
+          };
+        });
+        return res.json({ logs });
+      } catch (err) {
         return res.status(500).json({ error: err.message });
       }
     }
@@ -2789,6 +3077,19 @@ exports.naverLoungePipeline = onSchedule(
     console.log("[naverLoungePipeline] 스케줄 실행 시작 (KST 09:10)");
     await runNaverLoungePipeline(null, null, { skipEmail: false });
     console.log("[naverLoungePipeline] 스케줄 실행 완료");
+  }
+);
+
+// ══════════════════════════════════════════════════════
+//  Cloud Scheduler — 매일 KST 09:15 (디시인사이드)
+//  UTC 00:15 = KST 09:15
+// ══════════════════════════════════════════════════════
+exports.dcinsidePipeline = onSchedule(
+  { schedule: "15 0 * * *", timeoutSeconds: 800, memory: "512MiB" },
+  async () => {
+    console.log("[dcinsidePipeline] 스케줄 실행 시작 (KST 09:15)");
+    await runDcinsidePipeline(null, null, { skipEmail: false });
+    console.log("[dcinsidePipeline] 스케줄 실행 완료");
   }
 );
 

@@ -1,5 +1,6 @@
 "use strict";
 
+const admin = require("firebase-admin");
 const nodemailer = require("nodemailer");
 const { Resvg } = require("@resvg/resvg-js");
 const { google } = require("googleapis");
@@ -1364,6 +1365,140 @@ function buildNaverLoungeEmailHTML({ loungeName, loungeUrl, date, report }) {
 </html>`;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+//  디시인사이드 일별 이메일
+// ─────────────────────────────────────────────────────────────────────────────
+
+function buildDcinsideEmailHTML({ galleryName, galleryUrl, date, report }) {
+  const displayDate = formatKSTDate(date);
+  const HEADING = "font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#e5171e";
+  const sentiment = report.aiSentiment || {};
+  const pos = sentiment.positive || 0;
+  const neu = sentiment.neutral  || 0;
+  const neg = sentiment.negative || 0;
+  const issues = report.aiIssues || [];
+
+  const sentimentBar = `
+    <div style="display:flex;height:10px;border-radius:999px;overflow:hidden;margin:10px 0 10px;background:#e2e8f0">
+      <div style="width:${pos}%;background:#059669"></div>
+      <div style="width:${neu}%;background:#94a3b8"></div>
+      <div style="width:${neg}%;background:#dc2626"></div>
+    </div>
+    <div style="font-size:13px;line-height:1.6">
+      <span style="display:inline-block;color:#059669;font-weight:600;margin-right:16px">긍정 ${pos}%</span>
+      <span style="display:inline-block;color:#64748b;font-weight:600;margin-right:16px">중립 ${neu}%</span>
+      <span style="display:inline-block;color:#dc2626;font-weight:600">부정 ${neg}%</span>
+    </div>`;
+
+  const issueRows = issues.map((issue) => {
+    const postUrl = issue.postIndex
+      ? (report.posts || [])[issue.postIndex - 1]?.postUrl || null
+      : null;
+    const metaParts = [];
+    if (issue.count) metaParts.push(`<span style="display:inline-block;color:#c2410c;font-size:11px;margin-right:8px">${issue.count}회 언급</span>`);
+    if (issue.postIndex) metaParts.push(`<span style="display:inline-block;color:#92400e;font-size:11px;margin-right:8px">게시글 ${issue.postIndex}</span>`);
+    if (postUrl) {
+      metaParts.push(`<a href="${escapeHtml(postUrl)}" style="display:inline-block;font-size:11px;color:#e5171e;text-decoration:none;border:1px solid #fca5a5;border-radius:999px;padding:2px 8px;margin-top:2px">게시글 보기 ↗</a>`);
+    }
+    return `
+      <div style="padding:14px 16px;background:#fffbeb;border:1px solid #fde68a;border-left:4px solid #f59e0b;border-radius:12px;margin-bottom:10px">
+        <div style="font-size:14px;font-weight:700;color:#92400e">${escapeHtml(issue.title || "")}</div>
+        ${metaParts.length ? `<div style="margin-top:6px;line-height:1.8">${metaParts.join("")}</div>` : ""}
+        <div style="font-size:13px;color:#78350f;line-height:1.7;margin-top:6px">${escapeHtml(issue.description || "")}</div>
+      </div>`;
+  }).join("");
+
+  const issueSection = issueRows || `
+    <div style="padding:14px 16px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;font-size:13px;color:#64748b;line-height:1.7">
+      오늘은 별도로 부각된 주요 이슈가 감지되지 않았습니다.
+    </div>`;
+
+  const crawlStatusBadge = (() => {
+    const s = report.crawlStatus || "ok";
+    if (s === "ok") return `<span style="color:#fca5a5;font-size:11px">● 정상 수집</span>`;
+    if (s === "partial") return `<span style="color:#fde68a;font-size:11px">● 부분 수집</span>`;
+    return `<span style="color:#fca5a5;font-size:11px">● ${escapeHtml(s)}</span>`;
+  })();
+
+  const galleryButton = galleryUrl
+    ? `<a href="${escapeHtml(galleryUrl)}" style="display:inline-block;margin-top:14px;padding:8px 14px;border-radius:999px;background:rgba(255,255,255,.16);border:1px solid rgba(255,255,255,.28);color:#ffffff;font-size:12px;font-weight:600;text-decoration:none">갤러리 바로가기 ↗</a>`
+    : "";
+
+  const typeBadge = report.galleryType === "minor"
+    ? `<span style="font-size:11px;background:rgba(255,255,255,.18);border-radius:999px;padding:2px 8px;margin-left:8px">마이너 갤러리</span>`
+    : `<span style="font-size:11px;background:rgba(255,255,255,.18);border-radius:999px;padding:2px 8px;margin-left:8px">일반 갤러리</span>`;
+
+  return `<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>디시인사이드 리포트 - ${escapeHtml(galleryName)} (${date})</title>
+</head>
+<body style="margin:0;padding:0;background:#f8fafc;font-family:-apple-system,'Malgun Gothic','맑은 고딕',sans-serif">
+  <div style="display:none;max-height:0;overflow:hidden;mso-hide:all">${escapeHtml(galleryName)} 디시인사이드 ${displayDate} 일일 리포트</div>
+  <div style="max-width:620px;margin:32px auto;background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 1px 3px rgba(15,23,42,.12)">
+
+    <div style="background:linear-gradient(135deg,#e5171e 0%,#b91c1c 52%,#7f1d1d 100%);padding:28px 32px">
+      <div style="color:#fca5a5;font-size:11px;letter-spacing:.08em;margin-bottom:6px">AI SOCIAL LISTENING · DAILY REPORT</div>
+      <div style="color:#fff;font-size:22px;font-weight:700">${escapeHtml(galleryName)}${typeBadge}</div>
+      <div style="color:#fca5a5;font-size:14px;margin-top:6px">디시인사이드 &nbsp;·&nbsp; ${displayDate} &nbsp;${crawlStatusBadge}</div>
+      ${galleryButton}
+    </div>
+
+    <div style="background:#fffbeb;border-bottom:1px solid #fde68a;padding:10px 32px;font-size:12px;color:#92400e">
+      ⚠️ AI 분석 특성상 게시글 문맥이나 유저 의도를 일부 다르게 해석할 수 있습니다.
+    </div>
+
+    <div style="padding:28px 32px">
+      <div style="margin-bottom:24px">
+        <div style="${HEADING};margin-bottom:8px">갤러리 동향 요약</div>
+        <div style="font-size:14px;color:#374151;line-height:1.75;background:#f8fafc;border-left:3px solid #e5171e;border-radius:0 10px 10px 0;padding:14px 16px">
+          ${sanitizeReportHtml(formatSummaryHtml(report.aiSummary)) || "—"}
+        </div>
+      </div>
+
+      <div style="margin-bottom:24px">
+        <div style="${HEADING};margin-bottom:8px">감정 분석</div>
+        ${sentimentBar}
+        <div style="font-size:13px;color:#64748b;margin-top:8px">게시글 ${(report.postCount || 0).toLocaleString()}건 · 댓글 ${(report.totalComments || 0).toLocaleString()}개 기준</div>
+      </div>
+
+      <div style="margin-bottom:24px">
+        <div style="${HEADING};margin-bottom:8px">주요 이슈</div>
+        ${issueSection}
+      </div>
+
+      ${(report.model || report.totalTokens) ? `
+      <div style="padding-top:12px;border-top:1px dashed #e2e8f0;font-size:11px;color:#94a3b8;text-align:right">
+        ${report.model ? `<span style="margin-right:10px;font-weight:500">${escapeHtml(report.model)}</span>` : ""}
+        ${report.totalTokens ? `<span style="margin-right:10px">입력 ${(report.promptTokens || 0).toLocaleString()} / 출력 ${(report.completionTokens || 0).toLocaleString()} / 합계 ${(report.totalTokens || 0).toLocaleString()} 토큰</span>` : ""}
+        ${report.cost != null ? `<span>비용 $${Number(report.cost).toFixed(4)}</span>` : ""}
+      </div>` : ""}
+    </div>
+
+    <div style="background:#f8fafc;padding:16px 32px;border-top:1px solid #e2e8f0;font-size:12px;color:#94a3b8;text-align:center">
+      Social Listener by 사업전략팀 &nbsp;·&nbsp; 이 메일은 자동 발송됩니다
+    </div>
+  </div>
+</body>
+</html>`;
+}
+
+/**
+ * 디시인사이드 일일 이메일 발송
+ * @param {{ recipients, galleryName, galleryUrl, date, report }} opts
+ */
+async function sendDcinsideEmailReport({ recipients, galleryName, galleryUrl, date, report }) {
+  const html = buildDcinsideEmailHTML({ galleryName, galleryUrl, date, report });
+  await getTransporter().sendMail({
+    from:    `Social Listener <${process.env.GMAIL_USER}>`,
+    to:      recipients.join(", "),
+    subject: `[Social Listener] ${galleryName} - 디시인사이드 일일 리포트 (${date})`,
+    html,
+  });
+}
+
 /**
  * 네이버 라운지 일일 이메일 발송
  * @param {{ recipients, loungeName, loungeUrl, date, report }} opts
@@ -1657,4 +1792,24 @@ async function sendUnifiedEmailReport({ recipients, presetName, date, sections }
   await getTransporter().sendMail(mailOptions);
 }
 
-module.exports = { sendEmailReport, appendToGoogleSheet, sendWeeklyEmailReport, sendInstagramEmailReport, sendFacebookEmailReport, sendFacebookPageEmailReport, sendNaverLoungeEmailReport, sendUnifiedEmailReport };
+/**
+ * 이메일 발송 성공 후 delivery_logs 컬렉션에 기록.
+ * fire-and-forget — 로깅 실패가 메인 파이프라인을 중단하지 않도록 .catch 처리.
+ */
+function logDelivery(db, workspaceId, { platform, target, reportDate, lang = null, recipientCount }) {
+  db.collection("workspaces").doc(workspaceId)
+    .collection("delivery_logs")
+    .add({
+      platform,
+      reportType: "daily",
+      target,
+      reportDate,
+      lang,
+      recipientCount,
+      sentAt: admin.firestore.FieldValue.serverTimestamp(),
+      status: "success",
+    })
+    .catch((err) => console.warn("[delivery_logs] 기록 실패:", err.message));
+}
+
+module.exports = { sendEmailReport, appendToGoogleSheet, sendWeeklyEmailReport, sendInstagramEmailReport, sendFacebookEmailReport, sendFacebookPageEmailReport, sendNaverLoungeEmailReport, sendDcinsideEmailReport, sendUnifiedEmailReport, logDelivery };

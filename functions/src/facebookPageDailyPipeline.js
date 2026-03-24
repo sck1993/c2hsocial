@@ -7,7 +7,7 @@ const {
   validatePageAccessToken,
 } = require("./collectors/facebookPageCollector");
 const { analyzeFacebookGroupPosts } = require("./analyzers/openrouterAnalyzer");
-const { sendFacebookPageEmailReport } = require("./reportDelivery");
+const { sendFacebookPageEmailReport, logDelivery } = require("./reportDelivery");
 const {
   getKSTYesterdayString,
   getKSTMidnightMs,
@@ -415,6 +415,7 @@ async function runFacebookPagePipeline(filterWorkspaceId = null, targetDate = nu
           report: reportData,
         });
         console.log(`[facebookPagePipeline] 이메일 발송 완료: ${reportGroupName}`);
+        logDelivery(db, workspaceId, { platform: "facebook_page", target: reportGroupName, reportDate: date, recipientCount: recipients.length });
       } catch (emailErr) {
         console.error(`[facebookPagePipeline] 이메일 발송 실패 (${reportGroupName}): ${emailErr.message}`);
       }

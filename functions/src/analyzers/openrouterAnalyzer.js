@@ -9,6 +9,14 @@ const DEFAULT_NAVER_LOUNGE_ANALYSIS_PROMPT = `다음 형식으로 요약하라.
 
 각 카테고리에 해당 내용이 없으면 "특이사항 없음"으로 기재한다.`;
 
+const DEFAULT_DC_ANALYSIS_PROMPT = `다음 형식으로 요약하라.
+
+[전체 요약] 오늘 갤러리의 전반적인 분위기와 주요 화제를 1-2문장으로 기술.
+[주요 반응] 이슈·사건·콘텐츠에 대한 갤러 반응 및 의견.
+[요구/건의] 운영·관련 대상에 대한 갤러들의 요구사항 또는 개선 의견.
+
+각 카테고리에 해당 내용이 없으면 "특이사항 없음"으로 기재한다.`;
+
 /**
  * LLM 응답 문자열에서 JSON 객체를 추출. 파싱 실패 시 null 반환.
  */
@@ -465,10 +473,11 @@ async function analyzeFacebookGroupPosts({ groupName, pageName, date, posts, cus
   const resolvedModel = model || process.env.OPENROUTER_MODEL;
   const isNaverLounge = platform === "naver_lounge";
   const isFacebookPage = platform === "facebook_page";
+  const isDcinside = platform === "dcinside";
   const targetName = pageName || groupName || "";
-  const platformLabel = isNaverLounge ? "네이버 라운지" : (isFacebookPage ? "Facebook 페이지" : "Facebook 그룹");
+  const platformLabel = isNaverLounge ? "네이버 라운지" : isFacebookPage ? "Facebook 페이지" : isDcinside ? "디시인사이드" : "Facebook 그룹";
   const effectiveCustomPrompt = String(customPrompt || "").trim();
-  const naverSummaryPrompt = effectiveCustomPrompt || DEFAULT_NAVER_LOUNGE_ANALYSIS_PROMPT;
+  const naverSummaryPrompt = effectiveCustomPrompt || (isDcinside ? DEFAULT_DC_ANALYSIS_PROMPT : DEFAULT_NAVER_LOUNGE_ANALYSIS_PROMPT);
 
   function flattenCommentLines(comments = []) {
     const lines = [];
@@ -490,14 +499,14 @@ async function analyzeFacebookGroupPosts({ groupName, pageName, date, posts, cus
       const text = (p.text || p.message || "").slice(0, 200);
       const commentLines = flattenCommentLines(p.comments || []);
       return [
-        `[${i + 1}] ${p.authorName || targetName || "익명"} (반응 ${p.reactions || 0}, 댓글 ${p.commentCount || 0}개)`,
+        `[${i + 1}] ${p.authorName || targetName || "익명"} (추천 ${p.reactions || p.recommendCount || 0}, 댓글 ${p.commentCount || 0}개${isDcinside ? `, 조회 ${p.viewCount || 0}` : ""})`,
         `    본문: ${text || "(없음)"}`,
         commentLines ? `    댓글:\n${commentLines}` : "    댓글: 없음",
       ].join("\n");
     })
     .join("\n\n");
 
-  const summaryFormatGuide = isNaverLounge ? `
+  const summaryFormatGuide = (isNaverLounge || isDcinside) ? `
 [summary 필드 작성 규칙]
 - summary 값은 아래 3개 카테고리를 이 순서대로 반드시 모두 포함한 문자열입니다.
 - 각 카테고리 제목은 정확히 [전체 요약], [플레이 반응], [요구/건의] 로 시작하세요.
@@ -514,7 +523,11 @@ async function analyzeFacebookGroupPosts({ groupName, pageName, date, posts, cus
   📊 <strong>전체 동향</strong> — 오늘 ${isFacebookPage ? "페이지 게시물" : "그룹"}의 핵심 흐름 2-3문장
   📢 <strong>${isFacebookPage ? "주요 반응/문의" : "주요 의견/건의"}</strong> — ${isFacebookPage ? "유저 댓글에서 반복된 질문, 요청, 불만, 호응" : "멤버들의 요구나 건의사항"}`;
 
-  const defaultInstruction = isNaverLounge
+  const defaultInstruction = isDcinside
+    ? `디시인사이드 갤러리의 게시글과 댓글 반응을 분석하여 오늘 해당 갤러리의 동향을 파악하세요.
+반드시 아래 기본 요약 형식을 그대로 따르세요.
+${naverSummaryPrompt}`
+    : isNaverLounge
     ? `네이버 라운지 유저들의 게시글과 댓글 반응을 분석하여 오늘 해당 라운지의 동향을 파악하세요.
 반드시 아래 기본 요약 형식을 그대로 따르세요.
 ${naverSummaryPrompt}`
@@ -523,7 +536,10 @@ ${naverSummaryPrompt}`
       : "그룹 멤버들의 게시글과 댓글 반응을 분석하여 오늘 해당 그룹의 동향을 파악하세요."}
 ${effectiveCustomPrompt ? `\n추가 지시사항: ${effectiveCustomPrompt}` : ""}`;
 
-  const issueGuide = isNaverLounge
+  const issueGuide = isDcinside
+    ? `- 포함해야 하는 이슈: 논란·이슈 급증, 불만 집중, 특정 사건·사고 화제, 분쟁 확산, 반복 민원, 부정적 여론 형성
+- 제외해야 하는 것: 가벼운 잡담, 밈, 단순 유머, 일반적인 후기·소감`
+    : isNaverLounge
     ? `- 포함해야 하는 이슈: 업데이트/이벤트 불만, 버그 제보, 보상/운영 논란, 과금·결제 불만, 고객지원 민원, 분쟁 확산
 - 제외해야 하는 것: 가벼운 잡담, 일반적인 후기, 단순 칭찬`
     : isFacebookPage
@@ -568,7 +584,7 @@ ${issueGuide}
     }
   }
 
-  const userTextContent = `${isFacebookPage ? "페이지명" : "그룹명"}: ${targetName}
+  const userTextContent = `${isFacebookPage ? "페이지명" : isDcinside ? "갤러리명" : "그룹명"}: ${targetName}
 날짜: ${date}
 게시글 수: ${(posts || []).length}개${imageBlocks.length > 0 ? `\n첨부 이미지: ${imageBlocks.length}장 (아래 게시글에서 수집된 순서)` : ""}
 
@@ -644,4 +660,5 @@ module.exports = {
   analyzeFacebookGroupPosts,
   DEFAULT_IG_POST_COMMENT_PROMPT,
   DEFAULT_NAVER_LOUNGE_ANALYSIS_PROMPT,
+  DEFAULT_DC_ANALYSIS_PROMPT,
 };

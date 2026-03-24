@@ -264,9 +264,9 @@
 
 
     .sb-brand-name {
-      font-family: 'Gothic A1', sans-serif;
+      font-family: "Black Han Sans", sans-serif;
       font-size: .9rem;
-      font-weight: 700;
+      font-weight: 400;
       letter-spacing: -.01em;
       line-height: 1.2;
     }
@@ -345,7 +345,7 @@
       gap: .5rem;
       padding: .4375rem .625rem;
       border-radius: var(--r-sm);
-      font-size: .8125rem;
+      font-size: .875rem;
       font-weight: 600;
       letter-spacing: .01em;
       color: var(--text-2);
@@ -377,6 +377,9 @@
 
     .p-name {
       flex: 1;
+      font-family: "Black Han Sans", sans-serif;
+      font-weight: 400;
+      line-height: 1;
     }
 
     .coming-badge {
@@ -3547,3 +3550,63 @@
     position: static;
   }
 }
+
+/* ── 발송 기록 ── */
+.dl-wrap {
+  padding: 24px;
+}
+.dl-summary {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin-bottom: 14px;
+}
+.dl-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.dl-th {
+  text-align: left;
+  padding: 8px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.dl-td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+  color: var(--text-primary);
+}
+.dl-table tbody tr:hover .dl-td {
+  background: var(--hover-bg, rgba(255,255,255,.03));
+}
+.dl-td-time  { white-space: nowrap; color: var(--text-muted); font-size: 12px; }
+.dl-td-target{ font-weight: 500; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dl-td-date  { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.dl-td-count { white-space: nowrap; }
+.dl-platform-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.dl-lang-badge {
+  display: inline-block;
+  margin-left: 5px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  background: rgba(99,102,241,.15);
+  color: #818cf8;
+  vertical-align: middle;
+}
+.dl-status-ok  { color: #4ade80; font-weight: 600; }
+.dl-status-err { color: #f87171; font-weight: 600; }

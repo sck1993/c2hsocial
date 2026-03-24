@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link
-    href="https://fonts.googleapis.com/css2?family=Gothic+A1:wght@400;500;600;700;800;900&family=Space+Mono:wght@400;700&display=swap"
+    href="https://fonts.googleapis.com/css2?family=Black+Han+Sans&family=Gothic+A1:wght@400;500;600;700;800;900&family=Space+Mono:wght@400;700&display=swap"
     rel="stylesheet" />
   <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <script defer src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.5/purify.min.js"></script>
@@ -401,6 +401,45 @@
           </div>
         </div>
 
+        <!-- 디시인사이드 -->
+        <div class="platform-section" id="section-dcinside">
+          <div class="platform-row" onclick="togglePlatform(this)">
+            <div class="p-icon">
+              <img src="/dc-icon.png" style="width:18px;height:18px;border-radius:3px;object-fit:cover;display:block" alt="DCInside">
+            </div>
+            <span class="p-name">디시인사이드</span>
+            <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <polyline points="6 9 12 15 18 9"/>
+            </svg>
+          </div>
+          <div class="sub-nav">
+            <div class="sub-nav-item" id="nav-dc-report" onclick="switchView('dc-report')">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="3" y="3" width="18" height="18" rx="2" />
+                <path d="M3 9h18M9 21V9" />
+              </svg>
+              일별 리포트
+            </div>
+            <div class="sub-nav-item" id="nav-dc-galleries" onclick="switchView('dc-galleries')">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+                <circle cx="9" cy="7" r="4" />
+                <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+                <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+              </svg>
+              갤러리 관리
+            </div>
+            <div class="sub-nav-item" id="nav-dc-session" onclick="switchView('dc-session')">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+              </svg>
+              세션 관리
+              <span id="dc-session-alert" style="display:none;width:7px;height:7px;border-radius:50%;background:#ef4444;flex-shrink:0;margin-left:auto;box-shadow:0 0 0 2px rgba(239,68,68,.25)"></span>
+            </div>
+          </div>
+        </div>
+
         <!-- 리포트 설정 -->
         <div class="platform-section" id="section-report-settings">
           <div class="platform-row" onclick="togglePlatform(this)">
@@ -425,6 +464,15 @@
                 <rect x="14" y="14" width="7" height="7" rx="1"/>
               </svg>
               프리셋 관리
+            </div>
+            <div class="sub-nav-item" id="nav-delivery-log" onclick="switchView('delivery-log')">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"/>
+                <rect x="9" y="3" width="6" height="4" rx="1"/>
+                <line x1="9" y1="12" x2="15" y2="12"/>
+                <line x1="9" y1="16" x2="13" y2="16"/>
+              </svg>
+              발송 기록
             </div>
           </div>
         </div>
@@ -787,6 +835,46 @@
         <div id="ig-tokens-main"></div>
       </div>
 
+      <!-- ═══ 디시인사이드 topbars ═══ -->
+      <div class="topbar hidden" id="topbar-dc-report">
+        <span class="topbar-title">디시인사이드 일별 리포트</span>
+        <div class="topbar-spacer"></div>
+        <div class="topbar-right">
+          <div class="date-pill">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+            <input type="text" id="dcReportDate" placeholder="날짜 선택" readonly>
+          </div>
+          <div class="icon-btn spin-on-click" id="dcTriggerBtn" onclick="triggerDcReport()" title="수동 수집 실행">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+          </div>
+          <span id="dcTriggerMsg" class="trigger-msg"></span>
+        </div>
+      </div>
+      <div class="topbar hidden" id="topbar-dc-galleries">
+        <span class="topbar-title">디시인사이드 갤러리 관리</span>
+        <div class="topbar-spacer"></div>
+      </div>
+      <div class="topbar hidden" id="topbar-dc-session">
+        <span class="topbar-title">디시인사이드 세션 관리</span>
+        <div class="topbar-spacer"></div>
+        <div class="topbar-right">
+          <div class="icon-btn" onclick="loadDcSession()" title="새로고침">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+          </div>
+        </div>
+      </div>
+
+      <!-- ═══ 디시인사이드 views ═══ -->
+      <div class="view hidden" id="view-dc-report">
+        <div id="dc-report-main"></div>
+      </div>
+      <div class="view hidden" id="view-dc-galleries">
+        <div id="dc-galleries-main"></div>
+      </div>
+      <div class="view hidden" id="view-dc-session">
+        <div id="dc-session-main"></div>
+      </div>
+
       <!-- ═══ 네이버 라운지 topbars ═══ -->
       <div class="topbar hidden" id="topbar-nl-report">
         <span class="topbar-title">네이버 라운지 일별 리포트</span>
@@ -995,6 +1083,20 @@
             </div>
           </div>
         </div>
+      </div>
+
+      <!-- ═══ 발송 기록 topbar ═══ -->
+      <div class="topbar hidden" id="topbar-delivery-log">
+        <span class="topbar-title">리포트 발송 기록</span>
+        <div class="topbar-spacer"></div>
+        <div class="topbar-right">
+          <button class="tb-btn" onclick="loadDeliveryLog()">↺ 새로고침</button>
+        </div>
+      </div>
+
+      <!-- ═══ 발송 기록 view ═══ -->
+      <div class="view hidden" id="view-delivery-log">
+        <div id="delivery-log-main"></div>
       </div>
 
     </div>

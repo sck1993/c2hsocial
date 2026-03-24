@@ -32,6 +32,11 @@
       { value: 'google/gemini-3-flash-preview', label: 'Gemini Flash 3' },
       { value: 'google/gemini-3.1-flash-lite-preview', label: 'Gemini Flash 3.1 Lite' },
     ];
+    const DC_ANALYSIS_MODELS = [
+      { value: 'openai/gpt-5.4-mini', label: 'GPT-5.4 mini' },
+      { value: 'google/gemini-3-flash-preview', label: 'Gemini Flash 3' },
+      { value: 'google/gemini-3.1-flash-lite-preview', label: 'Gemini Flash 3.1 Lite' },
+    ];
 
     /* ── Chip Input ── */
     let chipInputKo = null;
@@ -196,25 +201,29 @@
     let _fpFbDatePicker = null;
     let _fpFbPageDatePicker = null;
     let _fpNlDatePicker = null;
+    let _fpDcDatePicker = null;
     let _availableFbPageDates = [];
     let _availableNlDates = [];
+    let _availableDcDates = [];
     let _availableDailyDates = [], _availableWeeklyDates = [], _availableIgDates = [];
     let _selectedWeekMonday = null; // 주간 picker: 선택된 주의 월요일
 
     async function initAvailableDates() {
       try {
-        const [daily, weekly, ig, fbPage, nl] = await Promise.all([
+        const [daily, weekly, ig, fbPage, nl, dc] = await Promise.all([
           apiFetch(`/available-dates?workspaceId=${WS}&type=daily`),
           apiFetch(`/available-dates?workspaceId=${WS}&type=weekly`),
           apiFetch(`/instagram/available-dates?workspaceId=${WS}`),
           apiFetch(`/facebook/page/available-dates?workspaceId=${WS}`),
           apiFetch(`/naver/available-dates?workspaceId=${WS}`),
+          apiFetch(`/dcinside/available-dates?workspaceId=${WS}`),
         ]);
         _availableDailyDates  = daily.dates  || [];
         _availableWeeklyDates = weekly.dates || [];
         _availableIgDates     = ig.dates     || [];
         _availableFbPageDates = fbPage.dates || [];
         _availableNlDates     = nl.dates     || [];
+        _availableDcDates     = dc.dates     || [];
       } catch (e) {
         console.warn('[available-dates] 로드 실패, 날짜 제한 없이 동작:', e.message);
       }
@@ -378,6 +387,18 @@
         _fpNlDatePicker.set('enable', _availableNlDates);
         if (!_fpNlDatePicker.selectedDates.length) _fpNlDatePicker.setDate(_availableNlDates[0], false);
       }
+
+      _fpDcDatePicker = flatpickr('#dcReportDate', {
+        dateFormat: 'Y-m-d',
+        maxDate,
+        locale: { firstDayOfWeek: 1 },
+        onDayCreate: onDayCreateBase,
+        onChange([d]) { if (d) loadDcReport(); },
+      });
+      if (_availableDcDates.length) {
+        _fpDcDatePicker.set('enable', _availableDcDates);
+        if (!_fpDcDatePicker.selectedDates.length) _fpDcDatePicker.setDate(_availableDcDates[0], false);
+      }
     }
 
     /* ── Init ── */
@@ -395,6 +416,7 @@
       initAvailableDates();
       checkFbSessionAlert();
       checkNlSessionAlert();
+      checkDcSessionAlert();
     }
 
     async function checkFbSessionAlert() {
@@ -436,7 +458,9 @@
         'fb-page-report': 'nav-fb-page-report', 'fb-pages': 'nav-fb-pages',
         'fb-session': 'nav-fb-session',
         'nl-report': 'nav-nl-report', 'nl-lounges': 'nav-nl-lounges', 'nl-session': 'nav-nl-session',
+        'dc-report': 'nav-dc-report', 'dc-galleries': 'nav-dc-galleries', 'dc-session': 'nav-dc-session',
         'preset-mgmt': 'nav-preset-mgmt',
+        'delivery-log': 'nav-delivery-log',
       };
       const navId = viewToNavId[view];
       if (navId) {
@@ -466,7 +490,11 @@
       document.getElementById('nav-nl-report').classList.toggle('active', view === 'nl-report');
       document.getElementById('nav-nl-lounges').classList.toggle('active', view === 'nl-lounges');
       document.getElementById('nav-nl-session').classList.toggle('active', view === 'nl-session');
+      document.getElementById('nav-dc-report').classList.toggle('active', view === 'dc-report');
+      document.getElementById('nav-dc-galleries').classList.toggle('active', view === 'dc-galleries');
+      document.getElementById('nav-dc-session').classList.toggle('active', view === 'dc-session');
       document.getElementById('nav-preset-mgmt').classList.toggle('active', view === 'preset-mgmt');
+      document.getElementById('nav-delivery-log').classList.toggle('active', view === 'delivery-log');
 
       // Topbars
       document.getElementById('topbar-report').classList.toggle('hidden', view !== 'report');
@@ -487,7 +515,11 @@
       document.getElementById('topbar-nl-report').classList.toggle('hidden', view !== 'nl-report');
       document.getElementById('topbar-nl-lounges').classList.toggle('hidden', view !== 'nl-lounges');
       document.getElementById('topbar-nl-session').classList.toggle('hidden', view !== 'nl-session');
+      document.getElementById('topbar-dc-report').classList.toggle('hidden', view !== 'dc-report');
+      document.getElementById('topbar-dc-galleries').classList.toggle('hidden', view !== 'dc-galleries');
+      document.getElementById('topbar-dc-session').classList.toggle('hidden', view !== 'dc-session');
       document.getElementById('topbar-preset-mgmt').classList.toggle('hidden', view !== 'preset-mgmt');
+      document.getElementById('topbar-delivery-log').classList.toggle('hidden', view !== 'delivery-log');
 
       // Views
       document.getElementById('view-landing').classList.toggle('hidden', view !== 'landing');
@@ -509,7 +541,11 @@
       document.getElementById('view-nl-report').classList.toggle('hidden', view !== 'nl-report');
       document.getElementById('view-nl-lounges').classList.toggle('hidden', view !== 'nl-lounges');
       document.getElementById('view-nl-session').classList.toggle('hidden', view !== 'nl-session');
+      document.getElementById('view-dc-report').classList.toggle('hidden', view !== 'dc-report');
+      document.getElementById('view-dc-galleries').classList.toggle('hidden', view !== 'dc-galleries');
+      document.getElementById('view-dc-session').classList.toggle('hidden', view !== 'dc-session');
       document.getElementById('view-preset-mgmt').classList.toggle('hidden', view !== 'preset-mgmt');
+      document.getElementById('view-delivery-log').classList.toggle('hidden', view !== 'delivery-log');
 
       if (view === 'report') loadReport();
       if (view === 'channels') loadChannels();
@@ -531,7 +567,11 @@
       if (view === 'nl-report') { refreshNlAvailableDates().then(() => loadNlReport()); }
       if (view === 'nl-lounges') loadNlLounges();
       if (view === 'nl-session') loadNlSession();
+      if (view === 'dc-report') { refreshDcAvailableDates().then(() => loadDcReport()); }
+      if (view === 'dc-galleries') loadDcGalleries();
+      if (view === 'dc-session') loadDcSession();
       if (view === 'preset-mgmt') loadPresets();
+      if (view === 'delivery-log') loadDeliveryLog();
       if (view === 'weekly') {
         // 이번 주 월요일 기본값 세팅
         const d = new Date(Date.now() + 9 * 60 * 60 * 1000);
@@ -1672,6 +1712,7 @@
         </div>`;
       }).join('');
 
+      const noData = g.noData === true || (g.messageCount ?? 0) === 0;
       const summaryText = isEN ? (g.summary_en || g.summary) : g.summary;
       const keywords = isEN ? (g.keywords_en || g.keywords || []) : (g.keywords || []);
 
@@ -1705,9 +1746,10 @@
 
       <div class="scard anim d3">
         <div class="slabel"><div class="slabel-dot"></div>${SVG.doc}${L.summaryLabel}</div>
-        <p class="summary-body">${formatSummary(summaryText)}</p>
+        <p class="summary-body">${noData ? '<span class="text-sm-muted">분석 메시지가 없습니다.</span>' : formatSummary(summaryText)}</p>
       </div>
 
+      ${noData ? '' : `
       <div class="two-col anim d4">
         <div class="scard">
           <div class="slabel"><div class="slabel-dot"></div>${SVG.bar}${L.sentimentLabel}</div>
@@ -1732,7 +1774,7 @@
           : `<span class="text-sm-muted">${L.noKeywords}</span>`}
           </div>
         </div>
-      </div>
+      </div>`}
 
       ${issues.length ? `
       <div class="scard scard--mt anim d5">
@@ -4781,6 +4823,7 @@
     // ════════════════════════════════════════════════════════
 
     const SVG_NL = `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M16.273 12.845 7.376 0H0v24h7.727V11.155L16.624 24H24V0h-7.727z"/></svg>`;
+    const SVG_DC = `<img src="/dc-icon.png" style="width:22px;height:22px;border-radius:5px;object-fit:cover" alt="DCInside">`;
 
     // ── 가용 날짜 갱신 ──────────────────────────────────────
     async function refreshNlAvailableDates() {
@@ -5301,6 +5344,491 @@
     }
 
     // ═══════════════════════════════════════════════════════
+    //  디시인사이드 — 일별 리포트
+    // ═══════════════════════════════════════════════════════
+
+    async function refreshDcAvailableDates() {
+      try {
+        const { dates } = await apiFetch(`/dcinside/available-dates?workspaceId=${WS}`);
+        _availableDcDates = dates || [];
+        if (_fpDcDatePicker) {
+          if (_availableDcDates.length > 0) {
+            _fpDcDatePicker.set('enable', _availableDcDates);
+            _fpDcDatePicker.setDate(_availableDcDates[_availableDcDates.length - 1], true);
+          } else {
+            _fpDcDatePicker.set('enable', [() => true]);
+          }
+        }
+      } catch (_) {}
+    }
+
+    async function triggerDcReport() {
+      const date = document.getElementById('dcReportDate')?.value;
+      const $btn = document.getElementById('dcTriggerBtn');
+      if (!date) { alert('날짜를 선택하세요.'); return; }
+      if ($btn) { $btn.disabled = true; $btn.textContent = '실행 중…'; }
+      try {
+        await apiFetch('/dcinside/pipeline/trigger', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ workspaceId: WS, date, skipEmail: true }),
+        });
+        await refreshDcAvailableDates();
+        await loadDcReport();
+      } catch (err) {
+        alert('오류: ' + err.message);
+      } finally {
+        if ($btn) { $btn.disabled = false; $btn.textContent = '리포트 생성'; }
+      }
+    }
+
+    async function loadDcReport() {
+      const $main = document.getElementById('dc-report-main');
+      if (!$main) return;
+      const date = document.getElementById('dcReportDate')?.value;
+      if (!date) { $main.innerHTML = '<div class="state-wrap"><div class="state-title">날짜를 선택하세요</div></div>'; return; }
+      $main.innerHTML = '<div class="sk sk--sm"></div>';
+      try {
+        const { reports } = await apiFetch(`/dcinside/report?workspaceId=${WS}&date=${date}`);
+        if (!reports || reports.length === 0) {
+          $main.innerHTML = '<div class="state-wrap"><div class="state-title">리포트 없음</div><div class="state-desc">해당 날짜의 수집 데이터가 없습니다.</div></div>';
+          return;
+        }
+        $main.innerHTML = reports.map(buildDcReportCard).join('');
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          $main.querySelectorAll('.sent-seg[data-v]').forEach(el => { el.style.width = el.dataset.v + '%'; });
+        }));
+      } catch (err) {
+        $main.innerHTML = `<div class="error-state">오류: ${err.message}</div>`;
+      }
+    }
+
+    function buildDcReportCard(r) {
+      const sentiment = r.aiSentiment || {};
+      const pos = sentiment.positive ?? 0;
+      const neu = sentiment.neutral ?? 0;
+      const neg = sentiment.negative ?? 0;
+      const typeBadge = r.galleryType === 'minor'
+        ? `<span class="badge" style="background:#fff0f0;color:#e5171e;border:1px solid #fecaca">마이너 갤러리</span>`
+        : `<span class="badge" style="background:#f0f4ff;color:#2563eb;border:1px solid #bfdbfe">일반 갤러리</span>`;
+      const crawlBadge = r.crawlStatus === 'partial'
+        ? `<span class="badge alert">부분 수집</span>`
+        : r.crawlStatus === 'session_expired'
+        ? `<span class="badge alert">세션 만료</span>`
+        : '';
+
+      const issues = (r.aiIssues || []).map(issue => {
+        const sev = severity(issue.count || 1);
+        return `<div class="issue-card ${sev.cls}">
+          <div class="issue-sev-bar"></div>
+          <div class="issue-count-badge">${issue.count || 1}</div>
+          <div class="issue-body">
+            <div class="issue-title">${escapeHtml(issue.title || '')}</div>
+            <div class="issue-desc">${escapeHtml(issue.description || '')}</div>
+          </div>
+          <div class="issue-sev-label">${sev.label}</div>
+        </div>`;
+      }).join('');
+
+      const tokenStrip = (r.model || r.totalTokens) ? `
+        <div class="token-info-strip">
+          ${r.model ? `<span class="token-model">${escapeHtml(r.model)}</span>` : ''}
+          ${r.totalTokens ? `<span>입력 ${(r.promptTokens||0).toLocaleString()} / 출력 ${(r.completionTokens||0).toLocaleString()} / 합계 ${(r.totalTokens||0).toLocaleString()} 토큰</span>` : ''}
+          ${r.cost != null ? `<span>비용 $${Number(r.cost).toFixed(4)}</span>` : ''}
+        </div>` : '';
+
+      return `
+      <div class="ch-card anim d1">
+        <div class="ch-header anim d1">
+          <div class="ch-platform-icon" style="color:#e5171e">${SVG_DC}</div>
+          <div>
+            <div class="ch-name">${escapeHtml(r.galleryName || r.galleryId || '')}</div>
+            <div class="ch-meta">
+              ${r.postCount != null ? `게시글 ${r.postCount}개` : ''}
+              ${r.totalComments != null ? ` &nbsp;·&nbsp; 댓글 ${r.totalComments.toLocaleString()}개` : ''}
+              ${r.totalViews != null ? ` &nbsp;·&nbsp; 조회 ${r.totalViews.toLocaleString()}` : ''}
+              ${r.aiIssues?.length != null ? ` &nbsp;·&nbsp; 이슈 ${r.aiIssues.length}건` : ''}
+              ${typeBadge} ${crawlBadge}
+            </div>
+          </div>
+        </div>
+
+        <div class="scard anim d2">
+          <div class="slabel"><div class="slabel-dot"></div>${SVG.doc}갤러리 동향 요약</div>
+          <p class="summary-body">${formatSummary(r.aiSummary)}</p>
+        </div>
+
+        <div class="scard anim d3">
+          <div class="slabel"><div class="slabel-dot"></div>${SVG.bar}감정 분석</div>
+          <div class="sent-wrap">
+            <div class="sent-spectrum">
+              <div class="sent-seg pos" data-v="${pos}" style="width:0%"></div>
+              <div class="sent-seg neu" data-v="${neu}" style="width:0%"></div>
+              <div class="sent-seg neg" data-v="${neg}" style="width:0%"></div>
+            </div>
+            <div class="sent-tiles">
+              <div class="sent-tile"><div class="sent-tile-val pos">${pos}<span class="sent-tile-unit">%</span></div><div class="sent-tile-lbl">긍정</div></div>
+              <div class="sent-tile"><div class="sent-tile-val neu">${neu}<span class="sent-tile-unit">%</span></div><div class="sent-tile-lbl">중립</div></div>
+              <div class="sent-tile"><div class="sent-tile-val neg">${neg}<span class="sent-tile-unit">%</span></div><div class="sent-tile-lbl">부정</div></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="scard anim d4" style="margin-top:1rem">
+          <div class="slabel"><div class="slabel-dot"></div>${SVG.warn}주요 이슈 <span class="slabel-count">${r.aiIssues?.length || 0}건</span></div>
+          ${issues || `<div style="color:var(--text-3);font-size:.875rem;line-height:1.8">오늘은 별도로 부각된 주요 이슈가 감지되지 않았습니다.</div>`}
+        </div>
+
+        ${tokenStrip}
+      </div>`;
+    }
+
+    // ── 갤러리 관리 ──────────────────────────────────────────
+    async function loadDcGalleries() {
+      const $main = document.getElementById('dc-galleries-main');
+      if (!$main) return;
+
+      $main.innerHTML = `
+        <div class="ch-mgmt-grid">
+          <div class="add-panel">
+            <div class="panel-title">갤러리 추가</div>
+            <div class="panel-desc">모니터링할 디시인사이드 갤러리 URL을 등록합니다.</div>
+            <div class="field-group">
+              <label class="field-label">갤러리 이름 <span style="color:var(--text-muted);font-size:.75rem">(선택)</span></label>
+              <input class="field-input" id="dcNewGalleryName" type="text" placeholder="예: 프로그래밍 갤러리" autocomplete="off">
+            </div>
+            <div class="field-group">
+              <label class="field-label">갤러리 URL <span class="text-neg">*</span></label>
+              <input class="field-input" id="dcNewGalleryUrl" type="text" placeholder="https://gall.dcinside.com/board/lists/?id=programming" autocomplete="off">
+            </div>
+            <button class="btn-add" onclick="addDcGallery()">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+              </svg>
+              갤러리 추가
+            </button>
+            <div class="add-result" id="dcAddResult"></div>
+          </div>
+          <div class="list-panel">
+            <div class="list-header">
+              <span class="list-title">등록된 갤러리</span>
+              <span class="list-count" id="dcGalleryListCount">-</span>
+            </div>
+            <div id="dc-gallery-list"><div class="sk sk--sm"></div></div>
+          </div>
+        </div>`;
+
+      try {
+        const { galleries } = await apiFetch(`/dcinside/galleries?workspaceId=${WS}`);
+        document.getElementById('dcGalleryListCount').textContent = galleries.length;
+        const $list = document.getElementById('dc-gallery-list');
+        $list.innerHTML = galleries.length === 0
+          ? '<div class="ch-empty"><div class="text-center-muted">등록된 갤러리 없음</div></div>'
+          : galleries.map(dcGalleryRowHTML).join('');
+      } catch (err) {
+        document.getElementById('dc-gallery-list').innerHTML =
+          `<div class="state-wrap"><div class="state-title">불러오기 실패</div><div class="state-desc">${escapeHtml(err.message)}</div></div>`;
+      }
+    }
+
+    function dcGalleryRowHTML(g) {
+      const isActive = g.isActive !== false;
+      const recipients = (g.deliveryConfig?.email?.recipients || []).join(', ');
+      const isEmailEnabled = g.deliveryConfig?.email?.isEnabled ?? false;
+      const panelId = `dc-settings-${g.docId}`;
+      const selectedModel = DC_ANALYSIS_MODELS.some(m => m.value === g.analysisModel)
+        ? g.analysisModel
+        : DC_ANALYSIS_MODELS[0].value;
+      const typeBadge = g.galleryType === 'minor'
+        ? `<span class="badge" style="background:#fff0f0;color:#e5171e;border:1px solid #fecaca;font-size:10px">마이너</span>`
+        : `<span class="badge" style="background:#f0f4ff;color:#2563eb;border:1px solid #bfdbfe;font-size:10px">일반</span>`;
+
+      return `
+        <div class="ch-row ${isActive ? '' : 'inactive'}" id="dcrow-${g.docId}">
+          <div class="ch-row-icon">
+            <img src="/dc-icon.png" style="width:20px;height:20px;border-radius:4px;object-fit:cover" alt="DCInside">
+          </div>
+          <div class="ch-row-info">
+            <div class="ch-row-name">${escapeHtml(g.galleryName || g.galleryId || '')} ${typeBadge}</div>
+            <div class="ch-row-meta">${escapeHtml(g.galleryUrl || '')}</div>
+          </div>
+          <div class="ch-row-status ${isActive ? 'active' : 'inactive'}">${isActive ? '활성' : '비활성'}</div>
+          <div class="ch-row-actions">
+            <div class="action-btn settings" data-docid="${escapeHtml(g.docId)}"
+                 onclick="toggleDcGallerySettings(this.dataset.docid)" title="설정">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="3"/>
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+              </svg>
+            </div>
+            <div class="action-btn ${isActive ? 'toggle-on' : 'toggle-off'}"
+                 data-docid="${escapeHtml(g.docId)}"
+                 onclick="toggleDcGallery(this.dataset.docid, ${isActive})"
+                 title="${isActive ? '비활성화' : '활성화'}">
+              ${isActive
+                ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18.364 18.364A9 9 0 0 0 5.636 5.636m12.728 12.728L5.636 5.636"/></svg>`
+                : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>`}
+            </div>
+            <div class="action-btn del"
+                 data-docid="${escapeHtml(g.docId)}" data-name="${escapeHtml(g.galleryName || g.galleryId || '')}"
+                 onclick="deleteDcGallery(this.dataset.docid, this.dataset.name)"
+                 title="갤러리 삭제">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="3 6 5 6 21 6"/>
+                <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
+                <path d="M10 11v6M14 11v6"/>
+                <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/>
+              </svg>
+            </div>
+          </div>
+        </div>
+        <div class="ch-settings-panel" id="${panelId}">
+          <div class="settings-section">
+            <div class="settings-section-title">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+              이메일 리포트
+            </div>
+            <label class="toggle-row">
+              <input type="checkbox" id="dcEmailEnabled-${g.docId}" ${isEmailEnabled ? 'checked' : ''}>
+              <span style="font-size:.875rem">이메일 발송 활성화</span>
+            </label>
+            <textarea class="settings-textarea" id="dcEmailRecipients-${g.docId}"
+              placeholder="수신자 이메일 (쉼표 구분)">${escapeHtml(recipients)}</textarea>
+            <button class="btn-save-settings" data-docid="${escapeHtml(g.docId)}"
+                    onclick="saveDcGallerySettings(this.dataset.docid)">저장</button>
+            <div class="add-result" id="dcSaveResult-${g.docId}"></div>
+          </div>
+          <div class="settings-section">
+            <div class="settings-section-title">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/></svg>
+              AI 분석 지시문
+            </div>
+            <label class="settings-field-label" for="dcAnalysisModel-${g.docId}">AI 모델</label>
+            <select class="settings-select" id="dcAnalysisModel-${g.docId}">
+              ${DC_ANALYSIS_MODELS.map(m => `
+                <option value="${escapeHtml(m.value)}" ${selectedModel === m.value ? 'selected' : ''}>
+                  ${escapeHtml(m.label)}
+                </option>
+              `).join('')}
+            </select>
+            <textarea class="settings-textarea" id="dcAnalysisPrompt-${g.docId}"
+              rows="3" placeholder="예: 부정적 반응 위주로 분석해줘.">${escapeHtml(g.analysisPrompt || '')}</textarea>
+            <button class="btn-save-settings" data-docid="${escapeHtml(g.docId)}"
+                    onclick="saveDcGallerySettings(this.dataset.docid)">저장</button>
+          </div>
+        </div>`;
+    }
+
+    function toggleDcGallerySettings(docId) {
+      const panel = document.getElementById(`dc-settings-${docId}`);
+      if (panel) panel.classList.toggle('open');
+    }
+
+    async function addDcGallery() {
+      const galleryName = document.getElementById('dcNewGalleryName')?.value.trim() || '';
+      const galleryUrl  = document.getElementById('dcNewGalleryUrl')?.value.trim() || '';
+      const $result = document.getElementById('dcAddResult');
+      if (!galleryUrl) { $result.textContent = 'URL을 입력하세요.'; return; }
+      try {
+        $result.textContent = '추가 중…';
+        await apiFetch('/dcinside/galleries', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ workspaceId: WS, galleryUrl, galleryName }),
+        });
+        await loadDcGalleries();
+      } catch (err) {
+        $result.textContent = '오류: ' + err.message;
+      }
+    }
+
+    async function toggleDcGallery(docId, currentActive) {
+      try {
+        await apiFetch(`/dcinside/galleries?workspaceId=${WS}&docId=${encodeURIComponent(docId)}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ isActive: !currentActive }),
+        });
+        await loadDcGalleries();
+      } catch (err) { alert('변경 실패: ' + err.message); }
+    }
+
+    async function saveDcGallerySettings(docId) {
+      const isEnabled  = document.getElementById(`dcEmailEnabled-${docId}`)?.checked ?? false;
+      const recipients = (document.getElementById(`dcEmailRecipients-${docId}`)?.value || '')
+        .split(/[,\n]/).map(e => e.trim()).filter(Boolean);
+      const analysisPrompt = document.getElementById(`dcAnalysisPrompt-${docId}`)?.value || '';
+      const analysisModel  = document.getElementById(`dcAnalysisModel-${docId}`)?.value || DC_ANALYSIS_MODELS[0].value;
+      const $result = document.getElementById(`dcSaveResult-${docId}`);
+      try {
+        await apiFetch(`/dcinside/galleries/settings?workspaceId=${WS}&docId=${encodeURIComponent(docId)}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            deliveryConfig: { email: { isEnabled, recipients } },
+            analysisPrompt,
+            analysisModel,
+          }),
+        });
+        if ($result) { $result.textContent = '✓ 저장됨'; $result.style.color = 'var(--pos)'; setTimeout(() => { if ($result) $result.textContent = ''; }, 2000); }
+        await loadDcGalleries();
+      } catch (err) {
+        if ($result) { $result.textContent = '저장 실패: ' + err.message; $result.style.color = 'var(--neg)'; }
+      }
+    }
+
+    async function deleteDcGallery(docId, galleryName) {
+      const ok = await confirmDialog(`"${galleryName}" 갤러리를 삭제하시겠습니까?`);
+      if (!ok) return;
+      try {
+        await apiFetch(`/dcinside/galleries?workspaceId=${WS}&docId=${docId}`, { method: 'DELETE' });
+        await loadDcGalleries();
+      } catch (err) { alert('삭제 실패: ' + err.message); }
+    }
+
+    // ── 세션 관리 ─────────────────────────────────────────────
+    async function checkDcSessionAlert() {
+      try {
+        const status = await apiFetch(`/dcinside/session/status?workspaceId=${WS}`);
+        const $dot = document.getElementById('dc-session-alert');
+        if ($dot) $dot.style.display = (status.exists && !status.isValid) ? 'inline-block' : 'none';
+      } catch (_) {}
+    }
+
+    async function loadDcSession() {
+      const $main = document.getElementById('dc-session-main');
+      if (!$main) return;
+      try {
+        const status = await apiFetch(`/dcinside/session/status?workspaceId=${WS}`);
+
+        const isValid  = status.isValid;
+        const exists   = status.exists;
+        const badgeColor  = isValid ? '#16a34a' : '#dc2626';
+        const badgeBg     = isValid ? '#f0fdf4' : '#fef2f2';
+        const badgeBorder = isValid ? '#bbf7d0' : '#fecaca';
+        const badgeText   = !exists ? '세션 없음' : isValid ? '세션 유효' : '세션 만료됨';
+        const badgeDesc   = !exists
+          ? '등록된 세션이 없습니다. 아래에서 쿠키를 등록하세요.'
+          : isValid
+          ? '로그인 상태가 유효합니다. 파이프라인이 정상 실행됩니다.'
+          : '세션이 만료되었습니다. 쿠키를 다시 등록해주세요.';
+
+        $main.innerHTML = `
+          <div style="display:grid;grid-template-columns:1fr 340px;gap:20px;align-items:start">
+
+            <!-- 왼쪽: 쿠키 등록 폼 -->
+            <div class="panel-card">
+              <div class="panel-title">쿠키 등록</div>
+
+              <div style="display:flex;gap:10px;padding:12px 14px;background:#fff8f8;border:1px solid #fecaca;border-radius:8px;margin-bottom:16px">
+                <svg style="flex-shrink:0;margin-top:1px" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#e5171e" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+                </svg>
+                <div style="font-size:12.5px;color:#7f1d1d;line-height:1.6">
+                  브라우저에서 디시인사이드에 로그인한 뒤<br>
+                  <strong>DevTools (F12) → Network → Request Headers</strong>에서<br>
+                  <code>cookie</code>, <code>user-agent</code> 값을 복사해 입력하세요.
+                </div>
+              </div>
+
+              <div style="display:flex;flex-direction:column;gap:14px;margin-bottom:14px">
+                <div>
+                  <label style="display:block;font-size:12px;font-weight:600;color:#475569;margin-bottom:6px">Cookie Header</label>
+                  <textarea
+                    id="dcCookieHeaderInput"
+                    rows="6"
+                    style="width:100%;box-sizing:border-box;font-family:monospace;font-size:12px;padding:10px 12px;border:1px solid #e2e8f0;border-radius:8px;resize:vertical;outline:none;color:#1e293b;background:#f8fafc;line-height:1.5"
+                    placeholder='_ga=...; dc_session=...; PHPSESSID=...'
+                  ></textarea>
+                </div>
+                <div>
+                  <label style="display:block;font-size:12px;font-weight:600;color:#475569;margin-bottom:6px">User-Agent</label>
+                  <textarea
+                    id="dcUserAgentInput"
+                    rows="3"
+                    style="width:100%;box-sizing:border-box;font-family:monospace;font-size:12px;padding:10px 12px;border:1px solid #e2e8f0;border-radius:8px;resize:vertical;outline:none;color:#1e293b;background:#f8fafc;line-height:1.5"
+                    placeholder='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ...'
+                  ></textarea>
+                </div>
+              </div>
+
+              <div style="display:flex;gap:8px">
+                <button class="btn-primary" style="flex:1;background:#e5171e;border-color:#e5171e" onclick="saveDcSessionProfile()">
+                  세션 저장
+                </button>
+                ${exists ? `
+                <button class="btn-secondary" onclick="deleteDcSession()" style="padding:0 16px">
+                  세션 삭제
+                </button>` : ''}
+              </div>
+            </div>
+
+            <!-- 오른쪽: 세션 상태 -->
+            <div style="display:flex;flex-direction:column;gap:14px">
+
+              <div class="panel-card" style="padding:20px">
+                <div class="panel-title" style="margin-bottom:14px">세션 상태</div>
+                <div style="display:flex;align-items:center;gap:12px;padding:14px 16px;background:${badgeBg};border:1px solid ${badgeBorder};border-radius:10px">
+                  <span style="width:10px;height:10px;border-radius:50%;background:${badgeColor};flex-shrink:0;
+                    ${isValid ? 'box-shadow:0 0 0 3px rgba(22,163,74,.2)' : ''}"></span>
+                  <div>
+                    <div style="font-size:13px;font-weight:700;color:#1e293b">${badgeText}</div>
+                    <div style="font-size:11.5px;color:#64748b;margin-top:2px">${badgeDesc}</div>
+                  </div>
+                </div>
+              </div>
+
+              ${exists ? `
+              <div class="panel-card" style="padding:20px">
+                <div class="panel-title" style="margin-bottom:12px">저장 정보</div>
+                <div style="display:flex;flex-direction:column;gap:10px">
+                  ${status.savedAt ? `
+                  <div class="row-between">
+                    <span style="color:#64748b">저장일시</span>
+                    <span style="font-weight:500;color:#1e293b">${new Date(status.savedAt).toLocaleString('ko-KR', {month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'})}</span>
+                  </div>` : ''}
+                  ${status.lastValidatedAt ? `
+                  <div class="row-between">
+                    <span style="color:#64748b">마지막 확인</span>
+                    <span style="font-weight:500;color:#1e293b">${new Date(status.lastValidatedAt).toLocaleString('ko-KR', {month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'})}</span>
+                  </div>` : ''}
+                </div>
+              </div>` : ''}
+
+            </div>
+          </div>`;
+        checkDcSessionAlert();
+      } catch (err) {
+        $main.innerHTML = `<div class="error-state">오류: ${err.message}</div>`;
+      }
+    }
+
+    async function saveDcSessionProfile() {
+      const cookieHeader = document.getElementById('dcCookieHeaderInput')?.value.trim() || '';
+      const userAgent = document.getElementById('dcUserAgentInput')?.value.trim() || '';
+      if (!cookieHeader) { alert('Cookie Header를 입력하세요.'); return; }
+      if (!userAgent) { alert('User-Agent를 입력하세요.'); return; }
+      try {
+        await apiFetch('/dcinside/session', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ workspaceId: WS, cookieHeader, userAgent }),
+        });
+        alert('세션 저장 완료');
+        await loadDcSession();
+      } catch (err) { alert('저장 실패: ' + err.message); }
+    }
+
+    async function deleteDcSession() {
+      const ok = await confirmDialog('저장된 디시인사이드 세션을 삭제하시겠습니까?');
+      if (!ok) return;
+      try {
+        await apiFetch(`/dcinside/session?workspaceId=${WS}`, { method: 'DELETE' });
+        await loadDcSession();
+      } catch (err) { alert('삭제 실패: ' + err.message); }
+    }
+
+    // ═══════════════════════════════════════════════════════
     //  공용 유틸: confirmDialog (간단한 삭제 확인용)
     // ═══════════════════════════════════════════════════════
 
@@ -5369,6 +5897,72 @@
     let _editingPresetId = null;     // null = 신규
     let _presetItems = [];           // 현재 구성된 드롭존 항목
     let _presetChipInput = null;     // ChipInput 인스턴스
+
+    /* ── 발송 기록 ── */
+    const DELIVERY_PLATFORM_LABEL = {
+      discord:       { label: 'Discord',        color: '#5865f2' },
+      instagram:     { label: 'Instagram',       color: '#e1306c' },
+      facebook_page: { label: 'Facebook 페이지', color: '#1877f2' },
+      naver_lounge:  { label: '네이버 라운지',   color: '#03c75a' },
+    };
+
+    async function loadDeliveryLog() {
+      const $el = document.getElementById('delivery-log-main');
+      $el.innerHTML = '<div class="data-log-empty">불러오는 중...</div>';
+      try {
+        const data = await apiFetch(`/delivery-logs?workspaceId=${WS}&limit=200`);
+        renderDeliveryLog(data.logs || []);
+      } catch (err) {
+        $el.innerHTML = `<div class="data-log-empty" style="color:#f87171">오류: ${escapeHtml(err.message)}</div>`;
+      }
+    }
+
+    function renderDeliveryLog(logs) {
+      const $el = document.getElementById('delivery-log-main');
+      if (!logs.length) {
+        $el.innerHTML = '<div class="data-log-empty">발송 기록이 없습니다.</div>';
+        return;
+      }
+
+      const rows = logs.map(log => {
+        const p = DELIVERY_PLATFORM_LABEL[log.platform] || { label: log.platform, color: '#64748b' };
+        const sentAt = log.sentAt
+          ? new Date(log.sentAt).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+          : '—';
+        const langBadge = log.lang
+          ? `<span class="dl-lang-badge">${log.lang.toUpperCase()}</span>`
+          : '';
+        const statusCls = log.status === 'success' ? 'dl-status-ok' : 'dl-status-err';
+        const statusLabel = log.status === 'success' ? '성공' : '실패';
+        return `
+        <tr>
+          <td class="dl-td dl-td-time">${sentAt}</td>
+          <td class="dl-td"><span class="dl-platform-badge" style="background:${p.color}20;color:${p.color}">${p.label}</span></td>
+          <td class="dl-td dl-td-target">${escapeHtml(log.target || '—')}</td>
+          <td class="dl-td dl-td-date">${log.reportDate || '—'}</td>
+          <td class="dl-td dl-td-count">${log.recipientCount ?? '—'}명${langBadge}</td>
+          <td class="dl-td"><span class="${statusCls}">${statusLabel}</span></td>
+        </tr>`;
+      }).join('');
+
+      $el.innerHTML = `
+      <div class="dl-wrap">
+        <div class="dl-summary">총 ${logs.length}건</div>
+        <table class="dl-table">
+          <thead>
+            <tr>
+              <th class="dl-th">발송 일시</th>
+              <th class="dl-th">플랫폼</th>
+              <th class="dl-th">대상</th>
+              <th class="dl-th">리포트 날짜</th>
+              <th class="dl-th">수신자</th>
+              <th class="dl-th">상태</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`;
+    }
 
     /** 프리셋 목록 로드 및 렌더링 */
     async function loadPresets() {
