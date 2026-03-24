@@ -259,12 +259,19 @@ async function fetchPostDetail({ session, galleryId, galleryType, postNo }) {
     .trim()
     .slice(0, 3000);
 
-  return { text };
+  // 댓글 API 보안 토큰 추출
+  const esno =
+    $("input#e_s_n_o").val() ||
+    $("input[name='e_s_n_o']").val() ||
+    (String(response.data).match(/['"]e_s_n_o['"]\s*[=:]\s*['"]([a-zA-Z0-9]+)['"]/) || [])[1] ||
+    "";
+
+  return { text, esno };
 }
 
 // ── 댓글 수집 ────────────────────────────────────────────────────
 
-async function fetchPostComments({ session, galleryId, galleryType, postNo, postUrl = "" }) {
+async function fetchPostComments({ session, galleryId, galleryType, postNo, postUrl = "", esno = "" }) {
   const base = galleryBasePath(galleryType);
   const referer =
     postUrl || `https://gall.dcinside.com/${base}/view/?id=${galleryId}&no=${postNo}`;
@@ -277,6 +284,7 @@ async function fetchPostComments({ session, galleryId, galleryType, postNo, post
         no: postNo,
         cmt_id: galleryId,
         cmt_no: postNo,
+        e_s_n_o: esno,
         comment_page: String(page),
         focus_cno: "",
         focus_pno: "",
@@ -397,11 +405,13 @@ async function collectGalleryPosts({ session, galleryId, galleryType, targetDate
     const postUrl = `https://gall.dcinside.com/${base}/view/?id=${galleryId}&no=${raw.postNo}`;
 
     let text = raw.title;
+    let esno = "";
     try {
       const detail = await fetchPostDetail({
         session, galleryId, galleryType, postNo: raw.postNo,
       });
       if (detail.text) text = detail.text;
+      esno = detail.esno || "";
     } catch (e) {
       console.warn(`[dcinsideCollector] 상세 실패 (no=${raw.postNo}): ${e.message}`);
     }
@@ -410,7 +420,7 @@ async function collectGalleryPosts({ session, galleryId, galleryType, targetDate
     if (raw.commentCount > 0) {
       try {
         comments = await fetchPostComments({
-          session, galleryId, galleryType, postNo: raw.postNo, postUrl,
+          session, galleryId, galleryType, postNo: raw.postNo, postUrl, esno,
         });
       } catch (e) {
         console.warn(`[dcinsideCollector] 댓글 실패 (no=${raw.postNo}): ${e.message}`);
