@@ -5364,21 +5364,44 @@
 
     async function triggerDcReport() {
       const date = document.getElementById('dcReportDate')?.value;
-      const $btn = document.getElementById('dcTriggerBtn');
       if (!date) { alert('날짜를 선택하세요.'); return; }
-      if ($btn) { $btn.disabled = true; $btn.textContent = '실행 중…'; }
+
+      const ok = await showConfirm({
+        platform: 'dcinside',
+        icon: '📋',
+        title: 'DCInside 파이프라인',
+        color: '#e5171e',
+        sub: '재실행 — 기존 리포트 덮어쓰기',
+        badge: date,
+        desc: 'Mac Mini가 수집한 데이터를 기반으로 AI 분석 후 리포트를 재생성합니다.',
+        confirmLabel: '실행',
+      });
+      if (!ok) return;
+
+      const $btn = document.getElementById('dcTriggerBtn');
+      const $msg = document.getElementById('dcTriggerMsg');
+
+      $btn.classList.add('spinning');
+      $btn.style.pointerEvents = 'none';
+      $msg.className = 'trigger-msg run show';
+      $msg.textContent = '실행 중…';
+
       try {
-        await apiFetch('/dcinside/pipeline/trigger', {
+        const r = await apiFetch('/dcinside/pipeline/trigger', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ workspaceId: WS, date, skipEmail: true }),
         });
-        await refreshDcAvailableDates();
-        await loadDcReport();
+        const detail = `완료 (처리: ${r.results?.processed ?? 0}, 오류: ${r.results?.errors ?? 0})`;
+        $msg.className = 'trigger-msg ok show';
+        $msg.textContent = '✓ ' + detail;
+        setTimeout(() => loadDcReport(), 1000);
       } catch (err) {
-        alert('오류: ' + err.message);
+        $msg.className = 'trigger-msg err show';
+        $msg.textContent = '✗ ' + (err.message || '실패');
       } finally {
-        if ($btn) { $btn.disabled = false; $btn.textContent = '리포트 생성'; }
+        $btn.classList.remove('spinning');
+        $btn.style.pointerEvents = '';
       }
     }
 
