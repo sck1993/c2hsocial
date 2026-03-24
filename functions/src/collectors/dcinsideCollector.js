@@ -163,7 +163,6 @@ async function fetchGalleryListPage({ session, galleryId, galleryType, page = 1 
     throw new Error(`[dcinsideCollector] 목록 페이지 요청 실패 (${response.status})`);
   }
 
-  console.log(`[dcinsideCollector] 목록 p${page} 응답: status=${response.status}, len=${String(response.data).length}, content-type=${response.headers['content-type']||''}, content-encoding=${response.headers['content-encoding']||''}, location=${response.headers['location']||''}`);
   return response.data;
 }
 
@@ -362,7 +361,6 @@ async function collectGalleryPosts({ session, galleryId, galleryType, targetDate
 
     const pageRows = parseGalleryListHTML(html, galleryId, galleryType);
     if (pageRows.length === 0) {
-      console.warn(`[dcinsideCollector] p${page} 파싱 결과 0개. HTML 앞부분: ${String(html).slice(0, 400).replace(/\s+/g, ' ')}`);
       break;
     }
 

@@ -8,11 +8,6 @@
  */
 
 const admin = require("firebase-admin");
-const {
-  loadDcSession,
-  markDcSessionInvalid,
-  collectGalleryPosts,
-} = require("./collectors/dcinsideCollector");
 const { analyzeFacebookGroupPosts } = require("./analyzers/openrouterAnalyzer");
 const { sendDcinsideEmailReport } = require("./reportDelivery");
 const { getKSTYesterdayString } = require("./utils/dateUtils");
@@ -48,20 +43,6 @@ async function runDcinsidePipeline(
 
   const results = { processed: 0, skipped: 0, errors: 0 };
 
-  // ── 세션 로드 ──────────────────────────────────────────────────
-  let session;
-  try {
-    session = await loadDcSession(db, workspaceId);
-  } catch (err) {
-    console.error("[dcinsidePipeline] 세션 로드 실패:", err.message);
-    return results;
-  }
-
-  if (!session || !session.cookieHeader || !session.userAgent) {
-    console.warn("[dcinsidePipeline] 저장된 세션 없음 — 파이프라인 중단");
-    return results;
-  }
-
   // ── 갤러리 목록 조회 ───────────────────────────────────────────
   const gallerySnap = await db
     .collection("workspaces")
@@ -73,28 +54,6 @@ async function runDcinsidePipeline(
   if (gallerySnap.empty) {
     console.log("[dcinsidePipeline] 활성 갤러리 없음 — 종료");
     return results;
-  }
-
-  async function markAllGalleriesSessionExpired() {
-    console.warn("[dcinsidePipeline] 세션 만료 감지 — isValid=false 마킹");
-    await markDcSessionInvalid(db, workspaceId);
-    for (const gDoc of gallerySnap.docs) {
-      await db
-        .collection("workspaces").doc(workspaceId)
-        .collection("dcinside_reports").doc(date)
-        .collection("galleries").doc(gDoc.id)
-        .set(
-          {
-            galleryId: gDoc.data().galleryId || gDoc.id,
-            galleryName: gDoc.data().galleryName || "",
-            date,
-            crawlStatus: "session_expired",
-            collectedAt: admin.firestore.FieldValue.serverTimestamp(),
-          },
-          { merge: true }
-        );
-      results.errors++;
-    }
   }
 
   // ── 갤러리 순회 ────────────────────────────────────────────────
@@ -116,14 +75,23 @@ async function runDcinsidePipeline(
     );
 
     try {
-      const { posts, skipped } = await collectGalleryPosts({
-        session,
-        galleryId,
-        galleryType,
-        targetDate: date,
-      });
+      // ── Mac Mini가 수집한 데이터 읽기 ─────────────────────────
+      const collectedSnap = await db
+        .collection("workspaces").doc(workspaceId)
+        .collection("dcinside_collected").doc(date)
+        .collection("galleries").doc(gDoc.id)
+        .get();
 
-      if (skipped || posts.length === 0) {
+      if (!collectedSnap.exists) {
+        console.warn(`[dcinsidePipeline] ${galleryName}: 수집 데이터 없음 — Mac Mini가 실행됐는지 확인하세요`);
+        results.skipped++;
+        continue;
+      }
+
+      const collectedData = collectedSnap.data();
+      const posts = collectedData.posts || [];
+
+      if (collectedData.skipped || posts.length === 0) {
         console.log(`[dcinsidePipeline] ${galleryName}: 해당일 게시글 없음 — skip`);
         results.skipped++;
         continue;
@@ -234,10 +202,6 @@ async function runDcinsidePipeline(
 
       results.processed++;
     } catch (err) {
-      if (err.code === "DC_AUTH") {
-        await markAllGalleriesSessionExpired();
-        return results;
-      }
       console.error(
         `[dcinsidePipeline] ${workspaceId}/${gDoc.id} 오류: ${err.message}`
       );
