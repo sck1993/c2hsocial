@@ -286,13 +286,19 @@ async function fetchPostComments({ session, galleryId, galleryType, postNo, post
         cmt_no: postNo,
         e_s_n_o: esno,
         comment_page: String(page),
+        sort: "D",
+        _GALLTYPE_: galleryType === "minor" ? "M" : "G",
         focus_cno: "",
         focus_pno: "",
-        _async: "true",
+        prevCnt: "0",
+        board_type: "",
+        secret_article_key: "",
       });
 
+      const commentUrl = "https://gall.dcinside.com/board/comment/";
+
       const response = await axios.post(
-        "https://gall.dcinside.com/ajax/comment_list.php",
+        commentUrl,
         params.toString(),
         {
           headers: buildDcAjaxHeaders(session, referer),
@@ -304,9 +310,11 @@ async function fetchPostComments({ session, galleryId, galleryType, postNo, post
       if (response.status >= 400) break;
 
       const data = response.data;
+
       if (!data || typeof data !== "object") break;
 
-      const clist = Array.isArray(data.comment_list) ? data.comment_list : [];
+      const clist = Array.isArray(data.comments) ? data.comments
+        : Array.isArray(data.comment_list) ? data.comment_list : [];
       if (clist.length === 0) break;
 
       for (const c of clist) {
@@ -327,7 +335,7 @@ async function fetchPostComments({ session, galleryId, galleryType, postNo, post
       if (comments.length >= COMMENT_MAX_PER_POST) break;
 
       // 더 가져올 댓글이 없으면 중단
-      const totalCnt = Number(data.total_comment_cnt || 0);
+      const totalCnt = Number(data.total_cnt || data.total_comment_cnt || 0);
       if (!totalCnt || page * 100 >= totalCnt) break;
     } catch (e) {
       console.warn(
