@@ -37,6 +37,21 @@
       { value: 'google/gemini-3-flash-preview', label: 'Gemini Flash 3' },
       { value: 'google/gemini-3.1-flash-lite-preview', label: 'Gemini Flash 3.1 Lite' },
     ];
+    const YT_ANALYSIS_MODELS = [
+      { value: 'openai/gpt-5.4-mini', label: 'GPT-5.4 mini' },
+      { value: 'google/gemini-3-flash-preview', label: 'Gemini Flash 3' },
+      { value: 'google/gemini-3.1-flash-lite-preview', label: 'Gemini Flash 3.1 Lite' },
+    ];
+    const SCHEDULER_WEEKDAYS = [
+      { value: 1, label: '월요일' },
+      { value: 2, label: '화요일' },
+      { value: 3, label: '수요일' },
+      { value: 4, label: '목요일' },
+      { value: 5, label: '금요일' },
+      { value: 6, label: '토요일' },
+      { value: 7, label: '일요일' },
+    ];
+    let _schedulerTasks = [];
 
     /* ── Chip Input ── */
     let chipInputKo = null;
@@ -200,9 +215,12 @@
     let _fpIgDatePicker = null, _fpIgAnalyticsStart = null, _fpIgAnalyticsEnd = null;
     let _fpFbDatePicker = null;
     let _fpFbPageDatePicker = null;
+    let _fpYtDatePicker = null;
     let _fpNlDatePicker = null;
     let _fpDcDatePicker = null;
+    let _fpDeliveryLogStart = null, _fpDeliveryLogEnd = null;
     let _availableFbPageDates = [];
+    let _availableYtDates = [];
     let _availableNlDates = [];
     let _availableDcDates = [];
     let _availableDailyDates = [], _availableWeeklyDates = [], _availableIgDates = [];
@@ -210,11 +228,12 @@
 
     async function initAvailableDates() {
       try {
-        const [daily, weekly, ig, fbPage, nl, dc] = await Promise.all([
+        const [daily, weekly, ig, fbPage, yt, nl, dc] = await Promise.all([
           apiFetch(`/available-dates?workspaceId=${WS}&type=daily`),
           apiFetch(`/available-dates?workspaceId=${WS}&type=weekly`),
           apiFetch(`/instagram/available-dates?workspaceId=${WS}`),
           apiFetch(`/facebook/page/available-dates?workspaceId=${WS}`),
+          apiFetch(`/youtube/available-dates?workspaceId=${WS}`),
           apiFetch(`/naver/available-dates?workspaceId=${WS}`),
           apiFetch(`/dcinside/available-dates?workspaceId=${WS}`),
         ]);
@@ -222,6 +241,7 @@
         _availableWeeklyDates = weekly.dates || [];
         _availableIgDates     = ig.dates     || [];
         _availableFbPageDates = fbPage.dates || [];
+        _availableYtDates     = yt.dates     || [];
         _availableNlDates     = nl.dates     || [];
         _availableDcDates     = dc.dates     || [];
       } catch (e) {
@@ -376,6 +396,18 @@
         if (!_fpFbPageDatePicker.selectedDates.length) _fpFbPageDatePicker.setDate(_availableFbPageDates[0], false);
       }
 
+      _fpYtDatePicker = flatpickr('#ytReportDate', {
+        dateFormat: 'Y-m-d',
+        maxDate,
+        locale: { firstDayOfWeek: 1 },
+        onDayCreate: onDayCreateBase,
+        onChange([d]) { if (d) loadYtReport(); },
+      });
+      if (_availableYtDates.length) {
+        _fpYtDatePicker.set('enable', _availableYtDates);
+        if (!_fpYtDatePicker.selectedDates.length) _fpYtDatePicker.setDate(_availableYtDates[0], false);
+      }
+
       _fpNlDatePicker = flatpickr('#nlReportDate', {
         dateFormat: 'Y-m-d',
         maxDate,
@@ -399,6 +431,19 @@
         _fpDcDatePicker.set('enable', _availableDcDates);
         if (!_fpDcDatePicker.selectedDates.length) _fpDcDatePicker.setDate(_availableDcDates[0], false);
       }
+
+      _fpDeliveryLogStart = flatpickr('#deliveryLogStartDate', {
+        dateFormat: 'Y-m-d',
+        maxDate,
+        locale: { firstDayOfWeek: 1 },
+        onDayCreate: onDayCreateBase,
+      });
+      _fpDeliveryLogEnd = flatpickr('#deliveryLogEndDate', {
+        dateFormat: 'Y-m-d',
+        maxDate,
+        locale: { firstDayOfWeek: 1 },
+        onDayCreate: onDayCreateBase,
+      });
     }
 
     /* ── Init ── */
@@ -459,6 +504,8 @@
         'fb-session': 'nav-fb-session',
         'nl-report': 'nav-nl-report', 'nl-lounges': 'nav-nl-lounges', 'nl-session': 'nav-nl-session',
         'dc-report': 'nav-dc-report', 'dc-galleries': 'nav-dc-galleries', 'dc-session': 'nav-dc-session',
+        'key-mgmt': 'nav-key-mgmt',
+        'scheduler-mgmt': 'nav-scheduler-mgmt',
         'preset-mgmt': 'nav-preset-mgmt',
         'delivery-log': 'nav-delivery-log',
       };
@@ -487,12 +534,16 @@
       document.getElementById('nav-fb-page-report').classList.toggle('active', view === 'fb-page-report');
       document.getElementById('nav-fb-pages').classList.toggle('active', view === 'fb-pages');
       document.getElementById('nav-fb-session').classList.toggle('active', view === 'fb-session');
+      document.getElementById('nav-yt-report').classList.toggle('active', view === 'yt-report');
+      document.getElementById('nav-yt-groups').classList.toggle('active', view === 'yt-groups');
       document.getElementById('nav-nl-report').classList.toggle('active', view === 'nl-report');
       document.getElementById('nav-nl-lounges').classList.toggle('active', view === 'nl-lounges');
       document.getElementById('nav-nl-session').classList.toggle('active', view === 'nl-session');
       document.getElementById('nav-dc-report').classList.toggle('active', view === 'dc-report');
       document.getElementById('nav-dc-galleries').classList.toggle('active', view === 'dc-galleries');
       document.getElementById('nav-dc-session').classList.toggle('active', view === 'dc-session');
+      document.getElementById('nav-key-mgmt').classList.toggle('active', view === 'key-mgmt');
+      document.getElementById('nav-scheduler-mgmt').classList.toggle('active', view === 'scheduler-mgmt');
       document.getElementById('nav-preset-mgmt').classList.toggle('active', view === 'preset-mgmt');
       document.getElementById('nav-delivery-log').classList.toggle('active', view === 'delivery-log');
 
@@ -512,12 +563,16 @@
       document.getElementById('topbar-fb-page-report').classList.toggle('hidden', view !== 'fb-page-report');
       document.getElementById('topbar-fb-pages').classList.toggle('hidden', view !== 'fb-pages');
       document.getElementById('topbar-fb-session').classList.toggle('hidden', view !== 'fb-session');
+      document.getElementById('topbar-yt-report').classList.toggle('hidden', view !== 'yt-report');
+      document.getElementById('topbar-yt-groups').classList.toggle('hidden', view !== 'yt-groups');
       document.getElementById('topbar-nl-report').classList.toggle('hidden', view !== 'nl-report');
       document.getElementById('topbar-nl-lounges').classList.toggle('hidden', view !== 'nl-lounges');
       document.getElementById('topbar-nl-session').classList.toggle('hidden', view !== 'nl-session');
       document.getElementById('topbar-dc-report').classList.toggle('hidden', view !== 'dc-report');
       document.getElementById('topbar-dc-galleries').classList.toggle('hidden', view !== 'dc-galleries');
       document.getElementById('topbar-dc-session').classList.toggle('hidden', view !== 'dc-session');
+      document.getElementById('topbar-key-mgmt').classList.toggle('hidden', view !== 'key-mgmt');
+      document.getElementById('topbar-scheduler-mgmt').classList.toggle('hidden', view !== 'scheduler-mgmt');
       document.getElementById('topbar-preset-mgmt').classList.toggle('hidden', view !== 'preset-mgmt');
       document.getElementById('topbar-delivery-log').classList.toggle('hidden', view !== 'delivery-log');
 
@@ -538,12 +593,16 @@
       document.getElementById('view-fb-page-report').classList.toggle('hidden', view !== 'fb-page-report');
       document.getElementById('view-fb-pages').classList.toggle('hidden', view !== 'fb-pages');
       document.getElementById('view-fb-session').classList.toggle('hidden', view !== 'fb-session');
+      document.getElementById('view-yt-report').classList.toggle('hidden', view !== 'yt-report');
+      document.getElementById('view-yt-groups').classList.toggle('hidden', view !== 'yt-groups');
       document.getElementById('view-nl-report').classList.toggle('hidden', view !== 'nl-report');
       document.getElementById('view-nl-lounges').classList.toggle('hidden', view !== 'nl-lounges');
       document.getElementById('view-nl-session').classList.toggle('hidden', view !== 'nl-session');
       document.getElementById('view-dc-report').classList.toggle('hidden', view !== 'dc-report');
       document.getElementById('view-dc-galleries').classList.toggle('hidden', view !== 'dc-galleries');
       document.getElementById('view-dc-session').classList.toggle('hidden', view !== 'dc-session');
+      document.getElementById('view-key-mgmt').classList.toggle('hidden', view !== 'key-mgmt');
+      document.getElementById('view-scheduler-mgmt').classList.toggle('hidden', view !== 'scheduler-mgmt');
       document.getElementById('view-preset-mgmt').classList.toggle('hidden', view !== 'preset-mgmt');
       document.getElementById('view-delivery-log').classList.toggle('hidden', view !== 'delivery-log');
 
@@ -564,12 +623,16 @@
       if (view === 'fb-page-report') { refreshFbPageAvailableDates().then(() => loadFbPageReport()); }
       if (view === 'fb-pages') loadFbPages();
       if (view === 'fb-session') loadFbSession();
+      if (view === 'yt-report') { refreshYtAvailableDates().then(() => loadYtReport()); }
+      if (view === 'yt-groups') loadYtGroups();
       if (view === 'nl-report') { refreshNlAvailableDates().then(() => loadNlReport()); }
       if (view === 'nl-lounges') loadNlLounges();
       if (view === 'nl-session') loadNlSession();
       if (view === 'dc-report') { refreshDcAvailableDates().then(() => loadDcReport()); }
       if (view === 'dc-galleries') loadDcGalleries();
       if (view === 'dc-session') loadDcSession();
+      if (view === 'key-mgmt') loadKeySettings();
+      if (view === 'scheduler-mgmt') loadSchedulerSettings();
       if (view === 'preset-mgmt') loadPresets();
       if (view === 'delivery-log') loadDeliveryLog();
       if (view === 'weekly') {
@@ -1584,6 +1647,7 @@
       frown: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M16 15s-1.5-2-4-2-4 2-4 2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg>`,
       warn: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>`,
       doc: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>`,
+      play: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.14v13.72a1 1 0 0 0 1.5.86l10.5-6.86a1 1 0 0 0 0-1.72L9.5 4.28A1 1 0 0 0 8 5.14z"/></svg>`,
       tag: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>`,
       bar: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>`,
       info: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>`,
@@ -4819,6 +4883,480 @@
     }
 
     // ════════════════════════════════════════════════════════
+    //  YouTube
+    // ════════════════════════════════════════════════════════
+
+    const SVG_YT = `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M23.5 6.2a3 3 0 0 0-2.1-2.1C19.6 3.6 12 3.6 12 3.6s-7.6 0-9.4.5A3 3 0 0 0 .5 6.2 31.4 31.4 0 0 0 0 12a31.4 31.4 0 0 0 .5 5.8 3 3 0 0 0 2.1 2.1c1.8.5 9.4.5 9.4.5s7.6 0 9.4-.5a3 3 0 0 0 2.1-2.1A31.4 31.4 0 0 0 24 12a31.4 31.4 0 0 0-.5-5.8Z"/><path fill="#fff" d="M9.6 15.5V8.5L15.8 12l-6.2 3.5Z"/></svg>`;
+
+    async function refreshYtAvailableDates() {
+      try {
+        const { dates } = await apiFetch(`/youtube/available-dates?workspaceId=${WS}`);
+        _availableYtDates = dates || [];
+        if (_fpYtDatePicker) {
+          if (_availableYtDates.length > 0) {
+            _fpYtDatePicker.set('enable', _availableYtDates);
+            if (!_fpYtDatePicker.selectedDates.length) _fpYtDatePicker.setDate(_availableYtDates[0], false);
+          } else {
+            _fpYtDatePicker.set('enable', [() => true]);
+          }
+        }
+      } catch (_) {}
+    }
+
+    async function triggerYtReport() {
+      const date = document.getElementById('ytReportDate')?.value;
+      if (!date) { alert('날짜를 선택하세요.'); return; }
+
+      const ok = await showConfirm({
+        platform: 'youtube',
+        icon: '▶',
+        title: 'YouTube 파이프라인',
+        color: '#ff0033',
+        sub: '재실행 — 기존 리포트 덮어쓰기',
+        badge: date,
+        desc: '그룹별 키워드 검색 결과를 다시 수집하고 AI 요약까지 재생성합니다.',
+        confirmLabel: '실행',
+      });
+      if (!ok) return;
+
+      const $btn = document.getElementById('ytTriggerBtn');
+      const $msg = document.getElementById('ytTriggerMsg');
+      $btn.classList.add('spinning');
+      $btn.style.pointerEvents = 'none';
+      $msg.className = 'trigger-msg run show';
+      $msg.textContent = '실행 중…';
+
+      try {
+        const r = await apiFetch('/youtube/pipeline/trigger', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ workspaceId: WS, date, skipEmail: true }),
+        });
+        const detail = `완료 (처리: ${r.results?.processed ?? 0}, 오류: ${r.results?.errors ?? 0})`;
+        $msg.className = 'trigger-msg ok show';
+        $msg.textContent = '✓ ' + detail;
+        await refreshYtAvailableDates();
+        setTimeout(() => loadYtReport(), 800);
+      } catch (err) {
+        $msg.className = 'trigger-msg err show';
+        $msg.textContent = '✗ ' + (err.message || '실패');
+      } finally {
+        $btn.classList.remove('spinning');
+        $btn.style.pointerEvents = '';
+      }
+    }
+
+    async function loadYtReport() {
+      const $main = document.getElementById('yt-report-main');
+      if (!$main) return;
+      const date = document.getElementById('ytReportDate')?.value;
+      if (!date) {
+        $main.innerHTML = '<div class="state-wrap"><div class="state-title">날짜를 선택하세요</div></div>';
+        return;
+      }
+      $main.innerHTML = '<div class="sk sk--sm"></div>';
+      try {
+        const { reports } = await apiFetch(`/youtube/report?workspaceId=${WS}&date=${date}`);
+        if (!reports || reports.length === 0) {
+          $main.innerHTML = '<div class="state-wrap"><div class="state-title">리포트 없음</div><div class="state-desc">해당 날짜의 신규 업로드 리포트가 없습니다.</div></div>';
+          return;
+        }
+        $main.innerHTML = reports.map(buildYtReportCard).join('');
+      } catch (err) {
+        $main.innerHTML = `<div class="error-state">오류: ${err.message}</div>`;
+      }
+    }
+
+    function formatYtPublishedAt(value) {
+      if (!value) return '—';
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return '—';
+      return date.toLocaleString('ko-KR', {
+        timeZone: 'Asia/Seoul',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+    }
+
+    function buildYtReportCard(r) {
+      const candidateVideoCount = Number(r.candidateVideoCount || r.videoCount || 0);
+      const relevantVideoCount = Number(r.relevantVideoCount || r.videoCount || 0);
+      const filteredOutVideoCount = Number(r.filteredOutVideoCount || 0);
+      const emptyVideoMessage = candidateVideoCount > 0 && relevantVideoCount === 0
+        ? '후보 영상은 있었지만 관련성 판정 후 보고 대상이 남지 않았습니다.'
+        : '해당 날짜에 수집된 신규 영상이 없습니다.';
+      const tokenStrip = (r.model || r.totalTokens) ? `
+        <div class="token-info-strip">
+          ${r.model ? `<span class="token-model">${escapeHtml(r.model)}</span>` : ''}
+          ${r.totalTokens ? `<span>입력 ${(r.promptTokens||0).toLocaleString()} / 출력 ${(r.completionTokens||0).toLocaleString()} / 합계 ${(r.totalTokens||0).toLocaleString()} 토큰</span>` : ''}
+          ${r.cost != null ? `<span>비용 $${Number(r.cost).toFixed(4)}</span>` : ''}
+        </div>` : '';
+      const videoRows = (r.videos || []).slice(0, 12).map((video) => {
+        const metrics = [
+          video.viewCount != null ? `조회 ${Number(video.viewCount).toLocaleString()}` : null,
+          video.likeCount != null ? `좋아요 ${Number(video.likeCount).toLocaleString()}` : null,
+          video.commentCount != null ? `댓글 ${Number(video.commentCount).toLocaleString()}` : null,
+          video.duration ? `길이 ${escapeHtml(video.duration)}` : null,
+        ].filter(Boolean).join(' · ');
+        const queryChips = (video.matchedQueries || []).map((query) =>
+          `<span class="badge" style="background:#fff1f2;color:#be123c;border:1px solid #fecdd3;margin-right:4px;margin-top:4px">${escapeHtml(query)}</span>`
+        ).join('');
+        return `
+          <div style="display:flex;gap:12px;padding:12px 0;border-bottom:1px solid var(--border)">
+            <a href="${escapeHtml(video.videoUrl || '#')}" target="_blank" rel="noopener" style="display:block;flex-shrink:0">
+              <img src="${escapeHtml(video.thumbnailUrl || '')}" alt="${escapeHtml(video.title || '')}" style="width:156px;height:88px;border-radius:12px;object-fit:cover;background:#e2e8f0;display:block">
+            </a>
+            <div style="min-width:0;flex:1">
+              <a href="${escapeHtml(video.videoUrl || '#')}" target="_blank" rel="noopener" style="display:block;font-size:.95rem;font-weight:700;color:var(--text-1);line-height:1.45;text-decoration:none">${escapeHtml(video.title || '(제목 없음)')}</a>
+              <div style="font-size:.78rem;color:var(--text-3);margin-top:6px">${escapeHtml(video.channelTitle || '—')} · ${formatYtPublishedAt(video.publishedAt)}${video.isShortCandidate ? ' · Shorts 후보' : ''}</div>
+              <div style="font-size:.8rem;color:var(--text-2);line-height:1.7;margin-top:6px">${metrics || '공개 지표 없음'}</div>
+              ${queryChips ? `<div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:4px">${queryChips}</div>` : ''}
+            </div>
+          </div>`;
+      }).join('');
+
+      return `
+      <div class="ch-card anim d1">
+        <div class="ch-header anim d1">
+          <div class="ch-platform-icon" style="color:#ff0033">${SVG_YT}</div>
+          <div>
+            <div class="ch-name">${escapeHtml(r.groupName || '')}</div>
+            <div class="ch-meta">키워드 ${r.queryCount || 0}개 &nbsp;·&nbsp; 후보 ${candidateVideoCount.toLocaleString()}개 &nbsp;·&nbsp; 관련 ${relevantVideoCount.toLocaleString()}개${filteredOutVideoCount > 0 ? ` &nbsp;·&nbsp; 제외/보류 ${filteredOutVideoCount.toLocaleString()}개` : ''}</div>
+          </div>
+        </div>
+
+        <div class="scard anim d2">
+          <div class="slabel"><div class="slabel-dot"></div>${SVG.doc}업로드 동향 요약</div>
+          <p class="summary-body">${formatSummary(r.aiSummary)}</p>
+        </div>
+
+        <div class="scard anim d3" style="margin-top:1rem">
+          <div class="slabel"><div class="slabel-dot"></div>${SVG.play}관련 업로드 <span class="slabel-count">${relevantVideoCount || 0}개</span></div>
+          ${videoRows || `<div style="color:var(--text-3);font-size:.875rem;line-height:1.8">${emptyVideoMessage}</div>`}
+        </div>
+
+        ${tokenStrip}
+      </div>`;
+    }
+
+    async function loadYtGroups() {
+      const $main = document.getElementById('yt-groups-main');
+      if (!$main) return;
+
+      $main.innerHTML = `
+        <div class="ch-mgmt-grid">
+          <div class="add-panel">
+            <div class="panel-title">YouTube 그룹 추가</div>
+            <div class="panel-desc">여러 키워드를 하나의 리포트 카테고리로 묶습니다.</div>
+            <div class="field-group">
+              <label class="field-label">그룹 이름 <span class="text-neg">*</span></label>
+              <input class="field-input" id="ytNewGroupName" type="text" placeholder="예: 신작 게임 트레일러" autocomplete="off">
+            </div>
+            <div class="field-group">
+              <label class="field-label">영문 그룹 이름 <span style="color:var(--text-muted);font-size:.75rem">(영문 프리셋 메일용)</span></label>
+              <input class="field-input" id="ytNewGroupNameEn" type="text" placeholder="Example: New Game Trailers" autocomplete="off">
+            </div>
+            <div class="field-group">
+              <label class="field-label">초기 키워드 <span style="color:var(--text-muted);font-size:.75rem">(쉼표 또는 줄바꿈 구분)</span></label>
+              <textarea class="settings-textarea" id="ytNewQueries" rows="5" placeholder="example game trailer&#10;example gameplay&#10;example review"></textarea>
+            </div>
+            <button class="btn-add" onclick="addYtGroup()">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+              </svg>
+              그룹 추가
+            </button>
+            <div class="add-result" id="ytAddResult"></div>
+          </div>
+          <div class="list-panel">
+            <div class="list-header">
+              <span class="list-title">등록된 YouTube 그룹</span>
+              <span class="list-count" id="ytGroupListCount">-</span>
+            </div>
+            <div id="yt-group-list"><div class="sk sk--sm"></div></div>
+          </div>
+        </div>`;
+
+      try {
+        const { groups } = await apiFetch(`/youtube/groups?workspaceId=${WS}`);
+        document.getElementById('ytGroupListCount').textContent = groups.length;
+        const $list = document.getElementById('yt-group-list');
+        $list.innerHTML = groups.length === 0
+          ? '<div class="ch-empty"><div class="text-center-muted">등록된 그룹 없음</div></div>'
+          : groups.map(ytGroupRowHTML).join('');
+      } catch (err) {
+        document.getElementById('yt-group-list').innerHTML =
+          `<div class="state-wrap"><div class="state-title">불러오기 실패</div><div class="state-desc">${escapeHtml(err.message)}</div></div>`;
+      }
+    }
+
+    function ytGroupRowHTML(group) {
+      const isActive = group.isActive !== false;
+      const recipients = (group.deliveryConfig?.email?.recipients || []).join(', ');
+      const isEmailEnabled = group.deliveryConfig?.email?.isEnabled ?? false;
+      const panelId = `yt-settings-${group.docId}`;
+      const selectedModel = YT_ANALYSIS_MODELS.some(m => m.value === group.analysisModel)
+        ? group.analysisModel
+        : YT_ANALYSIS_MODELS[0].value;
+      const queries = Array.isArray(group.queries) ? group.queries : [];
+      const queryRows = queries.length === 0
+        ? `<div class="ch-empty" style="margin-top:10px"><div class="text-center-muted">등록된 키워드 없음</div></div>`
+        : queries.map((query) => `
+            <div class="channel-setting-card" style="margin-top:10px">
+              <div class="channel-setting-head">
+                <div>
+                  <div class="channel-setting-name">키워드</div>
+                  <div class="channel-setting-meta">${query.isActive !== false ? '활성' : '비활성'}</div>
+                </div>
+                <div style="display:flex;gap:8px">
+                  <button class="btn-cancel-settings" onclick="toggleYtQuery('${group.docId}', '${query.queryId}', ${query.isActive !== false})">${query.isActive !== false ? '비활성화' : '활성화'}</button>
+                  <button class="btn-cancel-settings preset-btn-danger"
+                          data-groupid="${escapeHtml(group.docId)}"
+                          data-queryid="${escapeHtml(query.queryId)}"
+                          data-querytext="${escapeHtml(query.query || '')}"
+                          onclick="deleteYtQuery(this.dataset.groupid, this.dataset.queryid, this.dataset.querytext)">삭제</button>
+                </div>
+              </div>
+              <div class="field-group" style="margin-bottom:10px">
+                <label class="field-label">검색어</label>
+                <input class="field-input" id="ytQueryValue-${group.docId}-${query.queryId}" type="text" value="${escapeHtml(query.query || '')}">
+              </div>
+              <div class="field-group" style="margin-bottom:10px">
+                <label class="field-label">메모</label>
+                <input class="field-input" id="ytQueryNote-${group.docId}-${query.queryId}" type="text" value="${escapeHtml(query.note || '')}" placeholder="선택 메모">
+              </div>
+              <button class="btn-save-settings" onclick="saveYtQuery('${group.docId}', '${query.queryId}')">키워드 저장</button>
+            </div>
+          `).join('');
+
+      return `
+        <div class="ch-row ${isActive ? '' : 'inactive'}" id="ytrow-${group.docId}">
+          <div class="ch-row-icon" style="color:#ff0033">${SVG_YT}</div>
+          <div class="ch-row-info">
+            <div class="ch-row-name">${escapeHtml(group.name || group.docId)}</div>
+            <div class="ch-row-meta">키워드 ${queries.length}개 · 쿼리당 최대 ${group.maxResultsPerQuery || 25}건</div>
+          </div>
+          <div class="ch-row-status ${isActive ? 'active' : 'inactive'}">${isActive ? '활성' : '비활성'}</div>
+          <div class="ch-row-actions">
+            <div class="action-btn settings" data-docid="${escapeHtml(group.docId)}"
+                 onclick="toggleYtGroupSettings(this.dataset.docid)" title="설정">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="3"/>
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+              </svg>
+            </div>
+            <div class="action-btn ${isActive ? 'toggle-on' : 'toggle-off'}"
+                 data-docid="${escapeHtml(group.docId)}"
+                 onclick="toggleYtGroup(this.dataset.docid, ${isActive})"
+                 title="${isActive ? '비활성화' : '활성화'}">
+              ${isActive
+                ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18.364 18.364A9 9 0 0 0 5.636 5.636m12.728 12.728L5.636 5.636"/></svg>`
+                : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>`}
+            </div>
+            <div class="action-btn del"
+                 data-docid="${escapeHtml(group.docId)}" data-name="${escapeHtml(group.name || '')}"
+                 onclick="deleteYtGroup(this.dataset.docid, this.dataset.name)"
+                 title="그룹 삭제">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="3 6 5 6 21 6"/>
+                <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
+                <path d="M10 11v6M14 11v6"/>
+                <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/>
+              </svg>
+            </div>
+          </div>
+        </div>
+        <div class="ch-settings-panel" id="${panelId}">
+          <div class="settings-section">
+            <div class="settings-section-title">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+              이메일 리포트
+            </div>
+            <label class="toggle-row">
+              <input type="checkbox" id="ytEmailEnabled-${group.docId}" ${isEmailEnabled ? 'checked' : ''}>
+              <span style="font-size:.875rem">이메일 발송 활성화</span>
+            </label>
+            <textarea class="settings-textarea" id="ytEmailRecipients-${group.docId}" placeholder="수신자 이메일 (쉼표 구분)">${escapeHtml(recipients)}</textarea>
+          </div>
+          <div class="settings-section">
+            <div class="settings-section-title">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/></svg>
+              그룹 설정
+            </div>
+            <div class="field-group">
+              <label class="field-label">그룹명</label>
+              <input class="field-input" id="ytGroupName-${group.docId}" type="text" value="${escapeHtml(group.name || '')}">
+            </div>
+            <div class="field-group">
+              <label class="field-label">영문 그룹명</label>
+              <input class="field-input" id="ytGroupNameEn-${group.docId}" type="text" value="${escapeHtml(group.nameEn || '')}" placeholder="English name for EN preset email">
+            </div>
+            <label class="settings-field-label" for="ytAnalysisModel-${group.docId}">AI 모델</label>
+            <select class="settings-select" id="ytAnalysisModel-${group.docId}">
+              ${YT_ANALYSIS_MODELS.map(m => `
+                <option value="${escapeHtml(m.value)}" ${selectedModel === m.value ? 'selected' : ''}>
+                  ${escapeHtml(m.label)}
+                </option>
+              `).join('')}
+            </select>
+            <div class="field-group">
+              <label class="field-label">키워드당 최대 결과</label>
+              <input class="field-input" id="ytMaxResults-${group.docId}" type="number" min="1" max="50" value="${Number(group.maxResultsPerQuery || 25)}">
+            </div>
+            <textarea class="settings-textarea" id="ytSummaryPrompt-${group.docId}" rows="4" placeholder="예: 신작 발표/트레일러 성격을 우선적으로 요약해줘.">${escapeHtml(group.summaryPrompt || '')}</textarea>
+            <button class="btn-save-settings" onclick="saveYtGroupSettings('${group.docId}')">그룹 설정 저장</button>
+            <div class="add-result" id="ytSaveResult-${group.docId}"></div>
+          </div>
+          <div class="settings-section">
+            <div class="settings-section-title">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+              키워드 관리
+            </div>
+            <div class="field-group" style="margin-bottom:10px">
+              <label class="field-label">새 키워드</label>
+              <input class="field-input" id="ytNewQuery-${group.docId}" type="text" placeholder="예: dragon ball sparking zero trailer">
+            </div>
+            <button class="btn-save-settings" onclick="addYtQuery('${group.docId}')">키워드 추가</button>
+            ${queryRows}
+          </div>
+        </div>`;
+    }
+
+    function toggleYtGroupSettings(docId) {
+      const panel = document.getElementById(`yt-settings-${docId}`);
+      if (panel) panel.classList.toggle('open');
+    }
+
+    async function addYtGroup() {
+      const name = document.getElementById('ytNewGroupName')?.value.trim() || '';
+      const nameEn = document.getElementById('ytNewGroupNameEn')?.value.trim() || '';
+      const queries = (document.getElementById('ytNewQueries')?.value || '')
+        .split(/[\n,]+/).map(v => v.trim()).filter(Boolean);
+      const $result = document.getElementById('ytAddResult');
+      if (!name) { $result.textContent = '그룹 이름을 입력하세요.'; return; }
+      try {
+        $result.textContent = '추가 중…';
+        await apiFetch('/youtube/groups', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ workspaceId: WS, name, nameEn, queries }),
+        });
+        await loadYtGroups();
+      } catch (err) {
+        $result.textContent = '오류: ' + err.message;
+      }
+    }
+
+    async function toggleYtGroup(docId, currentActive) {
+      try {
+        await apiFetch(`/youtube/groups?workspaceId=${WS}&docId=${encodeURIComponent(docId)}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ isActive: !currentActive }),
+        });
+        await loadYtGroups();
+      } catch (err) { alert('변경 실패: ' + err.message); }
+    }
+
+    async function saveYtGroupSettings(docId) {
+      const isEnabled = document.getElementById(`ytEmailEnabled-${docId}`)?.checked ?? false;
+      const recipients = (document.getElementById(`ytEmailRecipients-${docId}`)?.value || '')
+        .split(/[,\n]/).map(v => v.trim()).filter(Boolean);
+      const name = document.getElementById(`ytGroupName-${docId}`)?.value.trim() || '';
+      const nameEn = document.getElementById(`ytGroupNameEn-${docId}`)?.value.trim() || '';
+      const summaryPrompt = document.getElementById(`ytSummaryPrompt-${docId}`)?.value || '';
+      const analysisModel = document.getElementById(`ytAnalysisModel-${docId}`)?.value || YT_ANALYSIS_MODELS[0].value;
+      const maxResultsPerQuery = Number(document.getElementById(`ytMaxResults-${docId}`)?.value || 25);
+      const $result = document.getElementById(`ytSaveResult-${docId}`);
+      try {
+        await apiFetch(`/youtube/groups/settings?workspaceId=${WS}&docId=${encodeURIComponent(docId)}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name,
+            nameEn,
+            summaryPrompt,
+            analysisModel,
+            maxResultsPerQuery,
+            deliveryConfig: { email: { isEnabled, recipients } },
+          }),
+        });
+        if ($result) {
+          $result.textContent = '✓ 저장됨';
+          $result.style.color = 'var(--pos)';
+          setTimeout(() => { if ($result) $result.textContent = ''; }, 2000);
+        }
+        await loadYtGroups();
+      } catch (err) {
+        if ($result) {
+          $result.textContent = '저장 실패: ' + err.message;
+          $result.style.color = 'var(--neg)';
+        }
+      }
+    }
+
+    async function deleteYtGroup(docId, name) {
+      const ok = await confirmDialog(`"${name}" 그룹을 삭제하시겠습니까?`);
+      if (!ok) return;
+      try {
+        await apiFetch(`/youtube/groups?workspaceId=${WS}&docId=${encodeURIComponent(docId)}`, { method: 'DELETE' });
+        await loadYtGroups();
+      } catch (err) { alert('삭제 실패: ' + err.message); }
+    }
+
+    async function addYtQuery(groupId) {
+      const input = document.getElementById(`ytNewQuery-${groupId}`);
+      const query = input?.value.trim() || '';
+      if (!query) return alert('키워드를 입력하세요.');
+      try {
+        await apiFetch('/youtube/queries', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ workspaceId: WS, groupId, query }),
+        });
+        await loadYtGroups();
+      } catch (err) { alert('추가 실패: ' + err.message); }
+    }
+
+    async function toggleYtQuery(groupId, queryId, currentActive) {
+      try {
+        await apiFetch(`/youtube/queries?workspaceId=${WS}&groupId=${encodeURIComponent(groupId)}&queryId=${encodeURIComponent(queryId)}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ isActive: !currentActive }),
+        });
+        await loadYtGroups();
+      } catch (err) { alert('변경 실패: ' + err.message); }
+    }
+
+    async function saveYtQuery(groupId, queryId) {
+      const query = document.getElementById(`ytQueryValue-${groupId}-${queryId}`)?.value.trim() || '';
+      const note = document.getElementById(`ytQueryNote-${groupId}-${queryId}`)?.value.trim() || '';
+      if (!query) return alert('키워드를 입력하세요.');
+      try {
+        await apiFetch(`/youtube/queries?workspaceId=${WS}&groupId=${encodeURIComponent(groupId)}&queryId=${encodeURIComponent(queryId)}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query, note }),
+        });
+        await loadYtGroups();
+      } catch (err) { alert('저장 실패: ' + err.message); }
+    }
+
+    async function deleteYtQuery(groupId, queryId, queryText) {
+      const ok = await confirmDialog(`"${queryText}" 키워드를 삭제하시겠습니까?`);
+      if (!ok) return;
+      try {
+        await apiFetch(`/youtube/queries?workspaceId=${WS}&groupId=${encodeURIComponent(groupId)}&queryId=${encodeURIComponent(queryId)}`, {
+          method: 'DELETE',
+        });
+        await loadYtGroups();
+      } catch (err) { alert('삭제 실패: ' + err.message); }
+    }
+
+    // ════════════════════════════════════════════════════════
     //  네이버 라운지
     // ════════════════════════════════════════════════════════
 
@@ -5864,26 +6402,444 @@
     }
 
     // ═══════════════════════════════════════════════════════
+    //  키 관리
+    // ═══════════════════════════════════════════════════════
+
+    async function loadKeySettings() {
+      const $main = document.getElementById('key-mgmt-main');
+      if (!$main) return;
+
+      $main.innerHTML = `
+        <div class="ch-mgmt-grid">
+          <div class="add-panel">
+            <div class="panel-title">API 키 관리</div>
+            <div class="panel-desc">일단은 YouTube Data API 키만 다룹니다. 더 늘어나면 그때 또 늘리면 됩니다.</div>
+            <div class="field-group">
+              <label class="field-label">YouTube Data API Key</label>
+              <input class="field-input" id="youtubeApiKeyInput" type="password" placeholder="AIza..." autocomplete="off">
+              <div class="preset-field-hint" id="youtubeApiKeyHint" style="margin-top:8px">현재 저장 상태를 확인하는 중...</div>
+            </div>
+            <div class="delivery-row" style="margin:6px 0 14px">
+              <label class="toggle-row" style="margin:0">
+                <input type="checkbox" id="youtubeApiKeyClear">
+                <span style="font-size:.875rem">저장된 키 삭제</span>
+              </label>
+            </div>
+            <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+              <button class="btn-save-settings" onclick="saveKeySettings()">저장</button>
+              <button class="btn-cancel-settings" onclick="loadKeySettings()">다시 불러오기</button>
+              <span class="settings-msg" id="keyMgmtMsg"></span>
+            </div>
+          </div>
+          <div class="list-panel">
+            <div class="list-header">
+              <span class="list-title">운영 메모</span>
+            </div>
+            <div class="channel-setting-card" style="margin-top:0">
+              <div class="field-group" style="margin-bottom:12px">
+                <label class="field-label">현재 규칙</label>
+                <div class="preset-field-hint" style="line-height:1.8">
+                  YouTube 파이프라인은 여기 저장된 키를 우선 사용합니다.<br>
+                  비어 있으면 서버 환경변수 <code>YOUTUBE_API_KEY</code>로 fallback 합니다.<br>
+                  웹앱에서는 마스킹된 상태만 보여주고, 기존 키 원문은 다시 노출하지 않습니다.
+                </div>
+              </div>
+              <div class="field-group" style="margin-bottom:0">
+                <label class="field-label">주의</label>
+                <div class="preset-field-hint" style="line-height:1.8">
+                  이 값은 Firestore에 저장됩니다. 이미 다른 플랫폼 토큰도 그렇게 굴러가니 새삼스럽진 않습니다.<br>
+                  그래도 키는 이 프로젝트 전용으로 제한해 두는 편이 덜 한심합니다.
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>`;
+
+      try {
+        const data = await apiFetch(`/settings/keys?workspaceId=${WS}`);
+        const youtube = data.youtube || {};
+        const hint = document.getElementById('youtubeApiKeyHint');
+        const clearToggle = document.getElementById('youtubeApiKeyClear');
+        const input = document.getElementById('youtubeApiKeyInput');
+        clearToggle.checked = false;
+        clearToggle.onchange = () => {
+          if (!input) return;
+          input.disabled = clearToggle.checked;
+          if (clearToggle.checked) input.value = '';
+        };
+        const sourceLabel = youtube.source === 'workspace'
+          ? '워크스페이스 저장값'
+          : (youtube.source === 'env' ? '서버 환경변수 fallback' : '');
+        hint.textContent = youtube.isConfigured
+          ? `활성 키: ${youtube.maskedKey}${sourceLabel ? ` · ${sourceLabel}` : ''}${youtube.updatedAt ? ` · 업데이트 ${new Date(youtube.updatedAt).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })}` : ''}`
+          : '활성 키 없음';
+      } catch (err) {
+        const hint = document.getElementById('youtubeApiKeyHint');
+        if (hint) hint.textContent = `조회 실패: ${err.message}`;
+      }
+    }
+
+    async function saveKeySettings() {
+      const $msg = document.getElementById('keyMgmtMsg');
+      const $input = document.getElementById('youtubeApiKeyInput');
+      const $clear = document.getElementById('youtubeApiKeyClear');
+      if (!$msg || !$input || !$clear) return;
+
+      $msg.className = 'settings-msg';
+      $msg.textContent = '';
+
+      const clearYoutubeDataApiKey = $clear.checked;
+      const youtubeDataApiKey = $input.value.trim();
+
+      if (!clearYoutubeDataApiKey && !youtubeDataApiKey) {
+        $msg.className = 'settings-msg err';
+        $msg.textContent = '저장할 키를 입력하거나 삭제를 체크하세요.';
+        return;
+      }
+
+      try {
+        const payload = { clearYoutubeDataApiKey };
+        if (!clearYoutubeDataApiKey) payload.youtubeDataApiKey = youtubeDataApiKey;
+        await apiFetch(`/settings/keys?workspaceId=${WS}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        await loadKeySettings();
+        const nextMsg = document.getElementById('keyMgmtMsg');
+        if (nextMsg) {
+          nextMsg.className = 'settings-msg ok';
+          nextMsg.textContent = clearYoutubeDataApiKey ? '저장된 YouTube API 키를 삭제했습니다.' : 'YouTube API 키를 저장했습니다.';
+        }
+      } catch (err) {
+        $msg.className = 'settings-msg err';
+        $msg.textContent = err.message || '저장 실패';
+      }
+    }
+
+    // ═══════════════════════════════════════════════════════
+    //  스케줄러 관리
+    // ═══════════════════════════════════════════════════════
+
+    function schedulerPad2(value) {
+      return String(Math.max(0, Number(value) || 0)).padStart(2, '0');
+    }
+
+    function getSchedulerWeekdayLabel(value) {
+      return SCHEDULER_WEEKDAYS.find((item) => Number(item.value) === Number(value))?.label || '월요일';
+    }
+
+    function getSchedulerBadgeLabel(task) {
+      if (task.type === 'interval') return `매 ${task.intervalHours}시간`;
+      if (task.type === 'weekly') return '매주';
+      return '매일';
+    }
+
+    function getSchedulerSummary(task) {
+      if (task.type === 'interval') {
+        return `매 ${task.intervalHours}시간마다 ${schedulerPad2(task.minute)}분에 실행`;
+      }
+      if (task.type === 'weekly') {
+        return `${getSchedulerWeekdayLabel(task.weekday)} ${schedulerPad2(task.hour)}:${schedulerPad2(task.minute)}`;
+      }
+      return `매일 ${schedulerPad2(task.hour)}:${schedulerPad2(task.minute)}`;
+    }
+
+    function getSchedulerStatusMarkup(task) {
+      const ranAt = task.lastRunAt
+        ? new Date(task.lastRunAt).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })
+        : '아직 없음';
+      let statusText = '기록 없음';
+      let statusClass = '';
+      if (task.lastStatus === 'success') {
+        statusText = '성공';
+        statusClass = 'scheduler-status-ok';
+      } else if (task.lastStatus === 'error') {
+        statusText = '실패';
+        statusClass = 'scheduler-status-err';
+      } else if (task.lastStatus === 'running') {
+        statusText = '실행 중';
+      }
+
+      return `
+        <div>현재 설정: ${escapeHtml(getSchedulerSummary(task))}</div>
+        <div>마지막 실행: ${escapeHtml(ranAt)}</div>
+        <div>마지막 상태: <span class="${statusClass}">${escapeHtml(statusText)}</span></div>
+        ${task.lastError ? `<div class="scheduler-status-err">최근 오류: ${escapeHtml(task.lastError)}</div>` : ''}
+      `;
+    }
+
+    function renderSchedulerFields(task) {
+      if (task.type === 'interval') {
+        return `
+          <div class="scheduler-row">
+            <label class="scheduler-field">
+              <span class="scheduler-field-label">간격 (시간)</span>
+              <input class="field-input" type="number" min="1" max="24" step="1"
+                     id="scheduler-intervalHours-${task.key}" value="${Number(task.intervalHours) || 1}">
+            </label>
+            <label class="scheduler-field">
+              <span class="scheduler-field-label">분</span>
+              <input class="field-input" type="number" min="0" max="55" step="5"
+                     id="scheduler-minute-${task.key}" value="${Number(task.minute) || 0}">
+            </label>
+          </div>
+          <div class="scheduler-inline-note">자정(KST)을 기준으로 간격을 계산합니다. 분 값은 5분 단위만 허용됩니다.</div>
+        `;
+      }
+
+      const weekdayField = task.type === 'weekly'
+        ? `
+          <label class="scheduler-field">
+            <span class="scheduler-field-label">요일</span>
+            <select class="settings-select" id="scheduler-weekday-${task.key}">
+              ${SCHEDULER_WEEKDAYS.map((item) => `
+                <option value="${item.value}" ${Number(item.value) === Number(task.weekday) ? 'selected' : ''}>${item.label}</option>
+              `).join('')}
+            </select>
+          </label>
+        `
+        : '';
+
+      return `
+        <div class="scheduler-row">
+          <label class="scheduler-field">
+            <span class="scheduler-field-label">시</span>
+            <input class="field-input" type="number" min="0" max="23" step="1"
+                   id="scheduler-hour-${task.key}" value="${Number(task.hour) || 0}">
+          </label>
+          <label class="scheduler-field">
+            <span class="scheduler-field-label">분</span>
+            <input class="field-input" type="number" min="0" max="55" step="5"
+                   id="scheduler-minute-${task.key}" value="${Number(task.minute) || 0}">
+          </label>
+        </div>
+        ${weekdayField ? `<div class="scheduler-row scheduler-row--single">${weekdayField}</div>` : ''}
+      `;
+    }
+
+    function renderSchedulerSettings(tasks) {
+      _schedulerTasks = Array.isArray(tasks) ? tasks : [];
+      const $main = document.getElementById('scheduler-mgmt-main');
+      if (!$main) return;
+
+      if (!_schedulerTasks.length) {
+        $main.innerHTML = `
+          <div class="scheduler-mgmt-panel">
+            <div class="scheduler-mgmt-header">
+              <div class="scheduler-mgmt-title">스케줄러 설정을 불러오지 못했습니다</div>
+              <div class="scheduler-mgmt-note">응답이 비어 있습니다. 역시 조용히 망가지는 쪽을 택했군요.</div>
+            </div>
+          </div>`;
+        return;
+      }
+
+      $main.innerHTML = `
+        <div class="scheduler-mgmt-panel">
+          <div class="scheduler-mgmt-header">
+            <div class="scheduler-mgmt-title">자동 실행 스케줄 관리</div>
+            <div class="scheduler-mgmt-note">
+              여기서 바꾸는 건 Firebase 쪽 자동 스케줄만입니다.<br>
+              DCInside Mac Mini 로컬 수집기(<code>45 8 * * *</code>, KST 08:45)는 별도 장비에서 돌아가므로 여기서 제어하지 않습니다.<br>
+              시간은 5분 단위만 허용합니다. 09:00에 무거운 작업을 몰아넣고 느리다고 투덜대는 일은 스스로 자제하면 됩니다.
+            </div>
+          </div>
+          <div class="scheduler-list">
+            ${_schedulerTasks.map((task) => `
+              <div class="scheduler-card" data-scheduler-key="${escapeHtml(task.key)}">
+                <div class="scheduler-card-header">
+                  <div>
+                    <div class="scheduler-card-title">${escapeHtml(task.name)}</div>
+                    <div class="scheduler-card-desc">${escapeHtml(task.description || '')}</div>
+                  </div>
+                  <div class="scheduler-card-meta">${escapeHtml(getSchedulerBadgeLabel(task))}</div>
+                </div>
+                <div class="scheduler-row scheduler-row--single">
+                  <label class="scheduler-toggle">
+                    <input type="checkbox"
+                           id="scheduler-enabled-${task.key}"
+                           ${task.enabled !== false ? 'checked' : ''}
+                           onchange="toggleSchedulerInputs('${task.key}')">
+                    활성
+                  </label>
+                </div>
+                ${renderSchedulerFields(task)}
+                <div class="scheduler-last-run">${getSchedulerStatusMarkup(task)}</div>
+              </div>
+            `).join('')}
+          </div>
+          <div class="scheduler-mgmt-actions">
+            <button class="btn-save-settings" onclick="saveSchedulerSettings()">저장</button>
+            <span class="settings-msg" id="schedulerMgmtMsg"></span>
+          </div>
+        </div>
+      `;
+
+      _schedulerTasks.forEach((task) => toggleSchedulerInputs(task.key));
+    }
+
+    function toggleSchedulerInputs(taskKey) {
+      const card = document.querySelector(`[data-scheduler-key="${taskKey}"]`);
+      const enabled = document.getElementById(`scheduler-enabled-${taskKey}`)?.checked !== false;
+      if (!card) return;
+      card.querySelectorAll('input, select').forEach((el) => {
+        if (el.id === `scheduler-enabled-${taskKey}`) return;
+        el.disabled = !enabled;
+      });
+    }
+
+    async function loadSchedulerSettings() {
+      const $main = document.getElementById('scheduler-mgmt-main');
+      if (!$main) return;
+      $main.innerHTML = `
+        <div class="scheduler-mgmt-panel">
+          <div class="scheduler-mgmt-header">
+            <div class="scheduler-mgmt-title">스케줄러 설정 불러오는 중...</div>
+            <div class="scheduler-mgmt-note">설정 한 장 읽는 일인데도 이렇게 뜸을 들입니다.</div>
+          </div>
+        </div>`;
+      try {
+        const data = await apiFetch(`/settings/schedulers?workspaceId=${WS}`);
+        renderSchedulerSettings(data.tasks || []);
+      } catch (err) {
+        $main.innerHTML = `
+          <div class="scheduler-mgmt-panel">
+            <div class="scheduler-mgmt-header">
+              <div class="scheduler-mgmt-title">불러오기 실패</div>
+              <div class="scheduler-mgmt-note">${escapeHtml(err.message || '스케줄러 설정 조회 실패')}</div>
+            </div>
+          </div>`;
+      }
+    }
+
+    function readSchedulerInt(id, min, max, label, step = 1) {
+      const el = document.getElementById(id);
+      if (!el) throw new Error(`${label} 입력을 찾을 수 없습니다.`);
+      const value = Number(el.value);
+      if (!Number.isInteger(value) || value < min || value > max) {
+        throw new Error(`${label} 값이 올바르지 않습니다.`);
+      }
+      if (step > 1 && value % step !== 0) {
+        throw new Error(`${label} 값은 ${step}분 단위여야 합니다.`);
+      }
+      return value;
+    }
+
+    async function saveSchedulerSettings() {
+      if (!_schedulerTasks.length) return;
+      const $msg = document.getElementById('schedulerMgmtMsg');
+      if ($msg) {
+        $msg.className = 'settings-msg';
+        $msg.textContent = '';
+      }
+
+      try {
+        const tasks = {};
+        for (const task of _schedulerTasks) {
+          const enabled = document.getElementById(`scheduler-enabled-${task.key}`)?.checked !== false;
+          const payload = { enabled };
+          payload.minute = readSchedulerInt(`scheduler-minute-${task.key}`, 0, 55, `${task.name} 분`, 5);
+          if (task.type === 'interval') {
+            payload.intervalHours = readSchedulerInt(`scheduler-intervalHours-${task.key}`, 1, 24, `${task.name} 간격`);
+          } else {
+            payload.hour = readSchedulerInt(`scheduler-hour-${task.key}`, 0, 23, `${task.name} 시`);
+            if (task.type === 'weekly') {
+              payload.weekday = readSchedulerInt(`scheduler-weekday-${task.key}`, 1, 7, `${task.name} 요일`);
+            }
+          }
+          tasks[task.key] = payload;
+        }
+
+        const data = await apiFetch(`/settings/schedulers?workspaceId=${WS}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ tasks }),
+        });
+        renderSchedulerSettings(data.tasks || []);
+        const nextMsg = document.getElementById('schedulerMgmtMsg');
+        if (nextMsg) {
+          nextMsg.className = 'settings-msg ok';
+          nextMsg.textContent = '스케줄러 설정을 저장했습니다.';
+        }
+      } catch (err) {
+        if ($msg) {
+          $msg.className = 'settings-msg err';
+          $msg.textContent = err.message || '저장 실패';
+        }
+      }
+    }
+
+    // ═══════════════════════════════════════════════════════
     //  리포트 프리셋 관리
     // ═══════════════════════════════════════════════════════
+
+    const PRESET_ASSET_BASE_URL = window.location.origin || 'https://sociallistener-8efde.web.app';
+    const DEFAULT_PRESET_THEME = Object.freeze({
+      heroGradientFrom: '#f58529',
+      heroGradientTo: '#8134af',
+    });
+    const PRESET_ICON_URLS = Object.freeze({
+      discord: `${PRESET_ASSET_BASE_URL}/icons/discord.svg`,
+      instagram: `${PRESET_ASSET_BASE_URL}/icons/instagram.svg`,
+      facebook: `${PRESET_ASSET_BASE_URL}/icons/facebook.svg`,
+      youtube: `${PRESET_ASSET_BASE_URL}/icons/youtube.svg`,
+      naver_lounge: `${PRESET_ASSET_BASE_URL}/icons/naver-lounge.svg`,
+      dcinside: `${PRESET_ASSET_BASE_URL}/dc-icon.png`,
+    });
+
+    function normalizeHexColor(value, fallback) {
+      const normalized = String(value || '').trim();
+      return /^#(?:[0-9a-fA-F]{6})$/.test(normalized) ? normalized : fallback;
+    }
+
+    function buildPresetIconHtml(url, label) {
+      return `<img src="${url}" alt="${escapeHtml(label)}" style="width:14px;height:14px;display:block;flex-shrink:0;object-fit:contain">`;
+    }
+
+    const PRESET_UI_ICONS = {
+      discord: buildPresetIconHtml(PRESET_ICON_URLS.discord, 'Discord'),
+      instagram: buildPresetIconHtml(PRESET_ICON_URLS.instagram, 'Instagram'),
+      facebook: buildPresetIconHtml(PRESET_ICON_URLS.facebook, 'Facebook'),
+      youtube: buildPresetIconHtml(PRESET_ICON_URLS.youtube, 'YouTube'),
+      naver_lounge: buildPresetIconHtml(PRESET_ICON_URLS.naver_lounge, '네이버 라운지'),
+      dcinside: `<img src="${PRESET_ICON_URLS.dcinside}" alt="DCInside" style="width:14px;height:14px;border-radius:3px;object-fit:cover;display:block;flex-shrink:0">`,
+    };
 
     /** 플랫폼별 메타 */
     const PRESET_PLATFORM_META = {
       discord: {
         label: 'Discord', color: '#5865F2', emailIcon: '🎮', cls: 'preset-block--discord',
-        icon: `<svg viewBox="0 0 24 24" fill="currentColor" style="width:13px;height:13px;flex-shrink:0;color:var(--discord)"><path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994a.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"/></svg>`,
+        icon: PRESET_UI_ICONS.discord, iconUrl: PRESET_ICON_URLS.discord,
+        issueTone: { bg: '#eef2ff', border: '#5865F2', title: '#4338ca', body: '#3730a3' },
       },
       instagram: {
         label: 'Instagram', color: '#E1306C', emailIcon: '📸', cls: 'preset-block--instagram',
-        icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" style="width:13px;height:13px;flex-shrink:0;color:#E1306C"><rect x="2" y="2" width="20" height="20" rx="5" ry="5"/><path d="M16 11.37A4 4 0 1 1 12.63 8 4 4 0 0 1 16 11.37z"/><line x1="17.5" y1="6.5" x2="17.51" y2="6.5"/></svg>`,
+        icon: PRESET_UI_ICONS.instagram, iconUrl: PRESET_ICON_URLS.instagram,
       },
       facebook: {
         label: 'Facebook 그룹', color: '#1877F2', emailIcon: '👥', cls: 'preset-block--facebook',
-        icon: `<svg viewBox="0 0 24 24" fill="currentColor" style="width:13px;height:13px;flex-shrink:0;color:#1877F2"><path d="M24 12.073C24 5.405 18.627 0 12 0S0 5.405 0 12.073C0 18.1 4.388 23.094 10.125 24v-8.437H7.078v-3.49h3.047V9.41c0-3.025 1.792-4.697 4.533-4.697 1.312 0 2.686.236 2.686.236v2.97h-1.513c-1.491 0-1.956.93-1.956 1.886v2.267h3.328l-.532 3.49h-2.796V24C19.612 23.094 24 18.1 24 12.073z"/></svg>`,
+        icon: PRESET_UI_ICONS.facebook, iconUrl: PRESET_ICON_URLS.facebook,
+        issueTone: { bg: '#eff6ff', border: '#1877F2', title: '#1d4ed8', body: '#1e3a8a' },
+      },
+      youtube: {
+        label: 'YouTube', color: '#ff0033', emailIcon: '▶️', cls: 'preset-block--youtube',
+        icon: PRESET_UI_ICONS.youtube, iconUrl: PRESET_ICON_URLS.youtube,
+        issueTone: { bg: '#fff1f2', border: '#ff0033', title: '#be123c', body: '#881337' },
       },
       naver_lounge: {
         label: '네이버 라운지', color: '#03C75A', emailIcon: '🏪', cls: 'preset-block--naver_lounge',
-        icon: `<svg viewBox="0 0 24 24" fill="currentColor" style="width:13px;height:13px;flex-shrink:0;color:#03C75A"><path d="M16.273 12.845 7.376 0H0v24h7.727V11.155L16.624 24H24V0h-7.727z"/></svg>`,
+        icon: PRESET_UI_ICONS.naver_lounge, iconUrl: PRESET_ICON_URLS.naver_lounge,
+        issueTone: { bg: '#f0fdf4', border: '#03C75A', title: '#15803d', body: '#166534' },
+      },
+      facebook_page: {
+        label: 'Facebook 페이지', color: '#1877F2', emailIcon: '📄', cls: 'preset-block--facebook_page',
+        icon: PRESET_UI_ICONS.facebook, iconUrl: PRESET_ICON_URLS.facebook,
+        issueTone: { bg: '#eff6ff', border: '#1877F2', title: '#1d4ed8', body: '#1e3a8a' },
+      },
+      dcinside: {
+        label: 'DCInside', color: '#404E8E', emailIcon: '🗨️', cls: 'preset-block--dcinside',
+        icon: PRESET_UI_ICONS.dcinside, iconUrl: PRESET_ICON_URLS.dcinside,
+        issueTone: { bg: '#eef0f8', border: '#404E8E', title: '#2e3a6e', body: '#1a2350' },
       },
     };
 
@@ -5891,10 +6847,11 @@
     const PREVIEW_MOCK = {
       discord: {
         messageCount: 128,
+        discordGuildId: '123456789012345678',
         summary: '오늘은 신규 업데이트 관련 긍정적인 반응이 많았습니다. 유저들의 참여도가 전반적으로 높았으며 커뮤니티 활동이 활발하게 이루어졌습니다.',
         issues: [
-          { title: '서버 불안정 문의', description: '접속 오류를 경험한 유저 보고 다수', count: 12 },
-          { title: '신규 콘텐츠 요청', description: '다음 업데이트 일정에 대한 문의 증가', count: 8 },
+          { title: '서버 불안정 문의', description: '접속 오류를 경험한 유저 보고 다수', count: 12, channel: 'bug-report', channelId: '111111111111111111', messageId: '222222222222222222' },
+          { title: '신규 콘텐츠 요청', description: '다음 업데이트 일정에 대한 문의 증가', count: 8, channel: 'general', channelId: '111111111111111111', messageId: '333333333333333333' },
         ],
       },
       instagram: {
@@ -5906,16 +6863,60 @@
       },
       facebook: {
         postCount: 15,
+        totalComments: 39,
+        posts: [
+          { postUrl: 'https://www.facebook.com/groups/example/posts/1001' },
+          { postUrl: 'https://www.facebook.com/groups/example/posts/1002' },
+        ],
         aiSummary: '<p>이번 주 그룹 내 주요 화제는 신제품 출시였으며, 전반적으로 긍정적인 반응이 주를 이뤘습니다.</p>',
         aiIssues: [
-          { title: '배송 지연 불만', description: '배송 지연 경험을 공유하는 게시글이 증가', count: 7 },
+          { title: '배송 지연 불만', description: '배송 지연 경험을 공유하는 게시글이 증가', count: 7, postIndex: 1 },
+        ],
+      },
+      youtube: {
+        queryCount: 3,
+        candidateVideoCount: 8,
+        relevantVideoCount: 5,
+        filteredOutVideoCount: 3,
+        videoCount: 5,
+        aiSummary: '[업로드 동향] 신작 발표와 트레일러 성격의 영상이 주로 올라왔습니다.\n\n[반응 요약] 상위 영상은 조회와 좋아요 반응이 빠르게 붙었고 댓글 반응도 초기 관심을 보여줍니다.',
+        videos: [
+          { title: 'Example Game Launch Trailer', channelTitle: 'Example Official', duration: '02:18', viewCount: 152000, likeCount: 8400, commentCount: 913, matchedQueries: ['example trailer'], thumbnailUrl: 'https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg', videoUrl: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ' },
         ],
       },
       naver_lounge: {
         postCount: 22,
+        totalComments: 57,
+        posts: [
+          { postUrl: 'https://game.naver.com/lounge/example/board/detail/2001' },
+        ],
+        aiSentiment: { positive: 61, neutral: 24, negative: 15 },
         aiSummary: '<p>라운지 내 이벤트 관련 게시글이 활발하게 공유되고 있으며, 커뮤니티 참여도가 높습니다.</p>',
         aiIssues: [
-          { title: '이벤트 당첨 문의', description: '이벤트 결과 발표 관련 문의 급증', count: 11 },
+          { title: '이벤트 당첨 문의', description: '이벤트 결과 발표 관련 문의 급증', count: 11, postIndex: 1 },
+        ],
+      },
+      facebook_page: {
+        postCount: 18,
+        totalComments: 46,
+        posts: [
+          { postUrl: 'https://www.facebook.com/examplepage/posts/3001' },
+        ],
+        aiSummary: '<p>페이지 내 최신 게시글에 대한 반응이 전반적으로 긍정적이며, 제품 관련 문의 댓글이 증가하고 있습니다.</p>',
+        aiIssues: [
+          { title: '제품 문의 증가', description: '신제품 출시 이후 기능 및 가격 관련 댓글 급증', count: 14, postIndex: 1 },
+        ],
+      },
+      dcinside: {
+        postCount: 32,
+        totalComments: 84,
+        posts: [
+          { postUrl: 'https://gall.dcinside.com/board/view/?id=example&no=4001' },
+        ],
+        aiSentiment: { positive: 42, neutral: 35, negative: 23 },
+        aiSummary: '오늘 갤러리에서 주요 이슈는 신작 관련 토론이었으며, 일부 논란성 게시글이 높은 조회수를 기록했습니다.',
+        aiIssues: [
+          { title: '신작 평가 논란', description: '새로운 컨텐츠에 대한 엇갈린 반응으로 토론 게시글 다수', count: 9, postIndex: 1 },
         ],
       },
     };
@@ -5923,71 +6924,337 @@
     /** 편집 중인 프리셋 상태 */
     let _editingPresetId = null;     // null = 신규
     let _presetItems = [];           // 현재 구성된 드롭존 항목
-    let _presetChipInput = null;     // ChipInput 인스턴스
+    let _presetChipInputKo = null;   // 한국어 수신자 ChipInput
+    let _presetChipInputEn = null;   // 영문 수신자 ChipInput
+    let _presetIsActive = true;      // 편집 중 활성 상태
+    let _presetEditorSnapshot = null;
+
+    function getPresetTargetKey(platform, targetId) {
+      return `${platform}::${targetId}`;
+    }
+
+    function toBase64UrlUtf8(value) {
+      const bytes = new TextEncoder().encode(String(value || ''));
+      let binary = '';
+      bytes.forEach((byte) => { binary += String.fromCharCode(byte); });
+      return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+    }
+
+    function buildFacebookPagePresetTargetId(reportGroupName) {
+      const normalized = String(reportGroupName || 'facebook_page').trim() || 'facebook_page';
+      return `grp_${toBase64UrlUtf8(normalized).slice(0, 180)}`;
+    }
+
+    function getPresetTheme(theme = {}) {
+      return {
+        heroGradientFrom: normalizeHexColor(theme.heroGradientFrom, DEFAULT_PRESET_THEME.heroGradientFrom),
+        heroGradientTo: normalizeHexColor(theme.heroGradientTo, DEFAULT_PRESET_THEME.heroGradientTo),
+      };
+    }
+
+    function getPresetEmailConfig(preset = {}) {
+      const email = preset?.deliveryConfig?.email || {};
+      return {
+        isEnabled: email.isEnabled !== false,
+        recipientsKo: email.recipientsKo || preset?.recipientsKo || email.recipients || preset?.recipients || [],
+        recipientsEn: email.recipientsEn || preset?.recipientsEn || [],
+      };
+    }
+
+    function getPresetRecipientCounts(preset = {}) {
+      const email = getPresetEmailConfig(preset);
+      return {
+        ko: (email.recipientsKo || []).length,
+        en: (email.recipientsEn || []).length,
+        total: (email.recipientsKo || []).length + (email.recipientsEn || []).length,
+      };
+    }
+
+    function setPresetThemeInputs(theme = {}) {
+      const normalized = getPresetTheme(theme);
+      const fromPicker = document.getElementById('preset-hero-gradient-from');
+      const fromText = document.getElementById('preset-hero-gradient-from-text');
+      const toPicker = document.getElementById('preset-hero-gradient-to');
+      const toText = document.getElementById('preset-hero-gradient-to-text');
+      if (fromPicker) fromPicker.value = normalized.heroGradientFrom;
+      if (fromText) fromText.value = normalized.heroGradientFrom;
+      if (toPicker) toPicker.value = normalized.heroGradientTo;
+      if (toText) toText.value = normalized.heroGradientTo;
+    }
+
+    function readPresetThemeInputs() {
+      return getPresetTheme({
+        heroGradientFrom: document.getElementById('preset-hero-gradient-from-text')?.value || document.getElementById('preset-hero-gradient-from')?.value,
+        heroGradientTo: document.getElementById('preset-hero-gradient-to-text')?.value || document.getElementById('preset-hero-gradient-to')?.value,
+      });
+    }
+
+    function syncPresetActiveToggle(isActive) {
+      _presetIsActive = Boolean(isActive);
+      const checkbox = document.getElementById('preset-is-active');
+      const label = document.getElementById('preset-is-active-label');
+      if (checkbox) checkbox.checked = _presetIsActive;
+      if (label) label.textContent = _presetIsActive ? '활성' : '비활성';
+    }
+
+    function readPresetDraft() {
+      const recipientsKo = _presetChipInputKo ? _presetChipInputKo.getEmails() : [];
+      const recipientsEn = _presetChipInputEn ? _presetChipInputEn.getEmails() : [];
+      return {
+        name: document.getElementById('preset-name-input')?.value.trim() || '',
+        nameEn: document.getElementById('preset-name-en-input')?.value.trim() || '',
+        items: _presetItems,
+        recipientsKo,
+        recipientsEn,
+        deliveryConfig: {
+          email: {
+            isEnabled: true,
+            recipientsKo,
+            recipientsEn,
+          },
+        },
+        theme: readPresetThemeInputs(),
+        isActive: _presetIsActive,
+      };
+    }
+
+    function snapshotPresetDraft(draft) {
+      return JSON.stringify({
+        ...draft,
+        items: (draft.items || []).map((item) => ({
+          platform: item.platform || '',
+          targetId: item.targetId || '',
+          targetName: item.targetName || '',
+          targetNameEn: item.targetNameEn || item.targetName || '',
+        })),
+      });
+    }
+
+    function markPresetEditorSnapshot() {
+      _presetEditorSnapshot = snapshotPresetDraft(readPresetDraft());
+    }
+
+    function hasPresetUnsavedChanges() {
+      if (!_editingPresetId || !_presetEditorSnapshot) return false;
+      return _presetEditorSnapshot !== snapshotPresetDraft(readPresetDraft());
+    }
+
+    function setPresetEditorActionButtons(isEditing) {
+      const sendBtn = document.getElementById('preset-send-btn');
+      const deleteBtn = document.getElementById('preset-delete-btn');
+      if (sendBtn) sendBtn.style.display = isEditing ? '' : 'none';
+      if (deleteBtn) deleteBtn.style.display = isEditing ? '' : 'none';
+    }
+
+    function hasPresetInvalidEmails() {
+      return (_presetChipInputKo && _presetChipInputKo.hasInvalidEmails()) ||
+        (_presetChipInputEn && _presetChipInputEn.hasInvalidEmails());
+    }
+
+    function syncPresetItemNames(allTargets) {
+      const nameMap = new Map(allTargets.map((target) => [
+        getPresetTargetKey(target.platform, target.targetId),
+        target,
+      ]));
+      let changed = false;
+      _presetItems = _presetItems.map((item) => {
+        let nextTarget = nameMap.get(getPresetTargetKey(item.platform, item.targetId));
+        if (!nextTarget && item.platform === 'facebook_page') {
+          nextTarget = allTargets.find((target) =>
+            target.platform === 'facebook_page' && (
+              (Array.isArray(target.sourceDocIds) && target.sourceDocIds.includes(item.targetId)) ||
+              (target.targetName && item.targetName && target.targetName === item.targetName)
+            )
+          );
+        }
+        if (
+          nextTarget && (
+            nextTarget.targetName !== item.targetName ||
+            (nextTarget.targetNameEn || nextTarget.targetName) !== (item.targetNameEn || item.targetName) ||
+            nextTarget.targetId !== item.targetId
+          )
+        ) {
+          changed = true;
+          return {
+            ...item,
+            targetId: nextTarget.targetId,
+            targetName: nextTarget.targetName,
+            targetNameEn: nextTarget.targetNameEn || nextTarget.targetName,
+          };
+        }
+        return item;
+      });
+      return changed;
+    }
 
     /* ── 발송 기록 ── */
     const DELIVERY_PLATFORM_LABEL = {
-      discord:       { label: 'Discord',        color: '#5865f2' },
+      discord:       { label: 'Discord',         color: '#5865f2' },
       instagram:     { label: 'Instagram',       color: '#e1306c' },
-      facebook_page: { label: 'Facebook 페이지', color: '#1877f2' },
+      facebook:      { label: 'Facebook 그룹',   color: '#1877f2' },
+      youtube:       { label: 'YouTube',         color: '#ff0033' },
+      facebook_page: { label: 'Facebook 페이지', color: '#1d4ed8' },
       naver_lounge:  { label: '네이버 라운지',   color: '#03c75a' },
+      dcinside:      { label: 'DCInside',        color: '#e11d48' },
+      report_preset: { label: '통합 프리셋',     color: '#7c3aed' },
     };
+    const DELIVERY_REPORT_TYPE_LABEL = {
+      daily:  { label: '일간', color: '#0f172a' },
+      weekly: { label: '주간', color: '#0f766e' },
+      preset: { label: '통합', color: '#6d28d9' },
+    };
+    const DELIVERY_TRIGGER_LABEL = {
+      schedule: '자동',
+      manual: '수동',
+    };
+
+    function getKstTodayDateString() {
+      return new Date(Date.now() + 9 * 3_600_000).toISOString().split('T')[0];
+    }
+
+    function readDeliveryLogDateFilters() {
+      return {
+        startDate: document.getElementById('deliveryLogStartDate')?.value?.trim() || '',
+        endDate: document.getElementById('deliveryLogEndDate')?.value?.trim() || '',
+      };
+    }
+
+    function setDeliveryLogDateFilters({ startDate = '', endDate = '' } = {}) {
+      const startInput = document.getElementById('deliveryLogStartDate');
+      const endInput = document.getElementById('deliveryLogEndDate');
+      if (_fpDeliveryLogStart) {
+        if (startDate) _fpDeliveryLogStart.setDate(startDate, false);
+        else _fpDeliveryLogStart.clear();
+      }
+      else if (startInput) startInput.value = startDate || '';
+      if (_fpDeliveryLogEnd) {
+        if (endDate) _fpDeliveryLogEnd.setDate(endDate, false);
+        else _fpDeliveryLogEnd.clear();
+      }
+      else if (endInput) endInput.value = endDate || '';
+    }
+
+    function resetDeliveryLogDateFilters() {
+      setDeliveryLogDateFilters({ startDate: '', endDate: '' });
+      loadDeliveryLog();
+    }
+
+    function formatDeliveryLogTime(sentAt) {
+      if (!sentAt) return '—';
+      return new Date(sentAt).toLocaleString('ko-KR', {
+        timeZone: 'Asia/Seoul',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+    }
+
+    function formatDeliveryLogPeriod(log) {
+      if (log.reportRangeStart && log.reportRangeEnd) {
+        return log.reportRangeStart === log.reportRangeEnd
+          ? log.reportRangeStart
+          : `${log.reportRangeStart} ~ ${log.reportRangeEnd}`;
+      }
+      return log.reportDate || '—';
+    }
 
     async function loadDeliveryLog() {
       const $el = document.getElementById('delivery-log-main');
       $el.innerHTML = '<div class="data-log-empty">불러오는 중...</div>';
+      const { startDate, endDate } = readDeliveryLogDateFilters();
+      if (startDate && endDate && startDate > endDate) {
+        $el.innerHTML = '<div class="data-log-empty" style="color:#f87171">오류: 시작일이 종료일보다 늦습니다.</div>';
+        return;
+      }
       try {
-        const data = await apiFetch(`/delivery-logs?workspaceId=${WS}&limit=200`);
-        renderDeliveryLog(data.logs || []);
+        const params = new URLSearchParams({ workspaceId: WS, limit: '500' });
+        if (startDate) params.set('startDate', startDate);
+        if (endDate) params.set('endDate', endDate);
+        const data = await apiFetch(`/delivery-logs?${params.toString()}`);
+        renderDeliveryLog(data.logs || [], { startDate, endDate });
       } catch (err) {
         $el.innerHTML = `<div class="data-log-empty" style="color:#f87171">오류: ${escapeHtml(err.message)}</div>`;
       }
     }
 
-    function renderDeliveryLog(logs) {
+    function renderDeliveryLog(logs, filters = {}) {
       const $el = document.getElementById('delivery-log-main');
       if (!logs.length) {
         $el.innerHTML = '<div class="data-log-empty">발송 기록이 없습니다.</div>';
         return;
       }
+      const { startDate, endDate } = filters;
+
+      const stats = logs.reduce((acc, log) => {
+        acc.total += 1;
+        if (log.status === 'failed') acc.failed += 1;
+        else acc.success += 1;
+        if (log.triggerSource === 'manual') acc.manual += 1;
+        else acc.schedule += 1;
+        return acc;
+      }, { total: 0, success: 0, failed: 0, schedule: 0, manual: 0 });
 
       const rows = logs.map(log => {
         const p = DELIVERY_PLATFORM_LABEL[log.platform] || { label: log.platform, color: '#64748b' };
-        const sentAt = log.sentAt
-          ? new Date(log.sentAt).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
-          : '—';
+        const reportType = DELIVERY_REPORT_TYPE_LABEL[log.reportType] || { label: log.reportType || '기타', color: '#475569' };
+        const sentAt = formatDeliveryLogTime(log.sentAt);
+        const period = formatDeliveryLogPeriod(log);
+        const triggerLabel = DELIVERY_TRIGGER_LABEL[log.triggerSource] || '자동';
+        const triggerCls = log.triggerSource === 'manual' ? 'dl-trigger-manual' : 'dl-trigger-schedule';
         const langBadge = log.lang
           ? `<span class="dl-lang-badge">${log.lang.toUpperCase()}</span>`
           : '';
-        const statusCls = log.status === 'success' ? 'dl-status-ok' : 'dl-status-err';
+        const statusCls = log.status === 'failed' ? 'dl-status-err' : 'dl-status-ok';
         const statusLabel = log.status === 'success' ? '성공' : '실패';
+        const errorText = escapeHtml(log.errorMessage || '—');
         return `
         <tr>
           <td class="dl-td dl-td-time">${sentAt}</td>
+          <td class="dl-td"><span class="dl-trigger-badge ${triggerCls}">${triggerLabel}</span></td>
           <td class="dl-td"><span class="dl-platform-badge" style="background:${p.color}20;color:${p.color}">${p.label}</span></td>
+          <td class="dl-td"><span class="dl-type-badge" style="background:${reportType.color}14;color:${reportType.color}">${reportType.label}</span></td>
           <td class="dl-td dl-td-target">${escapeHtml(log.target || '—')}</td>
-          <td class="dl-td dl-td-date">${log.reportDate || '—'}</td>
+          <td class="dl-td dl-td-date">${period}</td>
           <td class="dl-td dl-td-count">${log.recipientCount ?? '—'}명${langBadge}</td>
-          <td class="dl-td"><span class="${statusCls}">${statusLabel}</span></td>
+          <td class="dl-td"><span class="dl-status-badge ${statusCls}">${statusLabel}</span></td>
+          <td class="dl-td dl-td-error">${errorText}</td>
         </tr>`;
       }).join('');
 
+      const periodLabel = startDate || endDate
+        ? `${startDate || '처음'} ~ ${endDate || getKstTodayDateString()}`
+        : '전체 기간';
+
       $el.innerHTML = `
       <div class="dl-wrap">
-        <div class="dl-summary">총 ${logs.length}건</div>
-        <table class="dl-table">
-          <thead>
-            <tr>
-              <th class="dl-th">발송 일시</th>
-              <th class="dl-th">플랫폼</th>
-              <th class="dl-th">대상</th>
-              <th class="dl-th">리포트 날짜</th>
-              <th class="dl-th">수신자</th>
-              <th class="dl-th">상태</th>
-            </tr>
-          </thead>
-          <tbody>${rows}</tbody>
-        </table>
+        <div class="dl-summary-row">
+          <div class="dl-summary-chip">조회 기간 ${periodLabel}</div>
+          <div class="dl-summary-chip">총 ${stats.total}건</div>
+          <div class="dl-summary-chip">성공 ${stats.success}건</div>
+          <div class="dl-summary-chip">실패 ${stats.failed}건</div>
+          <div class="dl-summary-chip">자동 ${stats.schedule}건</div>
+          <div class="dl-summary-chip">수동 ${stats.manual}건</div>
+        </div>
+        <div class="dl-table-wrap">
+          <table class="dl-table">
+            <thead>
+              <tr>
+                <th class="dl-th">발송 일시</th>
+                <th class="dl-th">실행</th>
+                <th class="dl-th">플랫폼</th>
+                <th class="dl-th">유형</th>
+                <th class="dl-th">대상</th>
+                <th class="dl-th">리포트 기간</th>
+                <th class="dl-th">수신자</th>
+                <th class="dl-th">상태</th>
+                <th class="dl-th">실패 사유</th>
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
       </div>`;
     }
 
@@ -6012,7 +7279,10 @@
       $list.innerHTML = presets.map((p) => {
         const isActive = p.isActive !== false;
         const itemCount = (p.items || []).length;
-        const recCount = (p.recipients || []).length;
+        const recipientCounts = getPresetRecipientCounts(p);
+        const recipientMeta = recipientCounts.en
+          ? `KO ${recipientCounts.ko}명 · EN ${recipientCounts.en}명`
+          : `수신자 ${recipientCounts.ko}명`;
         return `
           <div class="preset-list-item${_editingPresetId === p.presetId ? ' active' : ''}"
                data-preset-id="${p.presetId}"
@@ -6021,7 +7291,7 @@
             <div class="preset-list-item-meta">
               <span class="preset-active-badge preset-active-badge--${isActive ? 'on' : 'off'}">${isActive ? '활성' : '비활성'}</span>
               <span>${itemCount}개 리포트</span>
-              <span>수신자 ${recCount}명</span>
+              <span>${recipientMeta}</span>
             </div>
           </div>`;
       }).join('');
@@ -6031,27 +7301,69 @@
     async function openPresetEditor(preset) {
       _editingPresetId = preset ? preset.presetId : null;
       _presetItems = preset ? JSON.parse(JSON.stringify(preset.items || [])) : [];
+      _presetIsActive = preset ? preset.isActive !== false : true;
+      const presetTheme = getPresetTheme(preset?.theme);
+      const presetEmail = getPresetEmailConfig(preset);
 
       document.getElementById('preset-editor-empty').style.display = 'none';
       document.getElementById('preset-editor-form').style.display = '';
       const $nameInput = document.getElementById('preset-name-input');
+      const $nameEnInput = document.getElementById('preset-name-en-input');
       $nameInput.value = preset ? preset.name : '';
+      if ($nameEnInput) $nameEnInput.value = preset?.nameEn || '';
       $nameInput.oninput = () => updateEmailPreview();
+      if ($nameEnInput) $nameEnInput.oninput = () => updateEmailPreview();
+      setPresetThemeInputs(presetTheme);
+      syncPresetActiveToggle(_presetIsActive);
+      const activeCheckbox = document.getElementById('preset-is-active');
+      if (activeCheckbox) {
+        activeCheckbox.onchange = (event) => syncPresetActiveToggle(event.target.checked);
+      }
+
+      [
+        ['preset-hero-gradient-from', 'preset-hero-gradient-from-text'],
+        ['preset-hero-gradient-to', 'preset-hero-gradient-to-text'],
+      ].forEach(([pickerId, textId]) => {
+        const picker = document.getElementById(pickerId);
+        const textInput = document.getElementById(textId);
+        if (picker) {
+          picker.oninput = () => {
+            if (textInput) textInput.value = picker.value;
+            updateEmailPreview();
+          };
+        }
+        if (textInput) {
+          textInput.oninput = () => updateEmailPreview();
+          textInput.onblur = () => {
+            const fallback = pickerId.endsWith('from') ? DEFAULT_PRESET_THEME.heroGradientFrom : DEFAULT_PRESET_THEME.heroGradientTo;
+            const normalized = normalizeHexColor(textInput.value, fallback);
+            textInput.value = normalized;
+            if (picker) picker.value = normalized;
+            updateEmailPreview();
+          };
+        }
+      });
 
       // ChipInput 초기화
-      if (!_presetChipInput) {
-        _presetChipInput = new ChipInput('preset-chip-container');
+      if (!_presetChipInputKo) {
+        _presetChipInputKo = new ChipInput('preset-chip-container-ko');
       }
-      _presetChipInput.setEmails(preset ? (preset.recipients || []) : []);
-
-      // 드롭존 렌더링
-      renderDropZone();
+      if (!_presetChipInputEn) {
+        _presetChipInputEn = new ChipInput('preset-chip-container-en');
+      }
+      _presetChipInputKo.setEmails(presetEmail.recipientsKo || []);
+      _presetChipInputEn.setEmails(presetEmail.recipientsEn || []);
 
       // 사용 가능한 블록 로드
       await loadAvailableBlocks();
 
+      // 드롭존 렌더링
+      renderDropZone();
+
       // 목록 active 상태 갱신
       _highlightPresetListItem(_editingPresetId);
+      setPresetEditorActionButtons(Boolean(_editingPresetId));
+      markPresetEditorSnapshot();
     }
 
     function _highlightPresetListItem(presetId) {
@@ -6064,9 +7376,13 @@
     function closePresetEditor() {
       _editingPresetId = null;
       _presetItems = [];
+      _presetIsActive = true;
+      _presetEditorSnapshot = null;
       document.getElementById('preset-editor-empty').style.display = '';
       document.getElementById('preset-editor-form').style.display = 'none';
       document.getElementById('preset-preview-section').style.display = 'none';
+      syncPresetActiveToggle(true);
+      setPresetEditorActionButtons(false);
       loadPresets();
     }
 
@@ -6075,20 +7391,35 @@
       const $area = document.getElementById('preset-available-blocks');
       $area.innerHTML = '<span style="font-size:12px;color:#94a3b8">불러오는 중...</span>';
       try {
-        const [guildsData, igData, fbData, nlData] = await Promise.allSettled([
+        const [guildsData, channelsData, igData, fbData, ytData, nlData, fbPageData, dcData] = await Promise.allSettled([
           apiFetch(`/guilds?workspaceId=${WS}`),
+          apiFetch(`/channels?workspaceId=${WS}`),
           apiFetch(`/instagram/accounts?workspaceId=${WS}`),
           apiFetch(`/facebook/groups?workspaceId=${WS}`),
+          apiFetch(`/youtube/groups?workspaceId=${WS}`),
           apiFetch(`/naver/lounges?workspaceId=${WS}`),
+          apiFetch(`/facebook/pages?workspaceId=${WS}`),
+          apiFetch(`/dcinside/galleries?workspaceId=${WS}`),
         ]);
 
         const allTargets = [];
+        const discordNameMap = new Map();
+
+        if (channelsData.status === 'fulfilled') {
+          (channelsData.value.channels || []).forEach((channel) => {
+            const guildDocId = channel.discordGuildId ? `discord_${channel.discordGuildId}` : null;
+            const guildName = (channel.guildName || '').trim();
+            if (guildDocId && guildName && !discordNameMap.has(guildDocId)) {
+              discordNameMap.set(guildDocId, guildName);
+            }
+          });
+        }
 
         if (guildsData.status === 'fulfilled') {
           (guildsData.value.guilds || []).forEach((g) => allTargets.push({
             platform: 'discord',
             targetId: g.docId,
-            targetName: g.guildName || g.docId,
+            targetName: g.guildName || discordNameMap.get(g.docId) || g.discordGuildId || String(g.docId || '').replace(/^discord_/, ''),
           }));
         }
         if (igData.status === 'fulfilled') {
@@ -6105,6 +7436,14 @@
             targetName: g.groupName || g.docId,
           }));
         }
+        if (ytData.status === 'fulfilled') {
+          (ytData.value.groups || []).forEach((g) => allTargets.push({
+            platform: 'youtube',
+            targetId: g.docId,
+            targetName: g.name || g.docId,
+            targetNameEn: g.nameEn || g.name || g.docId,
+          }));
+        }
         if (nlData.status === 'fulfilled') {
           (nlData.value.lounges || []).forEach((l) => allTargets.push({
             platform: 'naver_lounge',
@@ -6112,9 +7451,37 @@
             targetName: l.loungeName || l.docId,
           }));
         }
+        if (fbPageData.status === 'fulfilled') {
+          const fbPageGroups = new Map();
+          (fbPageData.value.pages || []).forEach((page) => {
+            const reportGroupName = String(page.reportGroupName || page.pageName || page.pageId || page.docId || '').trim();
+            if (!reportGroupName) return;
+            const targetId = buildFacebookPagePresetTargetId(reportGroupName);
+            if (!fbPageGroups.has(targetId)) {
+              fbPageGroups.set(targetId, {
+                platform: 'facebook_page',
+                targetId,
+                targetName: reportGroupName,
+                sourceDocIds: [],
+              });
+            }
+            fbPageGroups.get(targetId).sourceDocIds.push(page.docId);
+          });
+          fbPageGroups.forEach((group) => allTargets.push(group));
+        }
+        if (dcData.status === 'fulfilled') {
+          (dcData.value.galleries || []).forEach((g) => allTargets.push({
+            platform: 'dcinside',
+            targetId: g.docId,
+            targetName: g.galleryName || g.docId,
+          }));
+        }
+
+        const synced = syncPresetItemNames(allTargets);
 
         if (!allTargets.length) {
           $area.innerHTML = '<span style="font-size:12px;color:#94a3b8">등록된 모니터링 대상이 없습니다</span>';
+          if (synced) renderDropZone();
           return;
         }
 
@@ -6127,6 +7494,7 @@
                     ${meta.icon} ${escapeHtml(t.targetName)}
                   </span>`;
         }).join('');
+        if (synced) renderDropZone();
       } catch (err) {
         $area.innerHTML = `<span style="font-size:12px;color:var(--neg)">조회 실패</span>`;
       }
@@ -6161,17 +7529,19 @@
       return String(str || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
     }
 
-    function _buildPreviewDiscordSection(report) {
-      const issues = (report.issues || []).slice(0, 3);
-      const issueRows = issues.map((iss) => `
-        <div class="iss">
-          <div class="iss-t">${_previewEsc(iss.title)}</div>
-          <div class="iss-d">${_previewEsc(iss.description)}</div>
-        </div>`).join('');
-      return `
-        <div><span class="dc-bdg">${report.messageCount || 0}개 메시지</span></div>
-        <div class="dc-sum">${_previewEsc(report.summary)}</div>
-        ${issueRows ? `<div><div class="dc-ish">🚨 주요 이슈</div>${issueRows}</div>` : ''}`;
+    function _previewIssueLink(url, color, borderColor, label = '게시글 보기 ↗') {
+      if (!url || !String(url).startsWith('https://')) return '';
+      return `<a href="${_previewEsc(url)}" target="_blank" rel="noopener noreferrer" style="display:inline-block;font-size:11px;color:${color};text-decoration:none;border:1px solid ${borderColor};border-radius:999px;padding:2px 8px;margin-top:2px">${label}</a>`;
+    }
+
+    function _previewResolvePostUrl(report, issue) {
+      return issue?.postIndex ? (report.posts || [])[issue.postIndex - 1]?.postUrl || null : null;
+    }
+
+    function _previewResolveDiscordUrl(report, issue) {
+      const guildId = report.discordGuildId || report.guildId || '';
+      if (!guildId || !issue?.channelId || !issue?.messageId) return null;
+      return `https://discord.com/channels/${guildId}/${issue.channelId}/${issue.messageId}`;
     }
 
     function _buildPreviewInstagramSection(report) {
@@ -6205,65 +7575,240 @@
         ${report.aiPerformanceReview ? `<div class="ig-rev"><div class="ig-rev-in"><span class="ig-rev-t">AI 성과 리뷰</span><div class="ig-rev-b">${_previewEsc(report.aiPerformanceReview)}</div></div></div>` : ''}`;
     }
 
-    function _buildPreviewCrawlerSection(report, accentColor) {
+    function _buildPreviewDcinsideSection(report, accentColor, issueTone) {
+      const sentimentBar = _buildPreviewSentimentBar(report.aiSentiment || {}, 10);
       const issues = (report.aiIssues || []).slice(0, 3);
-      const issueRows = issues.map((iss) => `
-        <div class="cr-iss">
-          <div class="cr-iss-t">${_previewEsc(iss.title)}</div>
-          <div class="cr-iss-d">${_previewEsc(iss.description)}</div>
-        </div>`).join('');
+      const issueRows = issues.map((iss) => {
+        const postUrl = _previewResolvePostUrl(report, iss);
+        const metaParts = [];
+        if (iss.count) metaParts.push(`<span style="display:inline-block;color:${issueTone.title};font-size:11px;margin-right:8px">${iss.count}회 언급</span>`);
+        if (iss.postIndex) metaParts.push(`<span style="display:inline-block;color:${issueTone.body};font-size:11px;margin-right:8px">게시글 ${iss.postIndex}</span>`);
+        if (postUrl) metaParts.push(_previewIssueLink(postUrl, accentColor, `${accentColor}55`));
+        return `
+        <div class="cr-iss" style="background:${issueTone.bg};border-left:3px solid ${issueTone.border}">
+          <div class="cr-iss-t" style="color:${issueTone.title}">${_previewEsc(iss.title)}</div>
+          ${metaParts.length ? `<div style="margin-top:4px;line-height:1.8">${metaParts.join('')}</div>` : ''}
+          <div class="cr-iss-d" style="color:${issueTone.body}">${_previewEsc(iss.description)}</div>
+        </div>`;
+      }).join('');
       return `
-        <div><span class="cr-bdg">${report.postCount || 0}개 게시글</span></div>
+        ${sentimentBar}
+        ${report.aiSummary ? `<div class="cr-sum" style="border-left:3px solid ${accentColor}">${_previewEsc(report.aiSummary)}</div>` : ''}
+        ${issueRows ? `<div><div class="cr-ish">🚨 주요 이슈</div>${issueRows}</div>` : ''}`;
+    }
+
+    function _buildPreviewYoutubeSection(report, accentColor) {
+      const candidateVideoCount = Number(report.candidateVideoCount || report.videoCount || 0);
+      const relevantVideoCount = Number(report.relevantVideoCount || report.videoCount || 0);
+      const filteredOutVideoCount = Number(report.filteredOutVideoCount || 0);
+      const emptyVideoMessage = candidateVideoCount > 0 && relevantVideoCount === 0
+        ? '후보 영상은 있었지만 관련성 판정 후 보고 대상이 남지 않았습니다.'
+        : '새로 수집된 영상이 없습니다.';
+      const videos = (report.videos || []).slice(0, 3).map((video) => {
+        const metrics = [
+          video.viewCount != null ? `조회 ${Number(video.viewCount).toLocaleString()}` : null,
+          video.likeCount != null ? `좋아요 ${Number(video.likeCount).toLocaleString()}` : null,
+          video.commentCount != null ? `댓글 ${Number(video.commentCount).toLocaleString()}` : null,
+          video.duration ? `길이 ${_previewEsc(video.duration)}` : null,
+        ].filter(Boolean).join(' · ');
+        const queries = (video.matchedQueries || []).map((query) =>
+          `<span style="display:inline-block;padding:2px 7px;border-radius:999px;background:${accentColor}12;color:${accentColor};font-size:10px;font-weight:700;margin:2px 6px 0 0">${_previewEsc(query)}</span>`
+        ).join('');
+        return `
+          <div style="display:flex;gap:12px;padding:12px 0;border-bottom:1px solid #eef2f7">
+            <img src="${_previewEsc(video.thumbnailUrl || '')}" alt="${_previewEsc(video.title || '')}" style="width:120px;height:68px;border-radius:10px;object-fit:cover;background:#e2e8f0;display:block">
+            <div style="min-width:0;flex:1">
+              <div style="font-size:13px;font-weight:700;color:#0f172a;line-height:1.45">${_previewEsc(video.title || '(제목 없음)')}</div>
+              <div style="font-size:11px;color:#64748b;margin-top:4px">${_previewEsc(video.channelTitle || '—')}</div>
+              <div style="font-size:11px;color:#475569;line-height:1.7;margin-top:4px">${metrics || '공개 지표 없음'}</div>
+              ${queries ? `<div style="margin-top:6px">${queries}</div>` : ''}
+            </div>
+          </div>`;
+      }).join('');
+
+      return `
+        ${report.aiSummary ? `<div class="cr-sum" style="border-left:3px solid ${accentColor}">${_previewEsc(report.aiSummary)}</div>` : ''}
+        <div>
+          <div style="font-size:11px;color:#64748b;margin-bottom:8px">후보 ${candidateVideoCount}개 · 관련 ${relevantVideoCount}개${filteredOutVideoCount > 0 ? ` · 제외/보류 ${filteredOutVideoCount}개` : ''}</div>
+          <div class="cr-ish">▶ 관련 업로드</div>
+          ${videos || `<div style="font-size:12px;color:#64748b;line-height:1.7">${emptyVideoMessage}</div>`}
+        </div>`;
+    }
+
+    function _buildPreviewSentimentBar(sentiment = {}, marginBottom = 12) {
+      const pos = sentiment.positive || 0;
+      const neu = sentiment.neutral || 0;
+      const neg = sentiment.negative || 0;
+      if (!(pos || neu || neg)) return '';
+      return `
+        <div style="margin-bottom:${marginBottom}px">
+          <div style="display:flex;height:8px;border-radius:999px;overflow:hidden;margin-bottom:6px;background:#e2e8f0">
+            <div style="width:${pos}%;background:#059669"></div>
+            <div style="width:${neu}%;background:#94a3b8"></div>
+            <div style="width:${neg}%;background:#dc2626"></div>
+          </div>
+          <div style="font-size:12px;color:#64748b">
+            <span style="color:#059669;font-weight:600">긍정 ${pos}%</span>
+            <span style="margin:0 6px;color:#94a3b8">·</span>
+            <span style="color:#64748b;font-weight:600">중립 ${neu}%</span>
+            <span style="margin:0 6px;color:#94a3b8">·</span>
+            <span style="color:#dc2626;font-weight:600">부정 ${neg}%</span>
+          </div>
+        </div>`;
+    }
+
+    function _buildPreviewCrawlerSection(report, accentColor, issueTone, options = {}) {
+      const { showSentiment = false } = options;
+      const sentimentBar = showSentiment ? _buildPreviewSentimentBar(report.aiSentiment || {}, 10) : '';
+      const issues = (report.aiIssues || []).slice(0, 3);
+      const issueRows = issues.map((iss) => {
+        const postUrl = _previewResolvePostUrl(report, iss);
+        const metaParts = [];
+        if (iss.count) metaParts.push(`<span style="display:inline-block;color:${issueTone.title};font-size:11px;margin-right:8px">${iss.count}회 언급</span>`);
+        if (iss.postIndex) metaParts.push(`<span style="display:inline-block;color:${issueTone.body};font-size:11px;margin-right:8px">게시글 ${iss.postIndex}</span>`);
+        if (postUrl) metaParts.push(_previewIssueLink(postUrl, accentColor, `${accentColor}55`));
+        return `
+        <div class="cr-iss" style="background:${issueTone.bg};border-left:3px solid ${issueTone.border}">
+          <div class="cr-iss-t" style="color:${issueTone.title}">${_previewEsc(iss.title)}</div>
+          ${metaParts.length ? `<div style="margin-top:4px;line-height:1.8">${metaParts.join('')}</div>` : ''}
+          <div class="cr-iss-d" style="color:${issueTone.body}">${_previewEsc(iss.description)}</div>
+        </div>`;
+      }).join('');
+      return `
+        ${sentimentBar}
         ${report.aiSummary ? `<div class="cr-sum" style="border-left:3px solid ${accentColor}">${report.aiSummary}</div>` : ''}
         ${issueRows ? `<div><div class="cr-ish">🚨 주요 이슈</div>${issueRows}</div>` : ''}`;
     }
 
-    function buildEmailPreviewHTML(presetName, items) {
+    function _buildPreviewDiscordSection(report, issueTone) {
+      const sentiment = report.sentiment || {};
+      const pos = sentiment.positive || 0;
+      const neu = sentiment.neutral || 0;
+      const neg = sentiment.negative || 0;
+      const sentimentBar = (pos || neu || neg) ? `
+        <div style="margin-bottom:12px">
+          <div style="display:flex;height:8px;border-radius:999px;overflow:hidden;margin-bottom:6px;background:#e2e8f0">
+            <div style="width:${pos}%;background:#059669"></div>
+            <div style="width:${neu}%;background:#94a3b8"></div>
+            <div style="width:${neg}%;background:#dc2626"></div>
+          </div>
+          <div style="font-size:12px;color:#64748b">
+            <span style="color:#059669;font-weight:600">긍정 ${pos}%</span>
+            <span style="margin:0 8px;color:#94a3b8">·</span>
+            <span style="color:#64748b;font-weight:600">중립 ${neu}%</span>
+            <span style="margin:0 8px;color:#94a3b8">·</span>
+            <span style="color:#dc2626;font-weight:600">부정 ${neg}%</span>
+          </div>
+        </div>` : '';
+      const issues = (report.issues || []).slice(0, 3);
+      const issueRows = issues.map((iss) => {
+        const msgUrl = _previewResolveDiscordUrl(report, iss);
+        const metaParts = [];
+        if (iss.count) metaParts.push(`<span style="display:inline-block;color:${issueTone.title};font-size:11px;margin-right:8px">${iss.count}회 언급</span>`);
+        if (iss.channel) metaParts.push(`<span style="display:inline-block;color:${issueTone.title};font-size:11px;margin-right:8px">#${_previewEsc(iss.channel)}</span>`);
+        if (msgUrl) metaParts.push(_previewIssueLink(msgUrl, '#6366f1', '#c7d2fe', '메시지 보기 ↗'));
+        return `
+        <div class="iss" style="background:${issueTone.bg};border-left:3px solid ${issueTone.border}">
+          <div class="iss-t" style="color:${issueTone.title}">${_previewEsc(iss.title)}</div>
+          ${metaParts.length ? `<div style="margin-top:4px;line-height:1.8">${metaParts.join('')}</div>` : ''}
+          <div class="iss-d" style="color:${issueTone.body}">${_previewEsc(iss.description)}</div>
+        </div>`;
+      }).join('');
+      return `
+        ${sentimentBar}
+        ${report.summary ? `<div class="dc-sum">${report.summary}</div>` : ''}
+        ${issueRows ? `<div><div class="dc-ish">🚨 주요 이슈</div>${issueRows}</div>` : ''}`;
+    }
+
+    function getPreviewSectionMetrics(platform, report) {
+      if (platform === 'discord') return [`${report.messageCount || 0}개 메시지`];
+      if (platform === 'instagram') return [`${(report.posts || []).length}개 포스트`];
+      if (platform === 'youtube') return [`${report.relevantVideoCount || report.videoCount || 0}개 관련 영상`, `${report.candidateVideoCount || report.videoCount || 0}개 후보`, `${report.queryCount || 0}개 키워드`];
+      if (platform === 'facebook' || platform === 'facebook_page' || platform === 'naver_lounge' || platform === 'dcinside') {
+        return [
+          `${report.postCount || 0}개 게시글`,
+          `${report.totalComments || 0}개 댓글`,
+        ];
+      }
+      return [`${report.postCount || 0}개 게시글`];
+    }
+
+    function buildEmailPreviewHTML(presetName, items, theme = DEFAULT_PRESET_THEME) {
       const today = new Date().toLocaleDateString('ko-KR', { year:'numeric', month:'long', day:'numeric' });
+      const presetTheme = getPresetTheme(theme);
 
       const sectionHtmls = items.map(({ platform, targetName }, idx) => {
-        const meta = PRESET_PLATFORM_META[platform] || { label: platform, color: '#6366f1', emailIcon: '📋' };
+        const meta = PRESET_PLATFORM_META[platform] || { label: platform, color: '#6366f1', iconUrl: '', issueTone: { bg: '#eef2ff', border: '#6366f1', title: '#4338ca', body: '#3730a3' } };
         const mock = PREVIEW_MOCK[platform] || {};
+        const metricPills = getPreviewSectionMetrics(platform, mock)
+          .map((metric) => `<span class="sec-metric-pill" style="background:${meta.color}18;color:${meta.color}">${_previewEsc(metric)}</span>`)
+          .join('');
         let bodyHtml = '';
-        if (platform === 'discord')           bodyHtml = _buildPreviewDiscordSection(mock);
-        else if (platform === 'instagram')    bodyHtml = _buildPreviewInstagramSection(mock);
-        else if (platform === 'facebook')     bodyHtml = _buildPreviewCrawlerSection(mock, meta.color);
-        else if (platform === 'naver_lounge') bodyHtml = _buildPreviewCrawlerSection(mock, meta.color);
+        if (platform === 'discord')             bodyHtml = _buildPreviewDiscordSection(mock, meta.issueTone);
+        else if (platform === 'instagram')      bodyHtml = _buildPreviewInstagramSection(mock);
+        else if (platform === 'facebook')       bodyHtml = _buildPreviewCrawlerSection(mock, meta.color, meta.issueTone);
+        else if (platform === 'youtube')        bodyHtml = _buildPreviewYoutubeSection(mock, meta.color);
+        else if (platform === 'naver_lounge')   bodyHtml = _buildPreviewCrawlerSection(mock, meta.color, meta.issueTone, { showSentiment: true });
+        else if (platform === 'facebook_page')  bodyHtml = _buildPreviewCrawlerSection(mock, meta.color, meta.issueTone);
+        else if (platform === 'dcinside')       bodyHtml = _buildPreviewDcinsideSection(mock, meta.color, meta.issueTone);
         const divider = idx > 0 ? `<div class="sec-div"></div>` : '';
         return `
           ${divider}
           <div class="sec">
-            <div class="sec-hd">
-              <span style="display:inline-block;width:4px;height:20px;background:${meta.color};border-radius:2px"></span>
-              <span style="font-size:11px;font-weight:700;color:${meta.color};letter-spacing:.05em;text-transform:uppercase">${meta.emailIcon} ${meta.label}</span>
-              <span class="sec-nm">${_previewEsc(targetName)}</span>
+            <div class="sec-shell" style="border-color:${meta.color}30;background:linear-gradient(180deg, ${meta.color}0f 0%, #ffffff 34%, #ffffff 100%)">
+              <div class="sec-hero" style="background:linear-gradient(135deg, ${meta.color}24 0%, #ffffff 100%);border-bottom-color:${meta.color}24">
+                <div class="sec-hero-top">
+                  <div class="sec-platform-row">
+                    <img class="sec-icon" src="${meta.iconUrl || ''}" alt="${_previewEsc(meta.label)}">
+                    <span class="sec-platform-name" style="color:${meta.color}">${_previewEsc(meta.label)}</span>
+                  </div>
+                  <div class="sec-metric-pills">${metricPills}</div>
+                </div>
+                <div class="sec-target">${_previewEsc(targetName)}</div>
+              </div>
+              <div class="sec-body" style="background:linear-gradient(180deg, ${meta.color}08 0%, #ffffff 24%, #ffffff 100%)">
+                ${bodyHtml}
+              </div>
             </div>
-            ${bodyHtml}
           </div>`;
       }).join('');
 
       const indexBadges = items.map(({ platform, targetName }) => {
-        const meta = PRESET_PLATFORM_META[platform] || { label: platform, color: '#6366f1', emailIcon: '📋' };
-        return `<span style="display:inline-block;padding:3px 10px;border-radius:999px;background:${meta.color}1a;color:${meta.color};font-size:11px;font-weight:600">${meta.emailIcon} ${_previewEsc(targetName)}</span>`;
+        const meta = PRESET_PLATFORM_META[platform] || { label: platform, color: '#6366f1', iconUrl: '' };
+        return `
+          <span class="toc-chip" style="background:${meta.color}12;color:${meta.color};border-color:${meta.color}24">
+            <img class="toc-chip-icon" src="${meta.iconUrl || ''}" alt="${_previewEsc(meta.label)}">
+            <span class="toc-chip-text">${_previewEsc(targetName)}</span>
+          </span>`;
       }).join('');
 
       return `<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8">
         <style>
           body{margin:0;padding:0;background:#f8fafc;font-family:-apple-system,'Malgun Gothic','맑은 고딕',sans-serif}
           .wrap{max-width:640px;margin:32px auto;background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.1)}
-          .hero{background:linear-gradient(135deg,#f58529 0%,#dd2a7b 50%,#8134af 100%);padding:28px 32px}
+          .hero{background:linear-gradient(135deg,${presetTheme.heroGradientFrom} 0%, ${presetTheme.heroGradientTo} 100%);padding:28px 32px}
           .hero-sub{color:rgba(255,255,255,.75);font-size:11px;letter-spacing:.08em;margin-bottom:6px}
           .hero-title{color:#fff;font-size:22px;font-weight:700}
           .hero-date{color:rgba(255,255,255,.8);font-size:14px;margin-top:4px}
-          .toc{padding:18px 32px 0;border-bottom:1px solid #f1f5f9}
-          .toc-chips{display:flex;flex-wrap:wrap;gap:6px;padding-bottom:18px}
+          .toc{padding:18px 32px 10px;border-bottom:1px solid #f1f5f9}
+          .toc-chips{font-size:0;line-height:0}
+          .toc-chip{display:inline-block;vertical-align:top;white-space:nowrap;margin:0 8px 8px 0;padding:5px 11px;border-radius:999px;border:1px solid transparent;font-size:11px;font-weight:700;line-height:1.2}
+          .toc-chip-icon{width:14px;height:14px;display:inline-block;vertical-align:middle;object-fit:contain;margin-right:7px}
+          .toc-chip-text{display:inline-block;vertical-align:middle;white-space:nowrap}
           .secs{padding-top:28px}
           .sec-div{border-top:2px dashed #e2e8f0;margin:0 32px 28px}
           .sec{padding:0 32px 28px}
-          .sec-hd{display:flex;align-items:center;gap:8px;margin-bottom:14px}
-          .sec-nm{font-size:13px;font-weight:600;color:#1e293b}
+          .sec-shell{border:1px solid transparent;border-radius:20px;overflow:hidden;background:#fff;box-shadow:0 12px 28px rgba(15,23,42,.06)}
+          .sec-hero{padding:16px 18px 15px;border-bottom:1px solid transparent}
+          .sec-hero-top{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px}
+          .sec-platform-row{display:flex;align-items:center;gap:9px;min-width:0}
+          .sec-icon{width:18px;height:18px;display:block;object-fit:contain}
+          .sec-platform-name{font-size:12px;font-weight:800;letter-spacing:.04em;text-transform:uppercase}
+          .sec-metric-pills{display:flex;align-items:center;justify-content:flex-end;gap:6px;margin-left:auto;flex-shrink:0;flex-wrap:wrap}
+          .sec-metric-pill{display:inline-flex;align-items:center;justify-content:center;padding:4px 10px;border-radius:999px;font-size:11px;font-weight:700;white-space:nowrap;flex-shrink:0}
+          .sec-target{font-size:18px;font-weight:700;color:#0f172a;line-height:1.3}
+          .sec-body{padding:18px 18px 20px}
           .ft{background:#f8fafc;padding:16px 32px;border-top:1px solid #e2e8f0;font-size:12px;color:#94a3b8;text-align:center}
-          .dc-bdg{display:inline-block;background:#5865f21a;color:#5865f2;font-size:11px;font-weight:700;padding:3px 10px;border-radius:999px;margin-bottom:10px}
           .dc-sum{font-size:13px;color:#374151;line-height:1.7;background:#f8fafc;border-left:3px solid #5865f2;border-radius:0 8px 8px 0;padding:12px 14px;margin-bottom:12px}
           .dc-ish{font-size:11px;font-weight:700;color:#64748b;margin-bottom:8px}
           .iss{padding:10px 12px;background:#ede9fe;border-left:3px solid #6366f1;border-radius:0 8px 8px 0;margin-bottom:6px}
@@ -6284,7 +7829,6 @@
           .ig-rev-in{background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:16px}
           .ig-rev-t{font-size:11px;font-weight:700;color:#475569;display:block;margin-bottom:8px}
           .ig-rev-b{font-size:13px;color:#374151;line-height:1.6}
-          .cr-bdg{display:inline-block;background:#f0fdf4;color:#166534;font-size:11px;font-weight:600;padding:3px 8px;border-radius:999px;margin-bottom:10px}
           .cr-sum{font-size:13px;color:#374151;line-height:1.8;padding:14px 16px;background:#f8fafc;border-radius:10px;margin-bottom:12px}
           .cr-ish{font-size:11px;font-weight:700;color:#64748b;margin-bottom:6px}
           .cr-iss{padding:10px 12px;background:#fff7ed;border-left:3px solid #f97316;border-radius:0 8px 8px 0;margin-bottom:6px}
@@ -6312,7 +7856,7 @@
       if (!_presetItems.length) { section.style.display = 'none'; return; }
       section.style.display = '';
       const presetName = (document.getElementById('preset-name-input')?.value || '').trim() || '(이름 미입력)';
-      frame.srcdoc = buildEmailPreviewHTML(presetName, _presetItems);
+      frame.srcdoc = buildEmailPreviewHTML(presetName, _presetItems, readPresetThemeInputs());
     }
 
     /** 드래그 시작: dataTransfer에 블록 정보 저장 */
@@ -6342,9 +7886,33 @@
     /** 프리셋 저장 (신규 또는 수정) */
     async function savePreset() {
       const name = document.getElementById('preset-name-input').value.trim();
+      const nameEn = document.getElementById('preset-name-en-input')?.value.trim() || '';
       if (!name) { alert('프리셋 이름을 입력하세요'); return; }
-      const recipients = _presetChipInput ? _presetChipInput.getEmails() : [];
-      const body = { workspaceId: WS, name, items: _presetItems, recipients };
+      const recipientsKo = _presetChipInputKo ? _presetChipInputKo.getEmails() : [];
+      const recipientsEn = _presetChipInputEn ? _presetChipInputEn.getEmails() : [];
+      if (hasPresetInvalidEmails()) {
+        alert('빨간색 이메일 주소를 확인하세요');
+        return;
+      }
+      const theme = readPresetThemeInputs();
+      const deliveryConfig = {
+        email: {
+          isEnabled: true,
+          recipientsKo,
+          recipientsEn,
+        },
+      };
+      const body = {
+        workspaceId: WS,
+        name,
+        nameEn,
+        items: _presetItems,
+        recipientsKo,
+        recipientsEn,
+        deliveryConfig,
+        theme,
+        isActive: _presetIsActive,
+      };
 
       try {
         if (_editingPresetId) {
@@ -6367,8 +7935,9 @@
     }
 
     /** 프리셋 삭제 */
-    async function deletePreset(presetId) {
-      const ok = await confirmDialog('이 프리셋을 삭제하시겠습니까?');
+    async function deletePreset(presetId, presetName = '') {
+      const presetLabel = presetName ? `"${presetName}" ` : '';
+      const ok = await confirmDialog(`${presetLabel}프리셋을 삭제하시겠습니까?`);
       if (!ok) return;
       try {
         await apiFetch('/report-presets', {
@@ -6383,14 +7952,24 @@
       }
     }
 
+    async function deleteEditingPreset() {
+      if (!_editingPresetId) return;
+      const presetName = document.getElementById('preset-name-input')?.value.trim() || '';
+      await deletePreset(_editingPresetId, presetName);
+    }
+
     /** 통합 이메일 수동 트리거 (이메일 발송 주의) */
-    async function triggerPresetEmail(date) {
+    async function triggerPresetEmail(date, options = {}) {
+      const presetId = options.presetId || null;
+      const presetName = options.presetName || '';
       const confirmed = await showConfirm({
         platform: 'discord',
         icon: '📋',
-        title: '통합 프리셋 이메일 발송',
+        title: presetId ? '프리셋 이메일 발송' : '통합 프리셋 이메일 발송',
         sub: date || '오늘 기준 어제',
-        desc: '활성화된 모든 프리셋의 통합 이메일을 수신자에게 발송합니다. 계속하시겠습니까?',
+        desc: presetId
+          ? `저장된 프리셋 "${presetName || '선택 프리셋'}"의 통합 이메일을 수신자에게 발송합니다. 계속하시겠습니까?`
+          : '활성화된 모든 프리셋의 통합 이메일을 수신자에게 발송합니다. 계속하시겠습니까?',
         confirmLabel: '발송',
         color: '#6366f1',
       });
@@ -6399,11 +7978,21 @@
         await apiFetch('/report-presets/email/trigger', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ workspaceId: WS, date: date || null }),
+          body: JSON.stringify({ workspaceId: WS, date: date || null, presetId }),
         });
         alert('발송 완료');
       } catch (err) {
         alert('발송 실패: ' + err.message);
       }
+    }
+
+    async function triggerEditingPresetEmail() {
+      if (!_editingPresetId) return;
+      if (hasPresetUnsavedChanges()) {
+        alert('미저장 변경사항이 있습니다. 저장 후 발송하세요.');
+        return;
+      }
+      const presetName = document.getElementById('preset-name-input')?.value.trim() || '현재 프리셋';
+      await triggerPresetEmail(null, { presetId: _editingPresetId, presetName });
     }
 

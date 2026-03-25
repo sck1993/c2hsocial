@@ -2,7 +2,6 @@ const { onRequest } = require("firebase-functions/v2/https");
 const { onSchedule } = require("firebase-functions/v2/scheduler");
 const { setGlobalOptions } = require("firebase-functions/v2");
 const admin = require("firebase-admin");
-const { google } = require("googleapis");
 const { runPipeline, reDeliver } = require("./discordDailyPipeline");
 const { runAlertPipeline }       = require("./discordAlertPipeline");
 const { getChannelInfo, getGuildInfo } = require("./collectors/discordCollector");
@@ -26,7 +25,6 @@ const { runFacebookPagePipeline, runFacebookPageEmailSender } = require("./faceb
 const {
   loadSessionFromFirestore: loadFbSession,
   saveSessionToFirestore: saveFbSession,
-  markSessionInvalid: markFbSessionInvalid,
   launchBrowser: launchFbBrowser,
   applyCookiesToContext: applyFbCookies,
   verifySessionAlive: verifyFbSessionAlive,
@@ -39,8 +37,28 @@ const {
 } = require("./collectors/facebookPageCollector");
 const { runNaverLoungePipeline, runNaverLoungeEmailSender } = require("./naverLoungeDailyPipeline");
 const { runDcinsidePipeline, runDcinsideEmailSender } = require("./dcinsideDailyPipeline");
+const { runYoutubePipeline } = require("./youtubeDailyPipeline");
 const { runReportPresetPipeline } = require("./reportPresetDailyPipeline");
-const { DEFAULT_NAVER_LOUNGE_ANALYSIS_PROMPT, DEFAULT_DC_ANALYSIS_PROMPT } = require("./analyzers/openrouterAnalyzer");
+const {
+  claimScheduledTask,
+  finalizeScheduledTask,
+  readSchedulerSettings,
+  saveSchedulerSettings,
+  serializeSchedulerSettings,
+  SCHEDULER_DEFINITIONS,
+} = require("./reportSchedulerCore");
+const {
+  DEFAULT_NAVER_LOUNGE_ANALYSIS_PROMPT,
+  DEFAULT_DC_ANALYSIS_PROMPT,
+  DEFAULT_YOUTUBE_ANALYSIS_PROMPT,
+  DEFAULT_IG_POST_COMMENT_PROMPT,
+  IG_PERFORMANCE_REVIEW_MODELS,
+  FB_ANALYSIS_MODELS,
+  NL_ANALYSIS_MODELS,
+  DC_ANALYSIS_MODELS,
+  YT_ANALYSIS_MODELS,
+  DEFAULT_IG_PERFORMANCE_REVIEW_MODEL,
+} = require("./analyzers/openrouterAnalyzer");
 const {
   loadSessionFromFirestore: loadNlSession,
   saveSessionToFirestore: saveNlSession,
@@ -55,6 +73,7 @@ admin.initializeApp();
 
 // 모든 함수 기본 리전: 서울
 setGlobalOptions({ region: "asia-northeast3" });
+const SCHEDULER_CONTROL_WORKSPACE = "ws_antigravity";
 
 /** workspaceId 미제공 시 기본값 사용 + warn 로그 */
 function resolveWorkspaceId(value, fallback = "ws_antigravity") {
@@ -65,38 +84,133 @@ function resolveWorkspaceId(value, fallback = "ws_antigravity") {
   return value;
 }
 
-const IG_PERFORMANCE_REVIEW_MODELS = new Set([
-  "google/gemini-3-flash-preview",
-  "openai/gpt-5.4-mini",
-  "google/gemini-3.1-flash-lite-preview",
-]);
-const FB_ANALYSIS_MODELS = new Set([
-  "openai/gpt-5.4-mini",
-  "google/gemini-3-flash-preview",
-  "google/gemini-3.1-flash-lite-preview",
-]);
-const NL_ANALYSIS_MODELS = new Set([
-  "openai/gpt-5.4-mini",
-  "google/gemini-3-flash-preview",
-  "google/gemini-3.1-flash-lite-preview",
-]);
-const DC_ANALYSIS_MODELS = new Set([
-  "openai/gpt-5.4-mini",
-  "google/gemini-3-flash-preview",
-  "google/gemini-3.1-flash-lite-preview",
-]);
-const DEFAULT_IG_PERFORMANCE_REVIEW_MODEL = "openai/gpt-5.4-mini";
-const DEFAULT_IG_POST_COMMENT_PROMPT = `당신은 Instagram 콘텐츠 분석가입니다.
-이메일 리포트의 게시물 표 아래에 붙일 아주 짧은 코멘트 1~2문장만 작성하세요.
-반드시 아래 원칙을 지키세요.
-- 게시물 내용, 실제 댓글 반응, 성과 지표를 함께 반영
-- 최근 1주 전체 게시물 맥락과 비교해 상대적인 위치를 짚어도 좋습니다
-- 과장하거나 단정하지 말고 관찰 기반으로 작성
-- 댓글이 거의 없으면 댓글 반응이 아직 제한적이라는 점을 자연스럽게 언급
-- 표에 이미 숫자가 나오므로 조회수, 댓글수, 참여율 같은 구체적인 숫자를 반복해서 쓰지 마세요
-- 대신 이번 기간 중 상위권 반응, 평균 대비 강함/약함, 저장/공유 중심, 댓글 대화 중심 같은 비교형 표현을 우선 사용하세요
-- 마크다운, HTML, 이모지, 따옴표 없이 순수 텍스트만 출력
-- 120자 안팎의 짧은 한국어 코멘트로 작성`;
+function parseKstDateParam(value, fieldName) {
+  if (value === undefined || value === null || value === "") return null;
+  const normalized = String(value).trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(normalized)) {
+    throw new Error(`${fieldName} 형식 오류 (YYYY-MM-DD)`);
+  }
+  const startDate = new Date(`${normalized}T00:00:00+09:00`);
+  if (Number.isNaN(startDate.getTime())) {
+    throw new Error(`${fieldName} 날짜 파싱 실패`);
+  }
+  const endExclusiveDate = new Date(startDate.getTime() + 24 * 60 * 60 * 1000);
+  return {
+    raw: normalized,
+    start: admin.firestore.Timestamp.fromDate(startDate),
+    endExclusive: admin.firestore.Timestamp.fromDate(endExclusiveDate),
+  };
+}
+
+async function runConfiguredSchedule(taskKey, runner) {
+  const db = admin.firestore();
+  const claim = await claimScheduledTask(db, SCHEDULER_CONTROL_WORKSPACE, taskKey);
+
+  if (!claim.shouldRun) {
+    if (claim.reason === "already_ran") {
+      console.log(`[${taskKey}] 이미 이번 슬롯에서 실행됨 — 스킵`);
+    }
+    return;
+  }
+
+  console.log(`[${taskKey}] 설정된 스케줄 시각 도달 — 실행`);
+  try {
+    await runner();
+    await finalizeScheduledTask(db, SCHEDULER_CONTROL_WORKSPACE, taskKey, "success");
+  } catch (err) {
+    await finalizeScheduledTask(
+      db,
+      SCHEDULER_CONTROL_WORKSPACE,
+      taskKey,
+      "error",
+      err.message || String(err)
+    );
+    throw err;
+  }
+}
+
+const SCHEDULED_TASK_RUNNERS = {
+  alertPipeline: async () => {
+    console.log("[alertPipeline] 스케줄 실행 시작");
+    await runAlertPipeline();
+    console.log("[alertPipeline] 스케줄 실행 완료");
+  },
+  dailyPipeline: async () => {
+    console.log("[dailyPipeline] 스케줄 실행 시작");
+    await runPipeline();
+    console.log("[dailyPipeline] 스케줄 실행 완료");
+  },
+  insightCollector: async () => {
+    console.log("[insightCollector] 스케줄 실행 시작");
+    await runInsightCollector();
+    console.log("[insightCollector] 스케줄 실행 완료");
+  },
+  weeklyPipeline: async () => {
+    console.log("[weeklyPipeline] 스케줄 실행 시작");
+    await runWeeklyPipeline();
+    console.log("[weeklyPipeline] 스케줄 실행 완료");
+  },
+  instagramPipeline: async () => {
+    console.log("[instagramPipeline] 스케줄 실행 시작");
+    await runInstagramPipeline(null, null, { skipEmail: false });
+    console.log("[instagramPipeline] 스케줄 실행 완료");
+  },
+  facebookGroupPipeline: async () => {
+    console.log("[facebookGroupPipeline] 스케줄 실행 시작");
+    await runFacebookGroupPipeline(null, null, { skipEmail: false });
+    console.log("[facebookGroupPipeline] 스케줄 실행 완료");
+  },
+  facebookPagePipeline: async () => {
+    console.log("[facebookPagePipeline] 스케줄 실행 시작");
+    await runFacebookPagePipeline(null, null, { skipEmail: false });
+    console.log("[facebookPagePipeline] 스케줄 실행 완료");
+  },
+  naverLoungePipeline: async () => {
+    console.log("[naverLoungePipeline] 스케줄 실행 시작");
+    await runNaverLoungePipeline(null, null, { skipEmail: false });
+    console.log("[naverLoungePipeline] 스케줄 실행 완료");
+  },
+  dcinsidePipeline: async () => {
+    console.log("[dcinsidePipeline] 스케줄 실행 시작");
+    await runDcinsidePipeline(null, null, { skipEmail: false });
+    console.log("[dcinsidePipeline] 스케줄 실행 완료");
+  },
+  youtubePipeline: async () => {
+    console.log("[youtubePipeline] 스케줄 실행 시작");
+    await runYoutubePipeline(null, null, { skipEmail: false });
+    console.log("[youtubePipeline] 스케줄 실행 완료");
+  },
+  presetPipeline: async () => {
+    console.log("[presetPipeline] 스케줄 실행 시작");
+    await runReportPresetPipeline();
+    console.log("[presetPipeline] 스케줄 실행 완료");
+  },
+};
+
+function normalizeEmailList(values) {
+  const source = Array.isArray(values) ? values : [];
+  return [...new Set(source
+    .map((value) => String(value || "").trim().toLowerCase())
+    .filter(Boolean))];
+}
+
+function normalizePresetEmailConfig(payload = {}) {
+  const email = payload.deliveryConfig?.email || {};
+  return {
+    isEnabled: email.isEnabled !== false,
+    recipientsKo: normalizeEmailList(email.recipientsKo || payload.recipientsKo || email.recipients || payload.recipients || []),
+    recipientsEn: normalizeEmailList(email.recipientsEn || payload.recipientsEn || []),
+  };
+}
+
+function maskSecret(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  if (raw.length <= 8) return `${"*".repeat(Math.max(raw.length - 2, 0))}${raw.slice(-2)}`;
+  return `${raw.slice(0, 4)}${"*".repeat(Math.max(raw.length - 8, 0))}${raw.slice(-4)}`;
+}
+
+const BATCH_SIZE = 400;
 
 // ═══════════════════════════════════════════════════════
 //  HTTP API  —  /api/*
@@ -140,7 +254,7 @@ exports.api = onRequest(
     // ── POST /trigger ── 파이프라인 수동 실행 (테스트용)
     if (req.method === "POST" && path === "/trigger") {
       try {
-        const results = await runPipeline();
+        const results = await runPipeline(null, { triggerSource: "manual" });
         return res.json({ success: true, results });
       } catch (err) {
         console.error("[/trigger] 오류:", err.message);
@@ -158,12 +272,12 @@ exports.api = onRequest(
         const today = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().split("T")[0]; // KST
         if (date === today) {
           // 오늘: 파이프라인 전체 재실행 (메시지 수집 → 분석 → 저장 → 발송)
-          const results = await runPipeline(workspaceId);
+          const results = await runPipeline(workspaceId, { triggerSource: "manual" });
           const targetDate = new Date(Date.now() + 9 * 60 * 60 * 1000 - 86400000).toISOString().split("T")[0]; // KST 어제
           return res.json({ success: true, mode: "full", targetDate, results });
         } else {
           // 과거 날짜: 기존 리포트로 발송만 재실행
-          const results = await reDeliver(workspaceId, date);
+          const results = await reDeliver(workspaceId, date, { triggerSource: "manual" });
           return res.json({ success: true, mode: "redeliver", results });
         }
       } catch (err) {
@@ -189,6 +303,9 @@ exports.api = onRequest(
         const dates = snap.docs.map(d => d.id).sort().reverse();
         return res.json({ type, dates });
       } catch (err) {
+        if (String(err.message || "").includes("형식 오류") || String(err.message || "").includes("파싱 실패")) {
+          return res.status(400).json({ error: err.message });
+        }
         return res.status(500).json({ error: err.message });
       }
     }
@@ -286,7 +403,7 @@ exports.api = onRequest(
         try {
           const guildInfo = await getGuildInfo(channelInfo.guildId);
           guildName = guildInfo.name || "";
-        } catch (_) {}
+        } catch (_) { /* ignore guild name lookup failure */ }
 
         const channelDocId = `discord_${channelId}`;
         const chRef = db
@@ -767,7 +884,7 @@ exports.api = onRequest(
     if (req.method === "POST" && path === "/weekly-report/trigger") {
       try {
         const { workspaceId, weekStart } = req.body;
-        await runWeeklyPipeline(workspaceId || null, weekStart || null);
+        await runWeeklyPipeline(workspaceId || null, weekStart || null, { triggerSource: "manual" });
         return res.json({ success: true });
       } catch (err) {
         console.error("[/weekly-report/trigger] 오류:", err.message);
@@ -1063,7 +1180,6 @@ exports.api = onRequest(
 
         const postsColRef = accRef.collection("posts");
         const now = admin.firestore.FieldValue.serverTimestamp();
-        const BATCH_SIZE = 400;
         for (let i = 0; i < allPosts.length; i += BATCH_SIZE) {
           const chunk = allPosts.slice(i, i + BATCH_SIZE);
           const batch = db.batch();
@@ -1371,7 +1487,7 @@ exports.api = onRequest(
     if (req.method === "POST" && path === "/instagram/email/trigger") {
       try {
         const { workspaceId, date } = req.body || {};
-        const result = await runInstagramEmailSender(workspaceId || null, date || null);
+        const result = await runInstagramEmailSender(workspaceId || null, date || null, { triggerSource: "manual" });
         return res.json({ success: true, result });
       } catch (err) {
         console.error("[/instagram/email/trigger] 오류:", err.message);
@@ -1688,7 +1804,7 @@ exports.api = onRequest(
     if (req.method === "POST" && path === "/facebook/email/trigger") {
       try {
         const { workspaceId, date } = req.body || {};
-        const result = await runFacebookGroupEmailSender(workspaceId || null, date || null);
+        const result = await runFacebookGroupEmailSender(workspaceId || null, date || null, { triggerSource: "manual" });
         return res.json({ success: true, result });
       } catch (err) {
         console.error("[/facebook/email/trigger] 오류:", err.message);
@@ -1708,7 +1824,12 @@ exports.api = onRequest(
           .get();
         const pages = snap.docs.map((d) => {
           const data = d.data() || {};
-          const { pageAccessToken, sourceUserAccessToken, appSecret, ...safeData } = data;
+          const {
+            pageAccessToken: _pageAccessToken,
+            sourceUserAccessToken: _sourceUserAccessToken,
+            appSecret: _appSecret,
+            ...safeData
+          } = data;
           return { docId: d.id, ...safeData };
         });
         return res.json({ pages });
@@ -2248,7 +2369,7 @@ exports.api = onRequest(
     if (req.method === "POST" && path === "/facebook/page/email/trigger") {
       try {
         const { workspaceId, date } = req.body || {};
-        const result = await runFacebookPageEmailSender(workspaceId || null, date || null);
+        const result = await runFacebookPageEmailSender(workspaceId || null, date || null, { triggerSource: "manual" });
         return res.json({ success: true, result });
       } catch (err) {
         console.error("[/facebook/page/email/trigger] 오류:", err.message);
@@ -2334,7 +2455,7 @@ exports.api = onRequest(
 
           return res.json({ isValid, lastValidatedAt: new Date().toISOString() });
         } finally {
-          try { await browser?.close(); } catch (_) {}
+          try { await browser?.close(); } catch (_) { /* ignore browser close failure during cleanup */ }
         }
       } catch (err) {
         console.error("[POST /facebook/session/verify] 오류:", err.message);
@@ -2528,7 +2649,7 @@ exports.api = onRequest(
     if (req.method === "POST" && path === "/naver/email/trigger") {
       try {
         const { workspaceId, date } = req.body || {};
-        const result = await runNaverLoungeEmailSender(workspaceId || null, date || null);
+        const result = await runNaverLoungeEmailSender(workspaceId || null, date || null, { triggerSource: "manual" });
         return res.json({ success: true, result });
       } catch (err) {
         console.error("[/naver/email/trigger] 오류:", err.message);
@@ -2797,7 +2918,7 @@ exports.api = onRequest(
     if (req.method === "POST" && path === "/dcinside/email/trigger") {
       try {
         const { workspaceId, date } = req.body || {};
-        const result = await runDcinsideEmailSender(workspaceId || null, date || null);
+        const result = await runDcinsideEmailSender(workspaceId || null, date || null, { triggerSource: "manual" });
         return res.json({ success: true, result });
       } catch (err) {
         console.error("[/dcinside/email/trigger] 오류:", err.message);
@@ -2862,6 +2983,430 @@ exports.api = onRequest(
       }
     }
 
+    // ════════════════════════════════════════════════════════
+    //  App Settings
+    // ════════════════════════════════════════════════════════
+
+    // ── GET /settings/schedulers ── 스케줄러 설정 조회
+    if (req.method === "GET" && path === "/settings/schedulers") {
+      try {
+        const db = admin.firestore();
+        const workspaceId = resolveWorkspaceId(req.query.workspaceId);
+        const data = await readSchedulerSettings(db, workspaceId);
+        return res.json(serializeSchedulerSettings(data));
+      } catch (err) {
+        console.error("[GET /settings/schedulers] 오류:", err.message);
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── PATCH /settings/schedulers ── 스케줄러 설정 저장
+    if (req.method === "PATCH" && path === "/settings/schedulers") {
+      try {
+        const db = admin.firestore();
+        const workspaceId = resolveWorkspaceId(req.query.workspaceId);
+        const { tasks } = req.body || {};
+        if (!tasks || typeof tasks !== "object" || Array.isArray(tasks)) {
+          return res.status(400).json({ error: "tasks 객체 필수" });
+        }
+        for (const [taskKey, task] of Object.entries(tasks)) {
+          if (task && task.minute !== undefined && Number(task.minute) % 5 !== 0) {
+            return res.status(400).json({ error: `${taskKey} minute는 5분 단위여야 합니다` });
+          }
+        }
+        await saveSchedulerSettings(db, workspaceId, tasks);
+        const nextData = await readSchedulerSettings(db, workspaceId);
+        return res.json({
+          success: true,
+          ...serializeSchedulerSettings(nextData),
+        });
+      } catch (err) {
+        console.error("[PATCH /settings/schedulers] 오류:", err.message);
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── GET /settings/keys ── API 키 설정 조회 (마스킹)
+    if (req.method === "GET" && path === "/settings/keys") {
+      try {
+        const db = admin.firestore();
+        const workspaceId = resolveWorkspaceId(req.query.workspaceId);
+        const snap = await db.collection("workspaces").doc(workspaceId)
+          .collection("settings").doc("api_keys")
+          .get();
+        const data = snap.data() || {};
+        const youtubeDataApiKey = String(data.youtubeDataApiKey || "").trim();
+        const youtubeEnvApiKey = String(process.env.YOUTUBE_API_KEY || "").trim();
+        const effectiveYoutubeApiKey = youtubeDataApiKey || youtubeEnvApiKey;
+        const youtubeSource = youtubeDataApiKey ? "workspace" : (youtubeEnvApiKey ? "env" : "");
+        return res.json({
+          youtube: {
+            isConfigured: Boolean(effectiveYoutubeApiKey),
+            maskedKey: effectiveYoutubeApiKey ? maskSecret(effectiveYoutubeApiKey) : "",
+            source: youtubeSource,
+            hasWorkspaceValue: Boolean(youtubeDataApiKey),
+            updatedAt: youtubeDataApiKey ? data.updatedAt?.toDate?.()?.toISOString() || null : null,
+          },
+        });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── PATCH /settings/keys ── API 키 설정 저장
+    if (req.method === "PATCH" && path === "/settings/keys") {
+      try {
+        const db = admin.firestore();
+        const { workspaceId: _wsId } = req.query;
+        const workspaceId = resolveWorkspaceId(_wsId);
+        const {
+          youtubeDataApiKey,
+          clearYoutubeDataApiKey = false,
+        } = req.body || {};
+        const normalizedYoutubeApiKey = String(youtubeDataApiKey || "").trim();
+        const envYoutubeApiKey = String(process.env.YOUTUBE_API_KEY || "").trim();
+
+        const update = {
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        };
+        if (clearYoutubeDataApiKey) {
+          update.youtubeDataApiKey = admin.firestore.FieldValue.delete();
+        } else if (youtubeDataApiKey !== undefined) {
+          if (!normalizedYoutubeApiKey) {
+            return res.status(400).json({ error: "youtubeDataApiKey가 비어 있습니다" });
+          }
+          update.youtubeDataApiKey = normalizedYoutubeApiKey;
+        }
+
+        await db.collection("workspaces").doc(workspaceId)
+          .collection("settings").doc("api_keys")
+          .set(update, { merge: true });
+
+        const effectiveYoutubeApiKey = clearYoutubeDataApiKey ? envYoutubeApiKey : (normalizedYoutubeApiKey || envYoutubeApiKey);
+        return res.json({
+          success: true,
+          youtube: {
+            isConfigured: Boolean(effectiveYoutubeApiKey),
+            maskedKey: effectiveYoutubeApiKey ? maskSecret(effectiveYoutubeApiKey) : "",
+            source: clearYoutubeDataApiKey
+              ? (envYoutubeApiKey ? "env" : "")
+              : (normalizedYoutubeApiKey ? "workspace" : (envYoutubeApiKey ? "env" : "")),
+            hasWorkspaceValue: !clearYoutubeDataApiKey && Boolean(normalizedYoutubeApiKey),
+          },
+        });
+      } catch (err) {
+        console.error("[PATCH /settings/keys] 오류:", err.message);
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ════════════════════════════════════════════════════════
+    //  YouTube
+    // ════════════════════════════════════════════════════════
+
+    // ── GET /youtube/groups ── 그룹 + 키워드 목록
+    if (req.method === "GET" && path === "/youtube/groups") {
+      try {
+        const db = admin.firestore();
+        const workspaceId = resolveWorkspaceId(req.query.workspaceId);
+        const groupSnap = await db
+          .collection("workspaces").doc(workspaceId)
+          .collection("youtube_groups")
+          .orderBy("createdAt", "asc")
+          .get();
+
+        const groups = [];
+        for (const groupDoc of groupSnap.docs) {
+          const querySnap = await groupDoc.ref.collection("queries")
+            .orderBy("createdAt", "asc")
+            .get();
+          groups.push({
+            docId: groupDoc.id,
+            ...groupDoc.data(),
+            queries: querySnap.docs.map((queryDoc) => ({ queryId: queryDoc.id, ...queryDoc.data() })),
+          });
+        }
+        return res.json({ groups });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── POST /youtube/groups ── 그룹 생성
+    if (req.method === "POST" && path === "/youtube/groups") {
+      try {
+        const db = admin.firestore();
+        const {
+          workspaceId: _wsId,
+          name,
+          nameEn = "",
+          queries = [],
+          maxResultsPerQuery = 25,
+        } = req.body || {};
+        if (!String(name || "").trim()) {
+          return res.status(400).json({ error: "name 필수" });
+        }
+        const workspaceId = resolveWorkspaceId(_wsId);
+        const normalizedName = String(name).trim();
+        const existing = await db
+          .collection("workspaces").doc(workspaceId)
+          .collection("youtube_groups")
+          .where("name", "==", normalizedName)
+          .get();
+        if (!existing.empty) {
+          return res.status(409).json({ error: "이미 등록된 그룹명입니다", docId: existing.docs[0].id });
+        }
+
+        const groupRef = await db
+          .collection("workspaces").doc(workspaceId)
+          .collection("youtube_groups")
+          .add({
+            platform: "youtube",
+            name: normalizedName,
+            nameEn: String(nameEn || "").trim(),
+            isActive: true,
+            summaryPrompt: DEFAULT_YOUTUBE_ANALYSIS_PROMPT,
+            analysisModel: "",
+            maxResultsPerQuery: Math.min(Math.max(Number(maxResultsPerQuery) || 25, 1), 50),
+            deliveryConfig: { email: { isEnabled: false, recipients: [] } },
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+
+        const normalizedQueries = [...new Set((Array.isArray(queries) ? queries : [])
+          .map((query) => String(query || "").trim())
+          .filter(Boolean))];
+        for (const query of normalizedQueries) {
+          await groupRef.collection("queries").add({
+            query,
+            note: "",
+            isActive: true,
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+        }
+        return res.json({ success: true, docId: groupRef.id });
+      } catch (err) {
+        console.error("[POST /youtube/groups] 오류:", err.message);
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── PATCH /youtube/groups ── 그룹 활성화 토글
+    if (req.method === "PATCH" && path === "/youtube/groups") {
+      try {
+        const db = admin.firestore();
+        const { workspaceId: _wsId, docId } = req.query;
+        if (!docId) return res.status(400).json({ error: "docId 필수" });
+        const { isActive } = req.body || {};
+        const workspaceId = resolveWorkspaceId(_wsId);
+        await db.collection("workspaces").doc(workspaceId)
+          .collection("youtube_groups").doc(docId)
+          .update({
+            isActive: Boolean(isActive),
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+        return res.json({ success: true });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── PATCH /youtube/groups/settings ── 그룹 설정 수정
+    if (req.method === "PATCH" && path === "/youtube/groups/settings") {
+      try {
+        const db = admin.firestore();
+        const { workspaceId: _wsId, docId } = req.query;
+        if (!docId) return res.status(400).json({ error: "docId 필수" });
+        const workspaceId = resolveWorkspaceId(_wsId);
+        const { deliveryConfig, summaryPrompt, analysisModel, name, nameEn, maxResultsPerQuery } = req.body || {};
+        const update = {
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        };
+        if (deliveryConfig !== undefined) update.deliveryConfig = deliveryConfig;
+        if (summaryPrompt !== undefined) update.summaryPrompt = String(summaryPrompt || "");
+        if (analysisModel !== undefined) {
+          if (analysisModel && !YT_ANALYSIS_MODELS.has(analysisModel)) {
+            return res.status(400).json({ error: "지원하지 않는 AI 모델입니다" });
+          }
+          update.analysisModel = String(analysisModel || "");
+        }
+        if (name !== undefined) update.name = String(name || "").trim();
+        if (nameEn !== undefined) update.nameEn = String(nameEn || "").trim();
+        if (maxResultsPerQuery !== undefined) {
+          update.maxResultsPerQuery = Math.min(Math.max(Number(maxResultsPerQuery) || 25, 1), 50);
+        }
+        await db.collection("workspaces").doc(workspaceId)
+          .collection("youtube_groups").doc(docId)
+          .update(update);
+        return res.json({ success: true });
+      } catch (err) {
+        console.error("[PATCH /youtube/groups/settings] 오류:", err.message);
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── DELETE /youtube/groups ── 그룹 삭제 + 리포트 정리
+    if (req.method === "DELETE" && path === "/youtube/groups") {
+      try {
+        const db = admin.firestore();
+        const { workspaceId: _wsId, docId } = req.query;
+        if (!docId) return res.status(400).json({ error: "docId 필수" });
+        const workspaceId = resolveWorkspaceId(_wsId);
+
+        const querySnap = await db.collection("workspaces").doc(workspaceId)
+          .collection("youtube_groups").doc(docId)
+          .collection("queries").get();
+        await Promise.all(querySnap.docs.map((queryDoc) => queryDoc.ref.delete()));
+        await db.collection("workspaces").doc(workspaceId)
+          .collection("youtube_groups").doc(docId).delete();
+
+        const reportsSnap = await db.collection("workspaces").doc(workspaceId)
+          .collection("youtube_reports").get();
+        const deleteOps = [];
+        for (const dateDoc of reportsSnap.docs) {
+          const ref = dateDoc.ref.collection("groups").doc(docId);
+          const snap = await ref.get();
+          if (snap.exists) deleteOps.push(ref.delete());
+        }
+        if (deleteOps.length) await Promise.all(deleteOps);
+        return res.json({ success: true, reportsDeleted: deleteOps.length });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── POST /youtube/queries ── 그룹 내 키워드 추가
+    if (req.method === "POST" && path === "/youtube/queries") {
+      try {
+        const db = admin.firestore();
+        const { workspaceId: _wsId, groupId, query, note = "" } = req.body || {};
+        if (!groupId) return res.status(400).json({ error: "groupId 필수" });
+        if (!String(query || "").trim()) return res.status(400).json({ error: "query 필수" });
+        const workspaceId = resolveWorkspaceId(_wsId);
+        const groupRef = db.collection("workspaces").doc(workspaceId)
+          .collection("youtube_groups").doc(groupId);
+        const existing = await groupRef.collection("queries")
+          .where("query", "==", String(query).trim())
+          .get();
+        if (!existing.empty) {
+          return res.status(409).json({ error: "이미 등록된 키워드입니다", queryId: existing.docs[0].id });
+        }
+        const queryRef = await groupRef.collection("queries").add({
+          query: String(query).trim(),
+          note: String(note || "").trim(),
+          isActive: true,
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+        await groupRef.update({ updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+        return res.json({ success: true, queryId: queryRef.id });
+      } catch (err) {
+        console.error("[POST /youtube/queries] 오류:", err.message);
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── PATCH /youtube/queries ── 키워드 수정 / 토글
+    if (req.method === "PATCH" && path === "/youtube/queries") {
+      try {
+        const db = admin.firestore();
+        const { workspaceId: _wsId, groupId, queryId } = req.query;
+        if (!groupId || !queryId) return res.status(400).json({ error: "groupId, queryId 필수" });
+        const workspaceId = resolveWorkspaceId(_wsId);
+        const { query, note, isActive } = req.body || {};
+        const update = {
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        };
+        if (query !== undefined) update.query = String(query || "").trim();
+        if (note !== undefined) update.note = String(note || "").trim();
+        if (isActive !== undefined) update.isActive = Boolean(isActive);
+        await db.collection("workspaces").doc(workspaceId)
+          .collection("youtube_groups").doc(groupId)
+          .collection("queries").doc(queryId)
+          .update(update);
+        await db.collection("workspaces").doc(workspaceId)
+          .collection("youtube_groups").doc(groupId)
+          .update({ updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+        return res.json({ success: true });
+      } catch (err) {
+        console.error("[PATCH /youtube/queries] 오류:", err.message);
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── DELETE /youtube/queries ── 키워드 삭제
+    if (req.method === "DELETE" && path === "/youtube/queries") {
+      try {
+        const db = admin.firestore();
+        const { workspaceId: _wsId, groupId, queryId } = req.query;
+        if (!groupId || !queryId) return res.status(400).json({ error: "groupId, queryId 필수" });
+        const workspaceId = resolveWorkspaceId(_wsId);
+        await db.collection("workspaces").doc(workspaceId)
+          .collection("youtube_groups").doc(groupId)
+          .collection("queries").doc(queryId)
+          .delete();
+        await db.collection("workspaces").doc(workspaceId)
+          .collection("youtube_groups").doc(groupId)
+          .update({ updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+        return res.json({ success: true });
+      } catch (err) {
+        console.error("[DELETE /youtube/queries] 오류:", err.message);
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── GET /youtube/report ── 리포트 조회
+    if (req.method === "GET" && path === "/youtube/report") {
+      try {
+        const db = admin.firestore();
+        const workspaceId = resolveWorkspaceId(req.query.workspaceId);
+        const { date } = req.query;
+        if (!date) return res.status(400).json({ error: "date 필수 (YYYY-MM-DD)" });
+        const snap = await db
+          .collection("workspaces").doc(workspaceId)
+          .collection("youtube_reports").doc(date)
+          .collection("groups").get();
+        const reports = snap.docs.map((d) => ({ docId: d.id, ...d.data() }));
+        return res.json({ date, reports });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── GET /youtube/available-dates ── 리포트 존재 날짜 목록
+    if (req.method === "GET" && path === "/youtube/available-dates") {
+      try {
+        const db = admin.firestore();
+        const workspaceId = resolveWorkspaceId(req.query.workspaceId);
+        const snap = await db
+          .collection("workspaces").doc(workspaceId)
+          .collection("youtube_reports")
+          .orderBy("updatedAt", "desc")
+          .limit(60)
+          .get();
+        const dates = snap.docs.map((d) => d.id);
+        return res.json({ dates });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── POST /youtube/pipeline/trigger ── 파이프라인 수동 실행 (이메일 미발송)
+    if (req.method === "POST" && path === "/youtube/pipeline/trigger") {
+      try {
+        const { workspaceId, date } = req.body || {};
+        const results = await runYoutubePipeline(workspaceId || null, date || null, {
+          skipEmail: true,
+          triggerSource: "manual",
+        });
+        return res.json({ success: true, results });
+      } catch (err) {
+        console.error("[/youtube/pipeline/trigger] 오류:", err.message);
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
     // ── GET /report-presets ── 프리셋 목록 조회
     if (req.method === "GET" && path === "/report-presets") {
       try {
@@ -2882,16 +3427,22 @@ exports.api = onRequest(
     if (req.method === "POST" && path === "/report-presets") {
       try {
         const db = admin.firestore();
-        const { workspaceId: _wsId, name, items = [], recipients = [] } = req.body || {};
+        const { workspaceId: _wsId, name, nameEn = "", items = [], theme = {}, isActive } = req.body || {};
         if (!name) return res.status(400).json({ error: "name 필수" });
         const workspaceId = resolveWorkspaceId(_wsId);
+        const emailConfig = normalizePresetEmailConfig(req.body || {});
         const ref = await db.collection("workspaces").doc(workspaceId)
           .collection("report_presets")
           .add({
             name,
+            nameEn: String(nameEn || "").trim(),
             items,
-            recipients,
-            isActive: true,
+            recipients: emailConfig.recipientsKo,
+            recipientsKo: emailConfig.recipientsKo,
+            recipientsEn: emailConfig.recipientsEn,
+            deliveryConfig: { email: emailConfig },
+            theme,
+            isActive: isActive !== false,
             createdAt: admin.firestore.FieldValue.serverTimestamp(),
             updatedAt: admin.firestore.FieldValue.serverTimestamp(),
           });
@@ -2908,10 +3459,22 @@ exports.api = onRequest(
         const { workspaceId: _wsId, presetId, ...fields } = req.body || {};
         if (!presetId) return res.status(400).json({ error: "presetId 필수" });
         const workspaceId = resolveWorkspaceId(_wsId);
-        const allowed = ["name", "items", "recipients", "isActive"];
+        const allowed = ["name", "nameEn", "items", "isActive", "theme"];
         const update = { updatedAt: admin.firestore.FieldValue.serverTimestamp() };
         for (const key of allowed) {
           if (fields[key] !== undefined) update[key] = fields[key];
+        }
+        const hasEmailFields = ["deliveryConfig", "recipients", "recipientsKo", "recipientsEn"].some((key) => fields[key] !== undefined);
+        if (hasEmailFields) {
+          const presetRef = db.collection("workspaces").doc(workspaceId)
+            .collection("report_presets").doc(presetId);
+          const currentSnap = await presetRef.get();
+          const mergedFields = currentSnap.exists ? { ...currentSnap.data(), ...fields } : fields;
+          const emailConfig = normalizePresetEmailConfig(mergedFields);
+          update.recipients = emailConfig.recipientsKo;
+          update.recipientsKo = emailConfig.recipientsKo;
+          update.recipientsEn = emailConfig.recipientsEn;
+          update.deliveryConfig = { email: emailConfig };
         }
         await db.collection("workspaces").doc(workspaceId)
           .collection("report_presets").doc(presetId)
@@ -2942,7 +3505,7 @@ exports.api = onRequest(
     if (req.method === "POST" && path === "/report-presets/email/trigger") {
       try {
         const { workspaceId, presetId, date } = req.body || {};
-        const results = await runReportPresetPipeline(workspaceId || null, date || null, presetId || null);
+        const results = await runReportPresetPipeline(workspaceId || null, date || null, presetId || null, { triggerSource: "manual" });
         return res.json({ success: true, results });
       } catch (err) {
         console.error("[/report-presets/email/trigger] 오류:", err.message);
@@ -2956,9 +3519,19 @@ exports.api = onRequest(
         const db = admin.firestore();
         const workspaceId = resolveWorkspaceId(req.query.workspaceId);
         const limit = Math.min(parseInt(req.query.limit) || 200, 500);
-        const snap = await db
+        const startDate = parseKstDateParam(req.query.startDate, "startDate");
+        const endDate = parseKstDateParam(req.query.endDate, "endDate");
+        if (startDate && endDate && startDate.raw > endDate.raw) {
+          return res.status(400).json({ error: "startDate는 endDate보다 늦을 수 없습니다" });
+        }
+
+        let query = db
           .collection("workspaces").doc(workspaceId)
-          .collection("delivery_logs")
+          .collection("delivery_logs");
+        if (startDate) query = query.where("sentAt", ">=", startDate.start);
+        if (endDate) query = query.where("sentAt", "<", endDate.endExclusive);
+
+        const snap = await query
           .orderBy("sentAt", "desc")
           .limit(limit)
           .get();
@@ -2967,10 +3540,25 @@ exports.api = onRequest(
           return {
             id: d.id,
             ...data,
+            schemaVersion: data.schemaVersion || 1,
+            channel: data.channel || "email",
+            reportType: data.reportType || "daily",
+            triggerSource: data.triggerSource || "schedule",
+            targetId: data.targetId || null,
+            reportRangeStart: data.reportRangeStart || null,
+            reportRangeEnd: data.reportRangeEnd || null,
+            errorMessage: data.errorMessage || null,
+            status: data.status === "failed" ? "failed" : "success",
             sentAt: data.sentAt?.toDate?.()?.toISOString() || null,
           };
         });
-        return res.json({ logs });
+        return res.json({
+          logs,
+          filters: {
+            startDate: startDate?.raw || null,
+            endDate: endDate?.raw || null,
+          },
+        });
       } catch (err) {
         return res.status(500).json({ error: err.message });
       }
@@ -2981,128 +3569,24 @@ exports.api = onRequest(
 );
 
 // ═══════════════════════════════════════════════════════
-//  Cloud Scheduler  —  매 2시간 (증분 수집 + 위기 감지)
+//  Cloud Scheduler  —  5분마다 체크 (실제 실행 시각은 Firestore 설정 기준)
 // ═══════════════════════════════════════════════════════
-exports.alertPipeline = onSchedule(
-  { schedule: "0 */2 * * *", timeoutSeconds: 300, memory: "512MiB" },
+exports.schedulerDispatcher = onSchedule(
+  { schedule: "*/5 * * * *", timeoutSeconds: 800, memory: "2GiB" },
   async () => {
-    console.log("[alertPipeline] 스케줄 실행 시작");
-    await runAlertPipeline();
-    console.log("[alertPipeline] 스케줄 실행 완료");
-  }
-);
+    const results = await Promise.allSettled(
+      SCHEDULER_DEFINITIONS.map((def) => {
+        const runner = SCHEDULED_TASK_RUNNERS[def.key];
+        if (!runner) return Promise.resolve();
+        return runConfiguredSchedule(def.key, runner);
+      })
+    );
 
-// ═══════════════════════════════════════════════════════
-//  Cloud Scheduler  —  매일 UTC 00:00 (KST 09:00) 실행
-// ═══════════════════════════════════════════════════════
-exports.dailyPipeline = onSchedule(
-  { schedule: "0 0 * * *", timeoutSeconds: 540, memory: "512MiB" },
-  async () => {
-    console.log("[dailyPipeline] 스케줄 실행 시작");
-    await runPipeline();
-    console.log("[dailyPipeline] 스케줄 실행 완료");
-  }
-);
-
-// ══════════════════════════════════════════════════════
-//  Cloud Scheduler — 매일 KST 09:30 (인사이트 수집)
-// ══════════════════════════════════════════════════════
-exports.insightCollector = onSchedule(
-  { schedule: "30 0 * * *", timeoutSeconds: 120, memory: "256MiB" },
-  async () => {
-    console.log("[insightCollector] 스케줄 실행 시작");
-    await runInsightCollector();
-    console.log("[insightCollector] 스케줄 실행 완료");
-  }
-);
-
-// ══════════════════════════════════════════════════════
-//  Cloud Scheduler — 매주 월요일 KST 10:00 (주간 리포트)
-// ══════════════════════════════════════════════════════
-exports.weeklyPipeline = onSchedule(
-  { schedule: "0 1 * * 1", timeoutSeconds: 540, memory: "512MiB" },
-  async () => {
-    console.log("[weeklyPipeline] 스케줄 실행 시작");
-    await runWeeklyPipeline();
-    console.log("[weeklyPipeline] 스케줄 실행 완료");
-  }
-);
-
-// ══════════════════════════════════════════════════════
-//  Cloud Scheduler — 매일 KST 09:00 (Instagram 리포트 생성 + 이메일 발송)
-//  UTC 00:00 = KST 09:00 = 전날 UTC 하루 완성 직후 → 어제 KST 기준 완전 데이터 보장
-// ══════════════════════════════════════════════════════
-exports.instagramPipeline = onSchedule(
-  { schedule: "0 0 * * *", timeoutSeconds: 540, memory: "512MiB" },
-  async () => {
-    console.log("[instagramPipeline] 스케줄 실행 시작 (KST 09:00)");
-    await runInstagramPipeline(null, null, { skipEmail: false });
-    console.log("[instagramPipeline] 스케줄 실행 완료");
-  }
-);
-
-// ══════════════════════════════════════════════════════
-//  Cloud Scheduler — 매일 KST 09:00 (Facebook 그룹 크롤링 + 리포트 생성 + 이메일 발송)
-//  UTC 00:00 = KST 09:00 | memory: 2GiB (Chromium 안정성 확보)
-// ══════════════════════════════════════════════════════
-exports.facebookGroupPipeline = onSchedule(
-  { schedule: "0 0 * * *", timeoutSeconds: 800, memory: "2GiB" },
-  async () => {
-    console.log("[facebookGroupPipeline] 스케줄 실행 시작 (KST 09:00)");
-    await runFacebookGroupPipeline(null, null, { skipEmail: false });
-    console.log("[facebookGroupPipeline] 스케줄 실행 완료");
-  }
-);
-
-// ══════════════════════════════════════════════════════
-//  Cloud Scheduler — 매일 KST 09:05 (Facebook 페이지 API 수집 + 리포트 생성 + 이메일 발송)
-//  UTC 00:05 = KST 09:05 | 그룹 크롤링과 부하 분산
-// ══════════════════════════════════════════════════════
-exports.facebookPagePipeline = onSchedule(
-  { schedule: "5 0 * * *", timeoutSeconds: 800, memory: "512MiB" },
-  async () => {
-    console.log("[facebookPagePipeline] 스케줄 실행 시작 (KST 09:05)");
-    await runFacebookPagePipeline(null, null, { skipEmail: false });
-    console.log("[facebookPagePipeline] 스케줄 실행 완료");
-  }
-);
-
-// ══════════════════════════════════════════════════════
-//  Cloud Scheduler — 매일 KST 09:10 (네이버 라운지 수집 + 리포트 생성 + 이메일 발송)
-//  UTC 00:10 = KST 09:10 | 다른 09시 작업과 겹침 완화
-// ══════════════════════════════════════════════════════
-exports.naverLoungePipeline = onSchedule(
-  { schedule: "10 0 * * *", timeoutSeconds: 800, memory: "512MiB" },
-  async () => {
-    console.log("[naverLoungePipeline] 스케줄 실행 시작 (KST 09:10)");
-    await runNaverLoungePipeline(null, null, { skipEmail: false });
-    console.log("[naverLoungePipeline] 스케줄 실행 완료");
-  }
-);
-
-// ══════════════════════════════════════════════════════
-//  Cloud Scheduler — 매일 KST 09:15 (디시인사이드)
-//  UTC 00:15 = KST 09:15
-// ══════════════════════════════════════════════════════
-exports.dcinsidePipeline = onSchedule(
-  { schedule: "15 0 * * *", timeoutSeconds: 800, memory: "512MiB" },
-  async () => {
-    console.log("[dcinsidePipeline] 스케줄 실행 시작 (KST 09:15)");
-    await runDcinsidePipeline(null, null, { skipEmail: false });
-    console.log("[dcinsidePipeline] 스케줄 실행 완료");
-  }
-);
-
-// ══════════════════════════════════════════════════════
-//  Cloud Scheduler — 매일 KST 10:30 (통합 프리셋 이메일)
-//  UTC 01:30 = KST 10:30 | 모든 개별 파이프라인 완료 후 실행
-// ══════════════════════════════════════════════════════
-exports.presetPipeline = onSchedule(
-  { schedule: "30 0 * * *", timeoutSeconds: 300, memory: "512MiB" },
-  async () => {
-    console.log("[presetPipeline] 스케줄 실행 시작 (KST 09:30)");
-    await runReportPresetPipeline();
-    console.log("[presetPipeline] 스케줄 실행 완료");
+    const failed = results.filter((result) => result.status === "rejected");
+    if (failed.length) {
+      const message = failed.map((result) => result.reason?.message || String(result.reason)).join(" | ");
+      throw new Error(`[schedulerDispatcher] 일부 작업 실패: ${message}`);
+    }
   }
 );
 

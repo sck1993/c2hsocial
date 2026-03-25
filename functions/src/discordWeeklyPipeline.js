@@ -1,37 +1,11 @@
 "use strict";
 const admin  = require("firebase-admin");
-const { analyzeWeeklySummary }   = require("./analyzers/openrouterAnalyzer");
-const { sendWeeklyEmailReport }  = require("./reportDelivery");
+const { analyzeWeeklySummary }             = require("./analyzers/openrouterAnalyzer");
+const { sendWeeklyEmailReport, logDelivery, logDeliveryFailure } = require("./reportDelivery");
+const { getLastWeekRange, getWeekDates }   = require("./utils/dateUtils");
 
-// 이번 주 월요일 기준 직전 주 월~일 날짜 계산 (KST)
-function getLastWeekRange() {
-  const nowKST  = new Date(Date.now() + 9 * 60 * 60 * 1000);
-  // 이번 주 월요일 00:00 KST
-  const dayOfWeek = nowKST.getUTCDay() || 7; // 0(일)→7
-  const thisMonday = new Date(nowKST);
-  thisMonday.setUTCDate(nowKST.getUTCDate() - (dayOfWeek - 1));
-  thisMonday.setUTCHours(0, 0, 0, 0);
-
-  // 직전 주 월요일 ~ 일요일
-  const lastMonday = new Date(thisMonday);
-  lastMonday.setUTCDate(thisMonday.getUTCDate() - 7);
-  const lastSunday = new Date(thisMonday);
-  lastSunday.setUTCDate(thisMonday.getUTCDate() - 1);
-
-  const fmt = d => d.toISOString().split("T")[0];
-  return { weekStart: fmt(lastMonday), weekEnd: fmt(lastSunday) };
-}
-
-// weekStart 기준 7일 날짜 배열 생성
-function getWeekDates(weekStart) {
-  return Array.from({ length: 7 }, (_, i) => {
-    const d = new Date(weekStart + "T00:00:00Z");
-    d.setUTCDate(d.getUTCDate() + i);
-    return d.toISOString().split("T")[0];
-  });
-}
-
-async function runWeeklyPipeline(filterWorkspaceId = null, overrideWeekStart = null) {
+async function runWeeklyPipeline(filterWorkspaceId = null, overrideWeekStart = null, options = {}) {
+  const { triggerSource = "schedule" } = options;
   const db = admin.firestore();
   const { weekStart, weekEnd } = overrideWeekStart
     ? { weekStart: overrideWeekStart, weekEnd: (() => {
@@ -65,6 +39,7 @@ async function runWeeklyPipeline(filterWorkspaceId = null, overrideWeekStart = n
 
       try {
         // 1. 7일치 일일 리포트 읽기
+        const dailyReportByDate = new Map();
         const dailyReports = [];
         let resolvedGuildName = guild.guildName || null;
         for (const date of dates) {
@@ -75,6 +50,7 @@ async function runWeeklyPipeline(filterWorkspaceId = null, overrideWeekStart = n
             .get();
           if (snap.exists) {
             const d = snap.data();
+            dailyReportByDate.set(date, d);
             // 일일 리포트에서 실제 서버 이름 추출 (guilds 컬렉션에 guildName 미설정 대비)
             if (!resolvedGuildName && d.guildName) resolvedGuildName = d.guildName;
             dailyReports.push({ date, summary: d.summary || "", issues: d.issues || [] });
@@ -100,12 +76,8 @@ async function runWeeklyPipeline(filterWorkspaceId = null, overrideWeekStart = n
             : { date, totalMembers: null, communicatingMembers: null, activeMembers: null,
                 newMembers: null, leavingMembers: null, messageCount: null });
 
-          const rSnap = await db
-            .collection("workspaces").doc(workspaceId)
-            .collection("reports").doc(date)
-            .collection("guilds").doc(guild.discordGuildId || guildId)
-            .get();
-          const sentiment = rSnap.exists ? (rSnap.data().sentiment || {}) : {};
+          const reportData = dailyReportByDate.get(date) || null;
+          const sentiment = reportData ? (reportData.sentiment || {}) : {};
           sentimentChart.push({
             date,
             positive: sentiment.positive ?? null,
@@ -137,12 +109,70 @@ async function runWeeklyPipeline(filterWorkspaceId = null, overrideWeekStart = n
         const recipientsKo = emailCfg.recipientsKo || emailCfg.recipients || [];
         const recipientsEn = emailCfg.recipientsEn || [];
         if (recipientsKo.length > 0) {
-          await sendWeeklyEmailReport({ recipients: recipientsKo, guildName, weekStart, weekEnd, report, lang: "ko" });
-          console.log(`${label} 이메일(KO) 발송 완료`);
+          try {
+            await sendWeeklyEmailReport({ recipients: recipientsKo, guildName, weekStart, weekEnd, report, lang: "ko" });
+            console.log(`${label} 이메일(KO) 발송 완료`);
+            logDelivery(db, workspaceId, {
+              platform: "discord",
+              target: guildName,
+              targetId: guild.discordGuildId || guildId,
+              reportType: "weekly",
+              reportDate: weekStart,
+              reportRangeStart: weekStart,
+              reportRangeEnd: weekEnd,
+              lang: "ko",
+              recipientCount: recipientsKo.length,
+              triggerSource,
+            });
+          } catch (emailErr) {
+            console.error(`${label} 이메일(KO) 발송 실패:`, emailErr.message);
+            logDeliveryFailure(db, workspaceId, {
+              platform: "discord",
+              target: guildName,
+              targetId: guild.discordGuildId || guildId,
+              reportType: "weekly",
+              reportDate: weekStart,
+              reportRangeStart: weekStart,
+              reportRangeEnd: weekEnd,
+              lang: "ko",
+              recipientCount: recipientsKo.length,
+              triggerSource,
+              errorMessage: emailErr.message,
+            });
+          }
         }
         if (recipientsEn.length > 0) {
-          await sendWeeklyEmailReport({ recipients: recipientsEn, guildName, weekStart, weekEnd, report, lang: "en" });
-          console.log(`${label} 이메일(EN) 발송 완료`);
+          try {
+            await sendWeeklyEmailReport({ recipients: recipientsEn, guildName, weekStart, weekEnd, report, lang: "en" });
+            console.log(`${label} 이메일(EN) 발송 완료`);
+            logDelivery(db, workspaceId, {
+              platform: "discord",
+              target: guildName,
+              targetId: guild.discordGuildId || guildId,
+              reportType: "weekly",
+              reportDate: weekStart,
+              reportRangeStart: weekStart,
+              reportRangeEnd: weekEnd,
+              lang: "en",
+              recipientCount: recipientsEn.length,
+              triggerSource,
+            });
+          } catch (emailErr) {
+            console.error(`${label} 이메일(EN) 발송 실패:`, emailErr.message);
+            logDeliveryFailure(db, workspaceId, {
+              platform: "discord",
+              target: guildName,
+              targetId: guild.discordGuildId || guildId,
+              reportType: "weekly",
+              reportDate: weekStart,
+              reportRangeStart: weekStart,
+              reportRangeEnd: weekEnd,
+              lang: "en",
+              recipientCount: recipientsEn.length,
+              triggerSource,
+              errorMessage: emailErr.message,
+            });
+          }
         }
         if (recipientsKo.length === 0 && recipientsEn.length === 0) {
           console.log(`${label} 이메일 수신자 없음, 발송 스킵`);

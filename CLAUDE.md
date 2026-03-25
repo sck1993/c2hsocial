@@ -36,9 +36,14 @@
 DCInside는 GCP IP(AS15169)를 차단하므로 Cloud Run에서 직접 수집이 불가능하다.
 수집은 **Mac Mini(`judymoon.local`)에서 로컬 실행**하고, Cloud Run은 Firestore에 저장된 수집 데이터를 읽어 AI 분석·이메일 발송만 담당한다.
 
-- **Mac Mini 수집 스크립트**: `mac-collector/dcinsideLocalCollect.js`
+- **Mac Mini 수집 스크립트**: `functions/src/dcinsideLocalCollect.js`
 - **수집 데이터 Firestore 경로**: `workspaces/{wsId}/dcinside_collected/{date}/galleries/{docId}`
-- **Mac Mini crontab**: 매일 08:45 KST 자동 실행 (`45 8 * * *`)
+- **Mac Mini crontab**: 매일 08:45 KST 자동 실행
+  ```
+  45 8 * * * cd /Users/judymoon/Desktop/신건호/SocialListener/functions && /Users/judymoon/.nvm/versions/node/v24.14.0/bin/node src/dcinsideLocalCollect.js >> /Users/judymoon/dc-collect.log 2>&1
+  ```
+  - nvm 환경을 cron이 못 불러오므로 node 절대 경로 필수
+  - 수집 로그: `/Users/judymoon/dc-collect.log`
 - **프로젝트 경로 (Mac Mini)**: `/Users/judymoon/Desktop/신건호/SocialListener/functions`
 
 수집 관련 버그 수정 시 Mac Mini에서 `git pull` 후 재수집 테스트가 필요하다.
@@ -85,7 +90,8 @@ DCInside는 GCP IP(AS15169)를 차단하므로 Cloud Run에서 직접 수집이 
 
 - **camelCase 통일** — snake_case(`instagram_core.js`) 사용 금지
 - **Collector는 `collectors/` 디렉토리에** — 파이프라인 루트에 수집 파일 두지 않음
-- **플랫폼 prefix 필수** — 플랫폼 특정 파일에서 prefix 생략 금지 (`pipeline.js` ❌ → `discordDailyPipeline.js` ✅)
+- **플랫폼 특정 파일은 prefix 필수** — 특정 플랫폼에 종속된 파일에서 prefix 생략 금지 (`pipeline.js` ❌ → `discordDailyPipeline.js` ✅)
+- **범용 유틸은 prefix 생략 가능** — 여러 플랫폼에서 공유하는 파일은 platform prefix 없이 `{Feature}{Role}.js` 형식 허용 (`reportEmailCore.js`, `reportPresetDelivery.js` 등)
 
 ---
 
@@ -104,8 +110,11 @@ SocialListener/
 │   │   ├── facebookPageDailyPipeline.js    # Facebook 페이지 Graph API 수집/분석 파이프라인
 │   │   ├── naverLoungeDailyPipeline.js     # 네이버 라운지 수집/분석/저장 파이프라인
 │   │   ├── dcinsideDailyPipeline.js        # DCInside Firestore 수집 데이터 읽기 → AI 분석 → 이메일
+│   │   ├── dcinsideLocalCollect.js         # Mac Mini 전용 수집 스크립트 (GCP IP 차단 우회, git으로 관리)
 │   │   ├── reportPresetDailyPipeline.js    # 리포트 프리셋 통합 이메일 파이프라인
-│   │   ├── reportDelivery.js               # 이메일(Gmail) + Google Sheets 발송
+│   │   ├── reportDelivery.js               # 플랫폼별 이메일(Gmail) + Google Sheets 발송
+│   │   ├── reportEmailCore.js              # Gmail SMTP 공통 발송 유틸 (dispatchEmail)
+│   │   ├── reportPresetDelivery.js         # 통합 프리셋 이메일 HTML 빌더 (sendUnifiedEmailReport)
 │   │   ├── collectors/
 │   │   │   ├── discordCollector.js         # Discord 메시지 수집 (증분 snowflake)
 │   │   │   ├── discordInsightCollector.js  # Discord Guild Insights 수집
@@ -121,8 +130,6 @@ SocialListener/
 │   │   └── utils/
 │   │       └── dateUtils.js                # KST 날짜 헬퍼
 │   └── .env                                # 환경변수 (커밋 금지)
-├── mac-collector/
-│   └── dcinsideLocalCollect.js             # Mac Mini 전용 수집 스크립트 (GCP IP 차단 우회)
 └── hosting/
     └── public/
         ├── index.html            # SPA 대시보드
@@ -152,17 +159,30 @@ firebase deploy --only hosting
 
 ## 스케줄러
 
-| 스케줄러 | Cron (UTC) | KST | 설명 |
-|----------|-----------|-----|------|
-| `alertPipeline` | `0 */2 * * *` | 매 2시간 | 증분 수집 + 키워드 알림 |
-| `dailyPipeline` | `0 0 * * *` | 09:00 | Discord: collected_chunks → AI 분석 → 리포트 생성 |
-| `insightCollector` | `30 0 * * *` | 09:30 | Discord Guild Insights 수집 → weekly_insights 저장 |
-| `weeklyPipeline` | `0 1 * * 1` | 월 10:00 | Discord 주간 리포트 생성 + 이메일 발송 |
-| `instagramPipeline` | `0 0 * * *` | 09:00 | Instagram 수집/분석/이메일 |
-| `facebookPagePipeline` | `5 0 * * *` | 09:05 | Facebook 페이지 Graph API 수집/분석/이메일, timeout 800s |
-| `naverLoungePipeline` | `10 0 * * *` | 09:10 | 네이버 라운지 HTTP 수집/분석/이메일, timeout 800s |
-| `dcinsidePipeline` | `0 0 * * *` | 09:00 | DCInside: dcinside_collected 읽기 → AI 분석 → 이메일 |
-| `presetPipeline` | `30 0 * * *` | 09:30 | 리포트 프리셋 통합 이메일 발송 |
+현재 Firebase Cloud Scheduler는 개별 작업별 cron을 직접 들고 있지 않고, **`schedulerDispatcher` 1개가 5분마다 실행**되며 Firestore 설정을 읽어 실제 due task만 실행한다.
+
+- **실제 Cloud Scheduler job**: `schedulerDispatcher`
+- **Dispatcher cron**: `*/5 * * * *`
+- **설정 저장 위치**: `workspaces/ws_antigravity/settings/schedulers`
+- **웹앱 관리 메뉴**: `리포트 설정 > 스케줄러 관리`
+- **시간 제약**: 시각은 5분 단위만 허용
+- **제외 대상**: Mac Mini `dcinsideLocalCollect.js` 로컬 cron (`45 8 * * *`, KST 08:45)
+
+### 관리 대상 작업
+
+| 작업 key | 기본 시각 (KST) | 설명 |
+|----------|-----------------|------|
+| `alertPipeline` | 매 2시간 / 00분 | Discord 증분 수집 + 키워드 알림 |
+| `dailyPipeline` | 09:00 | Discord: collected_chunks → AI 분석 → 리포트 생성 |
+| `insightCollector` | 09:30 | Discord Guild Insights 수집 → weekly_insights 저장 |
+| `weeklyPipeline` | 월 10:00 | Discord 주간 리포트 생성 + 이메일 발송 |
+| `instagramPipeline` | 09:00 | Instagram 수집/분석/이메일 |
+| `facebookGroupPipeline` | 09:00 | Facebook 그룹 Playwright 수집/분석/이메일 |
+| `facebookPagePipeline` | 09:05 | Facebook 페이지 Graph API 수집/분석/이메일 |
+| `naverLoungePipeline` | 09:10 | 네이버 라운지 HTTP 수집/분석/이메일 |
+| `dcinsidePipeline` | 09:00 | DCInside: dcinside_collected 읽기 → AI 분석 → 이메일 |
+| `youtubePipeline` | 08:50 | YouTube 신규 업로드 수집/분석/이메일 |
+| `presetPipeline` | 09:30 | 리포트 프리셋 통합 이메일 발송 |
 
 ---
 

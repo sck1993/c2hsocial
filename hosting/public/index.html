@@ -7,9 +7,8 @@
   <title>AI Social Listening — Dashboard</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link
-    href="https://fonts.googleapis.com/css2?family=Black+Han+Sans&family=Gothic+A1:wght@400;500;600;700;800;900&family=Space+Mono:wght@400;700&display=swap"
-    rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Do+Hyeon&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css" />
   <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <script defer src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.5/purify.min.js"></script>
   <link rel="stylesheet" href="app.css">
@@ -199,6 +198,7 @@
       </div>
 
       <nav class="sb-nav">
+        <div class="sb-section-label">Platforms</div>
 
         <!-- Discord -->
         <div class="platform-section open">
@@ -360,6 +360,40 @@
           </div>
         </div>
 
+        <!-- YouTube -->
+        <div class="platform-section">
+          <div class="platform-row" onclick="togglePlatform(this)">
+            <div class="p-icon">
+              <svg viewBox="0 0 24 24" fill="currentColor" style="color:#FF0033">
+                <path d="M23.5 6.2a3 3 0 0 0-2.1-2.1C19.6 3.6 12 3.6 12 3.6s-7.6 0-9.4.5A3 3 0 0 0 .5 6.2 31.4 31.4 0 0 0 0 12a31.4 31.4 0 0 0 .5 5.8 3 3 0 0 0 2.1 2.1c1.8.5 9.4.5 9.4.5s7.6 0 9.4-.5a3 3 0 0 0 2.1-2.1A31.4 31.4 0 0 0 24 12a31.4 31.4 0 0 0-.5-5.8Z"/>
+                <path fill="#fff" d="M9.6 15.5V8.5L15.8 12l-6.2 3.5Z"/>
+              </svg>
+            </div>
+            <span class="p-name">YouTube</span>
+            <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <polyline points="6 9 12 15 18 9"/>
+            </svg>
+          </div>
+          <div class="sub-nav">
+            <div class="sub-nav-item" id="nav-yt-report" onclick="switchView('yt-report')">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="3" y="3" width="18" height="18" rx="2" />
+                <path d="M3 9h18M9 21V9" />
+              </svg>
+              일별 리포트
+            </div>
+            <div class="sub-nav-item" id="nav-yt-groups" onclick="switchView('yt-groups')">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+                <circle cx="9" cy="7" r="4" />
+                <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+                <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+              </svg>
+              그룹 관리
+            </div>
+          </div>
+        </div>
+
         <!-- 네이버 라운지 -->
         <div class="platform-section">
           <div class="platform-row" onclick="togglePlatform(this)">
@@ -440,6 +474,9 @@
           </div>
         </div>
 
+        <div class="sb-divider"></div>
+        <div class="sb-section-label">Settings</div>
+
         <!-- 리포트 설정 -->
         <div class="platform-section" id="section-report-settings">
           <div class="platform-row" onclick="togglePlatform(this)">
@@ -456,6 +493,22 @@
             </svg>
           </div>
           <div class="sub-nav">
+            <div class="sub-nav-item" id="nav-key-mgmt" onclick="switchView('key-mgmt')">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21 2l-2 2m-7.61 7.61a5 5 0 1 1 7.07-7.07l1.42 1.42a2 2 0 0 1 0 2.83l-1.41 1.41"/>
+                <path d="M14 7l3 3"/>
+                <path d="M5 19l4.5-4.5"/>
+                <path d="M2 22l3-3"/>
+              </svg>
+              키 관리
+            </div>
+            <div class="sub-nav-item" id="nav-scheduler-mgmt" onclick="switchView('scheduler-mgmt')">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="8"/>
+                <path d="M12 8v5l3 2"/>
+              </svg>
+              스케줄러 관리
+            </div>
             <div class="sub-nav-item" id="nav-preset-mgmt" onclick="switchView('preset-mgmt')">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <rect x="3" y="3" width="7" height="7" rx="1"/>
@@ -480,12 +533,7 @@
 
       </nav>
 
-      <div class="sb-footer">
-        <div class="live-badge">
-          <div class="live-dot"></div>
-          <span>KST 09:00 자동 분석</span>
-        </div>
-      </div>
+      <div class="sb-footer"></div>
     </aside>
 
     <!-- Content -->
@@ -862,6 +910,26 @@
         <div id="dc-session-main"></div>
       </div>
 
+      <!-- ═══ YouTube topbars ═══ -->
+      <div class="topbar hidden" id="topbar-yt-report">
+        <span class="topbar-title">YouTube 일별 리포트</span>
+        <div class="topbar-spacer"></div>
+        <div class="topbar-right">
+          <div class="date-pill">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+            <input type="text" id="ytReportDate" placeholder="날짜 선택" readonly>
+          </div>
+          <div class="icon-btn spin-on-click" id="ytTriggerBtn" onclick="triggerYtReport()" title="수동 수집 실행">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+          </div>
+          <span id="ytTriggerMsg" class="trigger-msg"></span>
+        </div>
+      </div>
+      <div class="topbar hidden" id="topbar-yt-groups">
+        <span class="topbar-title">YouTube 그룹 관리</span>
+        <div class="topbar-spacer"></div>
+      </div>
+
       <!-- ═══ 네이버 라운지 topbars ═══ -->
       <div class="topbar hidden" id="topbar-nl-report">
         <span class="topbar-title">네이버 라운지 일별 리포트</span>
@@ -974,6 +1042,14 @@
         <div id="fb-session-main"></div>
       </div>
 
+      <!-- ═══ YouTube views ═══ -->
+      <div class="view hidden" id="view-yt-report">
+        <div id="yt-report-main"></div>
+      </div>
+      <div class="view hidden" id="view-yt-groups">
+        <div id="yt-groups-main"></div>
+      </div>
+
       <!-- ═══ 네이버 라운지 views ═══ -->
       <div class="view hidden" id="view-nl-report">
         <div id="nl-report-main"></div>
@@ -986,15 +1062,44 @@
       </div>
 
       <!-- ═══ 리포트 설정 topbar ═══ -->
+      <div class="topbar hidden" id="topbar-key-mgmt">
+        <span class="topbar-title">키 관리</span>
+        <div class="topbar-spacer"></div>
+        <div class="topbar-right">
+          <div class="icon-btn" onclick="loadKeySettings()" title="새로고침">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 2v6h-6" />
+              <path d="M3 12a9 9 0 0 1 15-6.7L21 8" />
+              <path d="M3 22v-6h6" />
+              <path d="M21 12a9 9 0 0 1-15 6.7L3 16" />
+            </svg>
+          </div>
+        </div>
+      </div>
+      <div class="topbar hidden" id="topbar-scheduler-mgmt">
+        <span class="topbar-title">스케줄러 관리</span>
+        <div class="topbar-spacer"></div>
+        <div class="topbar-right">
+          <button class="tb-btn" onclick="loadSchedulerSettings()">새로고침</button>
+          <button class="tb-btn" onclick="saveSchedulerSettings()">저장</button>
+        </div>
+      </div>
       <div class="topbar hidden" id="topbar-preset-mgmt">
         <span class="topbar-title">프리셋 관리</span>
         <div class="topbar-spacer"></div>
         <div class="topbar-right">
+          <button class="tb-btn" onclick="triggerPresetEmail()">통합 발송</button>
           <button class="tb-btn" onclick="openPresetEditor(null)">+ 새 프리셋</button>
         </div>
       </div>
 
       <!-- ═══ 리포트 설정 views ═══ -->
+      <div class="view hidden" id="view-key-mgmt">
+        <div id="key-mgmt-main"></div>
+      </div>
+      <div class="view hidden" id="view-scheduler-mgmt">
+        <div id="scheduler-mgmt-main"></div>
+      </div>
       <div class="view hidden" id="view-preset-mgmt">
         <div class="preset-mgmt-grid">
           <!-- 좌측: 프리셋 목록 -->
@@ -1020,6 +1125,45 @@
                 <input id="preset-name-input" class="field-input" type="text" placeholder="예: 마케팅팀 통합 리포트">
               </div>
 
+              <div class="field-group" style="margin-bottom:18px">
+                <label class="field-label">영문 이메일용 프리셋 이름</label>
+                <input id="preset-name-en-input" class="field-input" type="text" placeholder="Example: Marketing Team Integrated Report">
+                <div class="preset-field-hint">영문 이메일의 히어로 제목과 메일 제목에 우선 사용됩니다. 비워두면 기본 프리셋 이름을 그대로 씁니다.</div>
+              </div>
+
+              <div class="field-group" style="margin-bottom:18px">
+                <label class="field-label">히어로 헤더 그라데이션</label>
+                <div class="preset-theme-row">
+                  <label class="preset-color-field">
+                    <span class="preset-color-label">시작색</span>
+                    <div class="preset-color-input-wrap">
+                      <input id="preset-hero-gradient-from" class="preset-color-picker" type="color" value="#f58529">
+                      <input id="preset-hero-gradient-from-text" class="field-input preset-color-text" type="text" value="#f58529" placeholder="#f58529">
+                    </div>
+                  </label>
+                  <label class="preset-color-field">
+                    <span class="preset-color-label">끝색</span>
+                    <div class="preset-color-input-wrap">
+                      <input id="preset-hero-gradient-to" class="preset-color-picker" type="color" value="#8134af">
+                      <input id="preset-hero-gradient-to-text" class="field-input preset-color-text" type="text" value="#8134af" placeholder="#8134af">
+                    </div>
+                  </label>
+                </div>
+              </div>
+
+              <div class="field-group" style="margin-bottom:18px">
+                <label class="field-label">프리셋 상태</label>
+                <div class="delivery-row preset-delivery-row">
+                  <label class="toggle-switch">
+                    <input type="checkbox" id="preset-is-active" checked>
+                    <div class="toggle-track"></div>
+                    <div class="toggle-knob"></div>
+                  </label>
+                  <span class="delivery-label" id="preset-is-active-label">활성</span>
+                </div>
+                <div class="preset-field-hint">비활성 프리셋은 스케줄 발송과 전체 통합 발송에서 제외됩니다.</div>
+              </div>
+
               <!-- 추가 가능한 리포트 블록 -->
               <div class="field-group" style="margin-bottom:18px">
                 <label class="field-label">추가 가능한 리포트</label>
@@ -1042,17 +1186,37 @@
               <!-- 수신자 -->
               <div class="field-group" style="margin-bottom:24px">
                 <label class="field-label">수신자 이메일</label>
-                <div id="preset-chip-container" class="chip-input-wrap">
-                  <div class="chip-list"></div>
-                  <input type="text" class="chip-text-input" placeholder="이메일 입력 후 Enter">
-                  <span class="chip-count hidden"></span>
+                <div style="display:grid;gap:14px">
+                  <div>
+                    <div class="preset-color-label" style="margin-bottom:8px">한국어 메일 수신자</div>
+                    <div id="preset-chip-container-ko" class="chip-input-wrap">
+                      <div class="chip-list"></div>
+                      <input type="text" class="chip-text-input" placeholder="한국어 수신자 이메일 입력 후 Enter">
+                      <span class="chip-count hidden"></span>
+                    </div>
+                  </div>
+                  <div>
+                    <div class="preset-color-label" style="margin-bottom:8px">영문 메일 수신자</div>
+                    <div id="preset-chip-container-en" class="chip-input-wrap">
+                      <div class="chip-list"></div>
+                      <input type="text" class="chip-text-input" placeholder="English recipient email, then Enter">
+                      <span class="chip-count hidden"></span>
+                    </div>
+                  </div>
                 </div>
+                <div class="preset-field-hint" style="margin-top:8px">예전 프리셋의 단일 수신자 목록은 한국어 수신자로 간주됩니다.</div>
               </div>
 
               <!-- 버튼 -->
-              <div style="display:flex;gap:8px">
-                <button class="btn-save-settings" onclick="savePreset()">저장</button>
-                <button class="btn-cancel-settings" onclick="closePresetEditor()">취소</button>
+              <div class="preset-editor-actions">
+                <div class="preset-editor-actions-left">
+                  <button class="btn-save-settings" onclick="savePreset()">저장</button>
+                  <button class="btn-cancel-settings" onclick="closePresetEditor()">취소</button>
+                </div>
+                <div class="preset-editor-actions-right">
+                  <button class="btn-cancel-settings" id="preset-send-btn" style="display:none" onclick="triggerEditingPresetEmail()">이 프리셋 발송</button>
+                  <button class="btn-cancel-settings preset-btn-danger" id="preset-delete-btn" style="display:none" onclick="deleteEditingPreset()">삭제</button>
+                </div>
               </div>
 
               <!-- 이메일 미리보기 -->
@@ -1076,8 +1240,19 @@
       <div class="topbar hidden" id="topbar-delivery-log">
         <span class="topbar-title">리포트 발송 기록</span>
         <div class="topbar-spacer"></div>
-        <div class="topbar-right">
-          <button class="tb-btn" onclick="loadDeliveryLog()">↺ 새로고침</button>
+        <div class="topbar-right delivery-log-topbar-right">
+          <div class="date-pill">
+            <label>시작일</label>
+            <input type="date" id="deliveryLogStartDate" />
+            <svg class="date-cal-icon" onclick="this.previousElementSibling.click()" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+          </div>
+          <div class="date-pill">
+            <label>종료일</label>
+            <input type="date" id="deliveryLogEndDate" />
+            <svg class="date-cal-icon" onclick="this.previousElementSibling.click()" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+          </div>
+          <button class="tb-btn" onclick="resetDeliveryLogDateFilters()">초기화</button>
+          <button class="tb-btn" onclick="loadDeliveryLog()">조회</button>
         </div>
       </div>
 
