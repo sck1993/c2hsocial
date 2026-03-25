@@ -121,7 +121,7 @@ function extractBoardId(loungeUrl = "", fallback = 0) {
     const parsed = new URL(String(loungeUrl));
     const raw = parsed.searchParams.get("boardId");
     if (raw != null && raw !== "") return Number(raw);
-  } catch (_) {}
+  } catch (_) { /* ignore invalid lounge URL */ }
   return Number(fallback || 0);
 }
 

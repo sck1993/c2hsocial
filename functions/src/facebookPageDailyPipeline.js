@@ -7,28 +7,16 @@ const {
   validatePageAccessToken,
 } = require("./collectors/facebookPageCollector");
 const { analyzeFacebookGroupPosts } = require("./analyzers/openrouterAnalyzer");
-const { sendFacebookPageEmailReport, logDelivery } = require("./reportDelivery");
+const { sendFacebookPageEmailReport, logDelivery, logDeliveryFailure } = require("./reportDelivery");
 const {
   getKSTYesterdayString,
-  getKSTMidnightMs,
+  sleep,
+  getUtcRangeForKstDate,
 } = require("./utils/dateUtils");
 
 const POST_GAP_MS = 300;
 const PAGE_GAP_MS = 1200;
 const DEFAULT_WORKSPACE = "ws_antigravity";
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function getUtcRangeForKstDate(kstDateStr) {
-  const startMs = getKSTMidnightMs(kstDateStr);
-  const endMs = startMs + 24 * 60 * 60 * 1000;
-  return {
-    since: Math.floor(startMs / 1000),
-    until: Math.floor(endMs / 1000),
-  };
-}
 
 function flattenComments(comments = []) {
   const out = [];
@@ -135,7 +123,7 @@ function mergeRecipients(pages = []) {
 }
 
 async function runFacebookPagePipeline(filterWorkspaceId = null, targetDate = null, options = {}) {
-  const { skipEmail = false } = options;
+  const { skipEmail = false, triggerSource = "schedule" } = options;
   const db = admin.firestore();
   const date = targetDate || getKSTYesterdayString();
   const workspaceId = filterWorkspaceId || DEFAULT_WORKSPACE;
@@ -317,8 +305,10 @@ async function runFacebookPagePipeline(filterWorkspaceId = null, targetDate = nu
     const totalReplies = mergedPosts.reduce((sum, post) => sum + (post.replyCount || 0), 0);
 
     let aiSummary = "";
+    let aiSummary_en = "";
     let aiSentiment = { positive: 0, neutral: 100, negative: 0 };
     let aiKeywords = [];
+    let aiKeywords_en = [];
     let aiIssues = [];
     let promptTokens = 0;
     let completionTokens = 0;
@@ -326,6 +316,7 @@ async function runFacebookPagePipeline(filterWorkspaceId = null, targetDate = nu
 
     if (!mergedPosts.length) {
       aiSummary = "게시물이 존재하지 않습니다";
+      aiSummary_en = "No posts were found.";
     } else {
       try {
         const analysisResult = await analyzeFacebookGroupPosts({
@@ -339,8 +330,10 @@ async function runFacebookPagePipeline(filterWorkspaceId = null, targetDate = nu
         });
 
         aiSummary = analysisResult.summary || "";
+        aiSummary_en = analysisResult.summary_en || "";
         aiSentiment = analysisResult.sentiment || aiSentiment;
         aiKeywords = analysisResult.keywords || [];
+        aiKeywords_en = analysisResult.keywords_en || [];
         aiIssues = analysisResult.issues || [];
 
         const usage = analysisResult.usage || {};
@@ -374,8 +367,10 @@ async function runFacebookPagePipeline(filterWorkspaceId = null, targetDate = nu
       postListTruncated: mergedPosts.some((post) => post.commentCoverage === "partial" || post.truncatedComments || post.truncatedReplies),
       posts: compactPostsForStorage(mergedPosts),
       aiSummary,
+      aiSummary_en,
       aiSentiment,
       aiKeywords,
+      aiKeywords_en,
       aiIssues,
       model: analysisModel,
       promptTokens,
@@ -415,9 +410,27 @@ async function runFacebookPagePipeline(filterWorkspaceId = null, targetDate = nu
           report: reportData,
         });
         console.log(`[facebookPagePipeline] 이메일 발송 완료: ${reportGroupName}`);
-        logDelivery(db, workspaceId, { platform: "facebook_page", target: reportGroupName, reportDate: date, recipientCount: recipients.length });
+        logDelivery(db, workspaceId, {
+          platform: "facebook_page",
+          target: reportGroupName,
+          targetId: reportDocId,
+          reportType: "daily",
+          reportDate: date,
+          recipientCount: recipients.length,
+          triggerSource,
+        });
       } catch (emailErr) {
         console.error(`[facebookPagePipeline] 이메일 발송 실패 (${reportGroupName}): ${emailErr.message}`);
+        logDeliveryFailure(db, workspaceId, {
+          platform: "facebook_page",
+          target: reportGroupName,
+          targetId: reportDocId,
+          reportType: "daily",
+          reportDate: date,
+          recipientCount: recipients.length,
+          triggerSource,
+          errorMessage: emailErr.message,
+        });
       }
     }
 
@@ -430,7 +443,8 @@ async function runFacebookPagePipeline(filterWorkspaceId = null, targetDate = nu
   return results;
 }
 
-async function runFacebookPageEmailSender(filterWorkspaceId = null, targetDate = null) {
+async function runFacebookPageEmailSender(filterWorkspaceId = null, targetDate = null, options = {}) {
+  const { triggerSource = "manual" } = options;
   const db = admin.firestore();
   const date = targetDate || getKSTYesterdayString();
   const workspaceId = filterWorkspaceId || DEFAULT_WORKSPACE;
@@ -485,9 +499,28 @@ async function runFacebookPageEmailSender(filterWorkspaceId = null, targetDate =
       });
 
       console.log(`[facebookPageEmailSender] 발송 완료: ${reportGroupName}`);
+      logDelivery(db, workspaceId, {
+        platform: "facebook_page",
+        target: reportGroupName,
+        targetId: buildReportGroupDocId(reportGroupName),
+        reportType: "daily",
+        reportDate: date,
+        recipientCount: recipients.length,
+        triggerSource,
+      });
       results.sent += 1;
     } catch (err) {
       console.error(`[facebookPageEmailSender] 오류 (${reportGroupName}): ${err.message}`);
+      logDeliveryFailure(db, workspaceId, {
+        platform: "facebook_page",
+        target: reportGroupName,
+        targetId: buildReportGroupDocId(reportGroupName),
+        reportType: "daily",
+        reportDate: date,
+        recipientCount: recipients.length,
+        triggerSource,
+        errorMessage: err.message,
+      });
       results.errors += 1;
     }
   }

@@ -1,9 +1,9 @@
 "use strict";
 
 const admin = require("firebase-admin");
-const nodemailer = require("nodemailer");
 const { Resvg } = require("@resvg/resvg-js");
 const { google } = require("googleapis");
+const { dispatchEmail } = require("./reportEmailCore");
 
 /** 일반 텍스트 필드의 HTML 특수문자 이스케이핑 */
 function escapeHtml(str) {
@@ -64,14 +64,6 @@ function toChartNumber(value) {
   return Number.isFinite(n) ? n : null;
 }
 
-function trimLeadingNullSeries(series) {
-  const firstRealIndex = series.findIndex((item) => item && item.value != null);
-  if (firstRealIndex <= 0) return series;
-  return series.map((item, index) => (
-    index < firstRealIndex ? { ...item, value: null } : item
-  ));
-}
-
 function computeChartScale(values, { minVisualRange = 1, paddingRatio = 0.12 } = {}) {
   const minValue = Math.min(...values);
   const maxValue = Math.max(...values);
@@ -113,24 +105,6 @@ function formatSummaryHtml(text) {
     .replace(/^<br><br>/, "");
 }
 
-/* ════════════════════════════════════════════
-   이메일 발송 (Gmail SMTP + 앱 비밀번호)
-════════════════════════════════════════════ */
-
-let _transporter = null;
-function getTransporter() {
-  if (!_transporter) {
-    _transporter = nodemailer.createTransport({
-      service: "gmail",
-      auth: {
-        user: process.env.GMAIL_USER,
-        pass: process.env.GMAIL_APP_PASSWORD,
-      },
-    });
-  }
-  return _transporter;
-}
-
 /**
  * 길드(서버) 단위 일일 리포트 이메일 발송.
  * @param {object} opts
@@ -161,7 +135,7 @@ async function sendEmailReport({ recipients, guildName, guildId = "", date, repo
     subject = `[AI Social Listening] ${guildName} - Discord 일일 리포트 (${date})`;
   }
 
-  await getTransporter().sendMail({
+  await dispatchEmail({
     from: `AI Social Listening <${process.env.GMAIL_USER}>`,
     to:   recipients.join(", "),
     subject,
@@ -634,7 +608,6 @@ function buildWeeklyEmailHTML({ guildName, weekStart, weekEnd, report, lang }) {
 }
 
 async function sendWeeklyEmailReport({ recipients, guildName, weekStart, weekEnd, report, lang = "ko" }) {
-  const transporter  = getTransporter();
   const displayRange = `${weekStart} ~ ${weekEnd}`;
 
   let html, subject;
@@ -656,7 +629,7 @@ async function sendWeeklyEmailReport({ recipients, guildName, weekStart, weekEnd
     subject = `[AI Social Listening] ${guildName} - Discord 주간 리포트 (${displayRange})`;
   }
 
-  await transporter.sendMail({
+  await dispatchEmail({
     from:    `"AI Social Listening" <${process.env.GMAIL_USER}>`,
     to:      recipients.join(", "),
     subject,
@@ -690,7 +663,7 @@ async function sendInstagramEmailReport({ recipients, username, date, report }) 
 
   if (attachments?.length) mailOptions.attachments = attachments;
 
-  await getTransporter().sendMail(mailOptions);
+  await dispatchEmail(mailOptions);
 }
 
 function buildInstagramTrendChartImage({ report = {}, username = "instagram", date = "" } = {}) {
@@ -1133,7 +1106,7 @@ async function sendFacebookEmailReport({ recipients, groupName, groupUrl, date, 
     html,
   };
 
-  await getTransporter().sendMail(mailOptions);
+  await dispatchEmail(mailOptions);
 }
 
 /**
@@ -1242,7 +1215,7 @@ function buildFacebookPageEmailHTML({ pageName, date, report }) {
 async function sendFacebookPageEmailReport({ recipients, pageName, date, report }) {
   const html = buildFacebookPageEmailHTML({ pageName, date, report });
 
-  await getTransporter().sendMail({
+  await dispatchEmail({
     from: `Social Listener <${process.env.GMAIL_USER}>`,
     to: recipients.join(", "),
     subject: `[Social Listener] ${pageName} - Facebook 페이지 일일 리포트 (${date})`,
@@ -1485,16 +1458,128 @@ function buildDcinsideEmailHTML({ galleryName, galleryUrl, date, report }) {
 </html>`;
 }
 
+function formatYoutubePublishedAt(value) {
+  if (!value) return "—";
+  const dt = new Date(value);
+  if (Number.isNaN(dt.getTime())) return "—";
+  return dt.toLocaleString("ko-KR", {
+    timeZone: "Asia/Seoul",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function buildYoutubeEmailHTML({ groupName, date, report }) {
+  const displayDate = formatKSTDate(date);
+  const HEADING = "font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#ff0033";
+  const videos = Array.isArray(report.videos) ? report.videos : [];
+  const candidateVideoCount = Number(report.candidateVideoCount || report.videoCount || 0);
+  const relevantVideoCount = Number(report.relevantVideoCount || report.videoCount || 0);
+  const filteredOutVideoCount = Number(report.filteredOutVideoCount || 0);
+  const emptyVideoMessage = candidateVideoCount > 0 && relevantVideoCount === 0
+    ? "후보 영상은 있었지만 관련성 판정 후 보고 대상이 남지 않았습니다."
+    : "해당 날짜에 수집된 신규 영상이 없습니다.";
+
+  const videoRows = videos.map((video) => {
+    const metrics = [
+      video.viewCount != null ? `조회 ${Number(video.viewCount).toLocaleString()}` : null,
+      video.likeCount != null ? `좋아요 ${Number(video.likeCount).toLocaleString()}` : null,
+      video.commentCount != null ? `댓글 ${Number(video.commentCount).toLocaleString()}` : null,
+      video.duration ? `길이 ${escapeHtml(video.duration)}` : null,
+    ].filter(Boolean).join(" · ");
+    const matchedQueryChips = (video.matchedQueries || []).map((query) => `
+      <span style="display:inline-block;padding:2px 8px;border-radius:999px;background:#fff1f2;color:#be123c;font-size:11px;font-weight:600;margin:2px 6px 0 0">${escapeHtml(query)}</span>
+    `).join("");
+    const shortBadge = video.isShortCandidate
+      ? `<span style="display:inline-block;padding:2px 8px;border-radius:999px;background:#fff7ed;color:#c2410c;font-size:11px;font-weight:700;margin-left:6px">SHORTS 후보</span>`
+      : "";
+
+    return `
+      <div style="display:flex;gap:14px;padding:14px 0;border-bottom:1px solid #eef2f7">
+        <a href="${escapeHtml(video.videoUrl || "#")}" target="_blank" rel="noopener" style="display:block;flex-shrink:0">
+          <img src="${escapeHtml(video.thumbnailUrl || "")}" alt="${escapeHtml(video.title || "")}" style="width:160px;height:90px;border-radius:12px;object-fit:cover;background:#e2e8f0;display:block">
+        </a>
+        <div style="min-width:0;flex:1">
+          <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:6px">
+            <span style="font-size:12px;font-weight:700;color:#ff0033">YouTube</span>
+            ${shortBadge}
+          </div>
+          <a href="${escapeHtml(video.videoUrl || "#")}" target="_blank" rel="noopener" style="display:block;font-size:15px;font-weight:700;color:#0f172a;line-height:1.45;text-decoration:none">${escapeHtml(video.title || "(제목 없음)")}</a>
+          <div style="font-size:12px;color:#64748b;margin-top:6px">${escapeHtml(video.channelTitle || "—")} · ${formatYoutubePublishedAt(video.publishedAt)}</div>
+          <div style="font-size:12px;color:#334155;line-height:1.7;margin-top:6px">${metrics || "공개 지표 없음"}</div>
+          ${matchedQueryChips ? `<div style="margin-top:8px">${matchedQueryChips}</div>` : ""}
+        </div>
+      </div>`;
+  }).join("");
+
+  return `<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>YouTube 리포트 - ${escapeHtml(groupName)} (${date})</title>
+</head>
+<body style="margin:0;padding:0;background:#f8fafc;font-family:-apple-system,'Malgun Gothic','맑은 고딕',sans-serif">
+  <div style="display:none;max-height:0;overflow:hidden;mso-hide:all">${escapeHtml(groupName)} YouTube ${displayDate} 일일 리포트</div>
+  <div style="max-width:620px;margin:32px auto;background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 1px 3px rgba(15,23,42,.12)">
+    <div style="background:linear-gradient(135deg,#ff0033 0%,#cc0000 52%,#7f1d1d 100%);padding:28px 32px">
+      <div style="color:#fecdd3;font-size:11px;letter-spacing:.08em;margin-bottom:6px">AI SOCIAL LISTENING · DAILY REPORT</div>
+      <div style="color:#fff;font-size:22px;font-weight:700">${escapeHtml(groupName)}</div>
+      <div style="color:#fecdd3;font-size:14px;margin-top:6px">YouTube &nbsp;·&nbsp; ${displayDate}</div>
+    </div>
+
+    <div style="padding:28px 32px">
+      <div style="margin-bottom:24px">
+        <div style="${HEADING};margin-bottom:8px">업로드 동향 요약</div>
+        <div style="font-size:14px;color:#374151;line-height:1.75;background:#f8fafc;border-left:3px solid #ff0033;border-radius:0 10px 10px 0;padding:14px 16px">
+          ${sanitizeReportHtml(formatSummaryHtml(report.aiSummary)) || "—"}
+        </div>
+      </div>
+
+      <div style="margin-bottom:24px">
+        <div style="${HEADING};margin-bottom:8px">수집 결과</div>
+        <div style="font-size:13px;color:#64748b;margin-bottom:8px">키워드 ${(report.queryCount || 0).toLocaleString()}개 · 후보 ${candidateVideoCount.toLocaleString()}개 · 관련 ${(relevantVideoCount || 0).toLocaleString()}개${filteredOutVideoCount > 0 ? ` · 제외/보류 ${filteredOutVideoCount.toLocaleString()}개` : ""}</div>
+        ${videoRows || `<div style="padding:14px 16px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;font-size:13px;color:#64748b;line-height:1.7">${emptyVideoMessage}</div>`}
+      </div>
+
+      ${(report.model || report.totalTokens) ? `
+      <div style="padding-top:12px;border-top:1px dashed #e2e8f0;font-size:11px;color:#94a3b8;text-align:right">
+        ${report.model ? `<span style="margin-right:10px;font-weight:500">${escapeHtml(report.model)}</span>` : ""}
+        ${report.totalTokens ? `<span style="margin-right:10px">입력 ${(report.promptTokens || 0).toLocaleString()} / 출력 ${(report.completionTokens || 0).toLocaleString()} / 합계 ${(report.totalTokens || 0).toLocaleString()} 토큰</span>` : ""}
+        ${report.cost != null ? `<span>비용 $${Number(report.cost).toFixed(4)}</span>` : ""}
+      </div>` : ""}
+    </div>
+
+    <div style="background:#f8fafc;padding:16px 32px;border-top:1px solid #e2e8f0;font-size:12px;color:#94a3b8;text-align:center">
+      Social Listener by 사업전략팀 &nbsp;·&nbsp; 이 메일은 자동 발송됩니다
+    </div>
+  </div>
+</body>
+</html>`;
+}
+
 /**
  * 디시인사이드 일일 이메일 발송
  * @param {{ recipients, galleryName, galleryUrl, date, report }} opts
  */
 async function sendDcinsideEmailReport({ recipients, galleryName, galleryUrl, date, report }) {
   const html = buildDcinsideEmailHTML({ galleryName, galleryUrl, date, report });
-  await getTransporter().sendMail({
+  await dispatchEmail({
     from:    `Social Listener <${process.env.GMAIL_USER}>`,
     to:      recipients.join(", "),
     subject: `[Social Listener] ${galleryName} - 디시인사이드 일일 리포트 (${date})`,
+    html,
+  });
+}
+
+async function sendYoutubeEmailReport({ recipients, groupName, date, report }) {
+  const html = buildYoutubeEmailHTML({ groupName, date, report });
+  await dispatchEmail({
+    from: `Social Listener <${process.env.GMAIL_USER}>`,
+    to: recipients.join(", "),
+    subject: `[Social Listener] ${groupName} - YouTube 일일 리포트 (${date})`,
     html,
   });
 }
@@ -1513,303 +1598,75 @@ async function sendNaverLoungeEmailReport({ recipients, loungeName, loungeUrl, d
     html,
   };
 
-  await getTransporter().sendMail(mailOptions);
+  await dispatchEmail(mailOptions);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  통합 프리셋 이메일
-// ─────────────────────────────────────────────────────────────────────────────
-
-const PLATFORM_META = {
-  discord:     { label: "Discord",      color: "#5865F2", icon: "🎮" },
-  instagram:   { label: "Instagram",    color: "#E1306C", icon: "📸" },
-  facebook:    { label: "Facebook 그룹", color: "#1877F2", icon: "👥" },
-  naver_lounge:{ label: "네이버 라운지",  color: "#03C75A", icon: "🏪" },
-};
-
-/** Discord 섹션 내용 HTML */
-function buildDiscordSection(targetName, report) {
-  const summary  = report.summary || "";
-  const issues   = (report.issues || []).slice(0, 3);
-  const msgCount = report.messageCount || 0;
-
-  const issueRows = issues.map((iss) => `
-    <div class="iss">
-      <div class="iss-t">${escapeHtml(iss.title || "")}</div>
-      <div class="iss-d">${escapeHtml(iss.description || "")}</div>
-    </div>`).join("");
-
-  return `
-    <div><span class="dc-bdg">${escapeHtml(String(msgCount))}개 메시지</span></div>
-    ${summary ? `<div class="dc-sum">${sanitizeReportHtml(summary)}</div>` : ""}
-    ${issueRows ? `<div><div class="dc-ish">🚨 주요 이슈</div>${issueRows}</div>` : ""}`;
+function normalizeDeliveryText(value, maxLength = 400) {
+  const text = String(value || "").trim();
+  if (!text) return null;
+  return text.length > maxLength ? `${text.slice(0, maxLength - 1)}…` : text;
 }
 
-/** Instagram 섹션 내용 HTML — 개별 이메일과 동일한 풀 구성, { html, attachments } 반환 */
-function buildInstagramSection(targetName, report, date) {
-  const username = report.username || (targetName.startsWith("@") ? targetName.slice(1) : targetName);
-  const attachments = [];
+function normalizeDeliveryLogPayload(payload = {}) {
+  const status = payload.status === "failed" ? "failed" : "success";
+  const recipientCount = Number(payload.recipientCount);
+  const normalizedReportType = normalizeDeliveryText(payload.reportType, 40) || "daily";
+  const normalizedTriggerSource = payload.triggerSource === "manual" ? "manual" : "schedule";
+  const normalizedChannel = normalizeDeliveryText(payload.channel, 40) || "email";
 
-  // 트렌드 차트
-  const trendChartImage = buildInstagramTrendChartImage({ report, username, date });
-  if (trendChartImage.attachment) attachments.push(trendChartImage.attachment);
-  const trendSection = trendChartImage.cid ? `
-    <div class="ig-trend">
-      <div class="ig-h">팔로워 · 조회 트렌드 (최근 14일)</div>
-      <div class="ig-tc"><img src="cid:${trendChartImage.cid}" alt="팔로워 및 오가닉 조회 트렌드 차트" /></div>
-    </div>` : "";
-
-  // 포스트 테이블
-  const MEDIA_LABELS = { IMAGE: "사진", VIDEO: "영상", CAROUSEL_ALBUM: "슬라이드" };
-  const DOW_KO = ["일","월","화","수","목","금","토"];
-  const postRows = (report.posts || []).map((p) => {
-    let dateStr = "—";
-    if (p.timestamp) {
-      const dtKST = new Date(new Date(p.timestamp).getTime() + 9 * 60 * 60 * 1000);
-      dateStr = `${dtKST.getUTCMonth()+1}/${dtKST.getUTCDate()}(${DOW_KO[dtKST.getUTCDay()]})`;
-    }
-    const rawCap = p.caption ? normalizeCaptionText(p.caption) : null;
-    const capText = rawCap ? escapeHtml(rawCap.length > 20 ? rawCap.slice(0, 20) + "…" : rawCap) : "—";
-    const captionCell = (p.permalink && p.permalink.startsWith("https://"))
-      ? `<a href="${p.permalink}" target="_blank" rel="noopener noreferrer" class="ig-a">${capText}</a>`
-      : capText;
-    const mediaLabel = MEDIA_LABELS[p.mediaType] || p.mediaType || "—";
-    const er = p.engagementRate || 0;
-    const erColor = er >= 5 ? "#059669" : er >= 2 ? "#d97706" : "#94a3b8";
-    const erText  = er > 0 ? `${er.toFixed(1)}%` : "—";
-    const views    = p.views         != null ? p.views.toLocaleString()         : "—";
-    const likes    = p.likes         != null ? p.likes.toLocaleString()         : "—";
-    const comments = p.comments      != null ? p.comments.toLocaleString()      : "—";
-    const shares   = p.shares        != null ? p.shares.toLocaleString()        : "—";
-    const saves    = p.saves         != null ? p.saves.toLocaleString()         : "—";
-    const pv       = p.profileVisits != null ? p.profileVisits.toLocaleString() : "—";
-    return `<tr>
-      <td class="ig-tdd">${dateStr}</td>
-      <td class="ig-tdc">${captionCell}</td>
-      <td class="ig-tdt">${mediaLabel}</td>
-      <td class="ig-tdr">${views}</td>
-      <td class="ig-tdr">${likes}</td>
-      <td class="ig-tdr">${comments}</td>
-      <td class="ig-tdr">${shares}</td>
-      <td class="ig-tdr">${saves}</td>
-      <td class="ig-tdr">${pv}</td>
-      <td class="ig-tdr" style="font-weight:600;color:${erColor}">${erText}</td>
-    </tr>`;
-  }).join("");
-  const postTable = (report.posts || []).length > 0 ? `
-    <div class="ig-ptw">
-      <div class="ig-h">최근 1주 포스트 (AI 코멘트는 대시보드에서 확인)</div>
-      <div class="ig-scroll">
-        <table class="ig-tbl">
-          <thead><tr class="ig-thead-tr">
-            <th class="ig-th">날짜</th>
-            <th class="ig-th" style="width:96px">본문</th>
-            <th class="ig-th">유형</th>
-            <th class="ig-th-r">조회</th>
-            <th class="ig-th-r">좋아요</th>
-            <th class="ig-th-r">댓글</th>
-            <th class="ig-th-r">공유</th>
-            <th class="ig-th-r">저장</th>
-            <th class="ig-th-r">프로필방문</th>
-            <th class="ig-th-r">참여율</th>
-          </tr></thead>
-          <tbody>${postRows}</tbody>
-        </table>
-      </div>
-    </div>` : "";
-
-  // AI 성과 리뷰
-  const perfBlock = report.aiPerformanceReview
-    ? (() => {
-        const lines = report.aiPerformanceReview.split("\n").filter(l => l.trim());
-        const linesHtml = lines.map((line) => formatReviewLine(line)).join("");
-        return `<div class="ig-rev">
-          <div class="ig-rev-in">
-            <span class="ig-rev-t">AI 성과 리뷰 — 최근 1주 포스트 종합</span>
-            <div class="ig-rev-b">${linesHtml}</div>
-          </div>
-        </div>`;
-      })()
-    : "";
-
-  return { html: `${trendSection}${postTable}${perfBlock}`, attachments };
-}
-
-/** Facebook / Naver Lounge 섹션 내용 HTML (구조 동일) */
-function buildCrawlerSection(targetName, report, accentColor) {
-  const summary = report.aiSummary || "";
-  const issues  = (report.aiIssues || []).slice(0, 3);
-  const postCount = report.postCount || 0;
-
-  const issueRows = issues.map((iss) => `
-    <div class="cr-iss">
-      <div class="cr-iss-t">${escapeHtml(iss.title || "")}</div>
-      <div class="cr-iss-d">${escapeHtml(iss.description || "")}</div>
-    </div>`).join("");
-
-  return `
-    <div><span class="cr-bdg">${escapeHtml(String(postCount))}개 게시글</span></div>
-    ${summary ? `
-    <div class="cr-sum" style="border-left:3px solid ${accentColor}">
-      ${sanitizeReportHtml(summary)}
-    </div>` : ""}
-    ${issueRows ? `
-    <div>
-      <div class="cr-ish">🚨 주요 이슈</div>
-      ${issueRows}
-    </div>` : ""}`;
-}
-
-/**
- * 통합 프리셋 이메일 HTML 빌드
- * @param {{ presetName, date, sections: [{platform, targetName, report}] }} opts
- */
-function buildUnifiedEmailHTML({ presetName, date, sections }) {
-  const displayDate = formatKSTDate(date);
-  const allAttachments = [];
-
-  const sectionHtmls = sections.map(({ platform, targetName, report }, idx) => {
-    const meta = PLATFORM_META[platform] || { label: platform, color: "#6366f1", icon: "📋" };
-
-    let bodyHtml = "";
-    if (platform === "discord") {
-      bodyHtml = buildDiscordSection(targetName, report);
-    } else if (platform === "instagram") {
-      const result = buildInstagramSection(targetName, report, date);
-      bodyHtml = result.html;
-      allAttachments.push(...result.attachments);
-    } else if (platform === "facebook") {
-      bodyHtml = buildCrawlerSection(targetName, report, meta.color);
-    } else if (platform === "naver_lounge") {
-      bodyHtml = buildCrawlerSection(targetName, report, meta.color);
-    }
-
-    const divider = idx > 0 ? `<div class="sec-div"></div>` : "";
-
-    return `
-      ${divider}
-      <div class="sec">
-        <div class="sec-hd">
-          <span style="display:inline-block;width:4px;height:20px;background:${meta.color};border-radius:2px"></span>
-          <span style="font-size:11px;font-weight:700;color:${meta.color};letter-spacing:.05em;text-transform:uppercase">${meta.icon} ${meta.label}</span>
-          <span class="sec-nm">${escapeHtml(targetName)}</span>
-        </div>
-        ${bodyHtml}
-      </div>`;
-  }).join("");
-
-  const tocChips = sections.map(({ platform, targetName }) => {
-    const meta = PLATFORM_META[platform] || { label: platform, color: "#6366f1", icon: "📋" };
-    return `<span style="display:inline-block;padding:3px 10px;border-radius:999px;background:${meta.color}1a;color:${meta.color};font-size:11px;font-weight:600">${meta.icon} ${escapeHtml(targetName)}</span>`;
-  }).join("");
-
-  const html = `<!DOCTYPE html>
-<html lang="ko">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>${escapeHtml(presetName)} 통합 리포트 (${date})</title>
-  <style>
-    body{margin:0;padding:0;background:#f8fafc;font-family:-apple-system,'Malgun Gothic','맑은 고딕',sans-serif}
-    .wrap{max-width:640px;margin:32px auto;background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.1)}
-    .hero{background:linear-gradient(135deg,#f58529 0%,#dd2a7b 50%,#8134af 100%);padding:28px 32px}
-    .hero-sub{color:rgba(255,255,255,.75);font-size:11px;letter-spacing:.08em;margin-bottom:6px}
-    .hero-title{color:#fff;font-size:22px;font-weight:700}
-    .hero-date{color:rgba(255,255,255,.8);font-size:14px;margin-top:4px}
-    .toc{padding:18px 32px 0;border-bottom:1px solid #f1f5f9}
-    .toc-chips{display:flex;flex-wrap:wrap;gap:6px;padding-bottom:18px}
-    .secs{padding-top:28px}
-    .sec-div{border-top:2px dashed #e2e8f0;margin:0 32px 28px}
-    .sec{padding:0 32px 28px}
-    .sec-hd{display:flex;align-items:center;gap:8px;margin-bottom:14px}
-    .sec-nm{font-size:13px;font-weight:600;color:#1e293b}
-    .ft{background:#f8fafc;padding:16px 32px;border-top:1px solid #e2e8f0;font-size:12px;color:#94a3b8;text-align:center}
-    .dc-bdg{display:inline-block;background:#5865f21a;color:#5865f2;font-size:11px;font-weight:700;padding:3px 10px;border-radius:999px;margin-bottom:10px}
-    .dc-sum{font-size:13px;color:#374151;line-height:1.7;background:#f8fafc;border-left:3px solid #5865f2;border-radius:0 8px 8px 0;padding:12px 14px;margin-bottom:12px}
-    .dc-ish{font-size:11px;font-weight:700;color:#64748b;margin-bottom:8px}
-    .iss{padding:10px 12px;background:#ede9fe;border-left:3px solid #6366f1;border-radius:0 8px 8px 0;margin-bottom:6px}
-    .iss-t{font-size:13px;font-weight:600;color:#4338ca}
-    .iss-d{font-size:12px;color:#4c1d95;margin-top:2px}
-    .ig-h{font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#6366f1;margin-bottom:10px}
-    .ig-trend{margin-bottom:24px}
-    .ig-tc{border:1px solid rgba(148,163,184,.22);border-radius:14px;overflow:hidden;background:#fcfdff}
-    .ig-tc img{display:block;width:100%;height:auto;border:0;outline:none;text-decoration:none}
-    .ig-a{color:#6366f1;text-decoration:none}
-    .ig-ptw{margin-bottom:24px}
-    .ig-scroll{overflow-x:auto}
-    .ig-tbl{width:100%;border-collapse:collapse;font-size:11px;min-width:680px}
-    .ig-thead-tr{background:#f8fafc}
-    .ig-th{padding:6px;text-align:left;color:#475569;font-weight:600}
-    .ig-th-r{padding:6px;text-align:right;color:#475569;font-weight:600}
-    .ig-tdd{padding:6px;border-bottom:1px solid #f1f5f9;font-size:11px;color:#64748b;white-space:nowrap}
-    .ig-tdc{padding:6px;border-bottom:1px solid #f1f5f9;font-size:11px;color:#334155;width:96px;max-width:96px;line-height:1.35;word-break:break-word}
-    .ig-tdt{padding:6px;border-bottom:1px solid #f1f5f9;font-size:11px;color:#64748b}
-    .ig-tdr{padding:6px;border-bottom:1px solid #f1f5f9;font-size:11px;text-align:right}
-    .ig-rev{margin-bottom:24px}
-    .ig-rev-in{background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:16px}
-    .ig-rev-t{font-size:11px;font-weight:700;color:#475569;display:block;margin-bottom:8px}
-    .ig-rev-b{font-size:13px;color:#374151;line-height:1.6}
-    .cr-bdg{display:inline-block;background:#f0fdf4;color:#166534;font-size:11px;font-weight:600;padding:3px 8px;border-radius:999px;margin-bottom:10px}
-    .cr-sum{font-size:13px;color:#374151;line-height:1.8;padding:14px 16px;background:#f8fafc;border-radius:10px;margin-bottom:12px}
-    .cr-ish{font-size:11px;font-weight:700;color:#64748b;margin-bottom:6px}
-    .cr-iss{padding:10px 12px;background:#fff7ed;border-left:3px solid #f97316;border-radius:0 8px 8px 0;margin-bottom:6px}
-    .cr-iss-t{font-size:12px;font-weight:600;color:#c2410c}
-    .cr-iss-d{font-size:11px;color:#78350f;margin-top:2px}
-  </style>
-</head>
-<body>
-  <div style="display:none;max-height:0;overflow:hidden;mso-hide:all">${escapeHtml(presetName)} 통합 리포트 ${displayDate}</div>
-  <div class="wrap">
-    <div class="hero">
-      <div class="hero-sub">AI SOCIAL LISTENING · INTEGRATED REPORT</div>
-      <div class="hero-title">${escapeHtml(presetName)}</div>
-      <div class="hero-date">${displayDate}</div>
-    </div>
-    <div class="toc"><div class="toc-chips">${tocChips}</div></div>
-    <div class="secs">${sectionHtmls}</div>
-    <div class="ft">Social Listener by 사업전략팀 &nbsp;·&nbsp; 이 메일은 자동 발송됩니다</div>
-  </div>
-</body>
-</html>`;
-  return { html, attachments: allAttachments };
-}
-
-/**
- * 통합 프리셋 이메일 발송
- * @param {{ recipients, presetName, date, sections }} opts
- */
-async function sendUnifiedEmailReport({ recipients, presetName, date, sections }) {
-  const { html, attachments } = buildUnifiedEmailHTML({ presetName, date, sections });
-
-  const mailOptions = {
-    from:    `Social Listener <${process.env.GMAIL_USER}>`,
-    to:      recipients.join(", "),
-    subject: `[Social Listener] ${presetName} - 통합 리포트 (${date})`,
-    html,
-    ...(attachments.length > 0 ? { attachments } : {}),
+  return {
+    schemaVersion: 2,
+    channel: normalizedChannel,
+    platform: normalizeDeliveryText(payload.platform, 80) || "unknown",
+    reportType: normalizedReportType,
+    triggerSource: normalizedTriggerSource,
+    target: normalizeDeliveryText(payload.target, 200) || "—",
+    targetId: normalizeDeliveryText(payload.targetId, 200),
+    reportDate: normalizeDeliveryText(payload.reportDate, 40),
+    reportRangeStart: normalizeDeliveryText(payload.reportRangeStart, 40),
+    reportRangeEnd: normalizeDeliveryText(payload.reportRangeEnd, 40),
+    lang: normalizeDeliveryText(payload.lang, 20),
+    recipientCount: Number.isFinite(recipientCount) ? Math.max(0, Math.trunc(recipientCount)) : 0,
+    status,
+    errorMessage: status === "failed" ? normalizeDeliveryText(payload.errorMessage, 600) : null,
+    sentAt: admin.firestore.FieldValue.serverTimestamp(),
   };
+}
 
-  await getTransporter().sendMail(mailOptions);
+function queueDeliveryLog(db, workspaceId, payload = {}) {
+  if (!db || !workspaceId) return;
+  db.collection("workspaces").doc(workspaceId)
+    .collection("delivery_logs")
+    .add(normalizeDeliveryLogPayload(payload))
+    .catch((err) => console.warn("[delivery_logs] 기록 실패:", err.message));
 }
 
 /**
  * 이메일 발송 성공 후 delivery_logs 컬렉션에 기록.
  * fire-and-forget — 로깅 실패가 메인 파이프라인을 중단하지 않도록 .catch 처리.
  */
-function logDelivery(db, workspaceId, { platform, target, reportDate, lang = null, recipientCount }) {
-  db.collection("workspaces").doc(workspaceId)
-    .collection("delivery_logs")
-    .add({
-      platform,
-      reportType: "daily",
-      target,
-      reportDate,
-      lang,
-      recipientCount,
-      sentAt: admin.firestore.FieldValue.serverTimestamp(),
-      status: "success",
-    })
-    .catch((err) => console.warn("[delivery_logs] 기록 실패:", err.message));
+function logDelivery(db, workspaceId, payload = {}) {
+  queueDeliveryLog(db, workspaceId, { ...payload, status: "success" });
 }
 
-module.exports = { sendEmailReport, appendToGoogleSheet, sendWeeklyEmailReport, sendInstagramEmailReport, sendFacebookEmailReport, sendFacebookPageEmailReport, sendNaverLoungeEmailReport, sendDcinsideEmailReport, sendUnifiedEmailReport, logDelivery };
+/**
+ * 이메일 발송 실패 후 delivery_logs 컬렉션에 기록.
+ * fire-and-forget — 로깅 실패가 메인 파이프라인을 중단하지 않도록 .catch 처리.
+ */
+function logDeliveryFailure(db, workspaceId, payload = {}) {
+  queueDeliveryLog(db, workspaceId, { ...payload, status: "failed" });
+}
+
+module.exports = {
+  sendEmailReport,
+  appendToGoogleSheet,
+  sendWeeklyEmailReport,
+  sendInstagramEmailReport,
+  sendFacebookEmailReport,
+  sendFacebookPageEmailReport,
+  sendNaverLoungeEmailReport,
+  sendDcinsideEmailReport,
+  sendYoutubeEmailReport,
+  logDelivery,
+  logDeliveryFailure,
+};

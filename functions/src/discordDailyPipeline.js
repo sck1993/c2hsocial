@@ -2,7 +2,7 @@
 
 const admin = require("firebase-admin");
 const { analyzeGuildMessages }               = require("./analyzers/openrouterAnalyzer");
-const { sendEmailReport, appendToGoogleSheet, logDelivery } = require("./reportDelivery");
+const { sendEmailReport, appendToGoogleSheet, logDelivery, logDeliveryFailure } = require("./reportDelivery");
 const { getKSTYesterdayString } = require("./utils/dateUtils");
 
 /**
@@ -71,7 +71,7 @@ function resolveIssueMessageIds(issues, channelsWithMessages) {
  * 이메일 발송 블록 (KO/EN 수신자 분리, 오류 격리).
  * runPipeline 과 reDeliver 양쪽에서 공유.
  */
-async function dispatchEmailForGuild(emailCfg, { guildName, guildId, date, report, label }, db = null, workspaceId = null) {
+async function dispatchEmailForGuild(emailCfg, { guildName, guildId, date, report, label, triggerSource = "schedule" }, db = null, workspaceId = null) {
   if (!emailCfg.isEnabled) return;
   const langRecipients = [
     { lang: "ko", recipients: emailCfg.recipientsKo || emailCfg.recipients || [] },
@@ -88,15 +88,38 @@ async function dispatchEmailForGuild(emailCfg, { guildName, guildId, date, repor
       await sendEmailReport({ recipients, guildName, guildId, date, report, lang });
       console.log(`${label} 이메일(${lang.toUpperCase()}) 발송 완료 (${recipients.length}명)`);
       if (db && workspaceId) {
-        logDelivery(db, workspaceId, { platform: "discord", target: guildName, reportDate: date, lang, recipientCount: recipients.length });
+        logDelivery(db, workspaceId, {
+          platform: "discord",
+          target: guildName,
+          targetId: guildId,
+          reportType: "daily",
+          reportDate: date,
+          lang,
+          recipientCount: recipients.length,
+          triggerSource,
+        });
       }
     } catch (emailErr) {
       console.error(`${label} 이메일(${lang.toUpperCase()}) 발송 실패:`, emailErr.message);
+      if (db && workspaceId) {
+        logDeliveryFailure(db, workspaceId, {
+          platform: "discord",
+          target: guildName,
+          targetId: guildId,
+          reportType: "daily",
+          reportDate: date,
+          lang,
+          recipientCount: recipients.length,
+          triggerSource,
+          errorMessage: emailErr.message,
+        });
+      }
     }
   }
 }
 
-async function runPipeline(filterWorkspaceId = null) {
+async function runPipeline(filterWorkspaceId = null, options = {}) {
+  const { triggerSource = "schedule" } = options;
   const db = admin.firestore();
   const today = getKSTYesterdayString(); // YYYY-MM-DD (KST 전일) — 전일 리포트 대상 날짜
   const dayStartMs = new Date(today + "T00:00:00+09:00").getTime(); // KST 00:00:00 (UTC ms)
@@ -348,7 +371,7 @@ async function runPipeline(filterWorkspaceId = null) {
           isAlertTriggered,
         };
 
-        await dispatchEmailForGuild(emailCfg, { guildName, guildId, date: today, report: reportPayload, label: guildLabel }, db, workspaceId);
+        await dispatchEmailForGuild(emailCfg, { guildName, guildId, date: today, report: reportPayload, label: guildLabel, triggerSource }, db, workspaceId);
 
         if (sheetsCfg.isEnabled && sheetsCfg.spreadsheetUrl) {
           try {
@@ -387,7 +410,8 @@ async function runPipeline(filterWorkspaceId = null) {
  * @param {string} date - YYYY-MM-DD
  * @returns {Promise<{redelivered, errors}>}
  */
-async function reDeliver(workspaceId, date) {
+async function reDeliver(workspaceId, date, options = {}) {
+  const { triggerSource = "manual" } = options;
   const db = admin.firestore();
   const results = { redelivered: 0, errors: 0 };
 
@@ -432,7 +456,14 @@ async function reDeliver(workspaceId, date) {
         isAlertTriggered: r.isAlertTriggered || false,
       };
 
-      await dispatchEmailForGuild(emailCfg, { guildName: r.guildName, guildId: r.discordGuildId || "", date, report: reportPayload, label: `${guildLabel} [reDeliver]` }, db, workspaceId);
+      await dispatchEmailForGuild(emailCfg, {
+        guildName: r.guildName,
+        guildId: r.discordGuildId || "",
+        date,
+        report: reportPayload,
+        label: `${guildLabel} [reDeliver]`,
+        triggerSource,
+      }, db, workspaceId);
 
       if (sheetsCfg.isEnabled && sheetsCfg.spreadsheetUrl) {
         try {

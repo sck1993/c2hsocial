@@ -19,17 +19,12 @@ const {
   fetchPostImages,
 } = require("./collectors/facebookGroupCollector");
 const { analyzeFacebookGroupPosts } = require("./analyzers/openrouterAnalyzer");
-const { sendFacebookEmailReport } = require("./reportDelivery");
-const { getKSTYesterdayString } = require("./utils/dateUtils");
+const { sendFacebookEmailReport, logDelivery, logDeliveryFailure } = require("./reportDelivery");
+const { getKSTYesterdayString, sleep } = require("./utils/dateUtils");
 
 const POST_GAP_MS = 2000;   // 포스트 간 대기 ms
 const GROUP_GAP_MS = 5000;  // 그룹 간 대기 ms
 const DEFAULT_WORKSPACE = "ws_antigravity";
-
-// ── 헬퍼 ─────────────────────────────────────────────────────────
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
-}
 
 // ── 메인 파이프라인 ──────────────────────────────────────────────
 /**
@@ -39,7 +34,7 @@ function sleep(ms) {
  * @param {boolean}      options.skipEmail  - true 시 이메일 발송 건너뜀
  */
 async function runFacebookGroupPipeline(filterWorkspaceId = null, targetDate = null, options = {}) {
-  const { skipEmail = false } = options;
+  const { skipEmail = false, triggerSource = "schedule" } = options;
   const db = admin.firestore();
   const date = targetDate || getKSTYesterdayString();
   const workspaceId = filterWorkspaceId || DEFAULT_WORKSPACE;
@@ -184,8 +179,8 @@ async function runFacebookGroupPipeline(filterWorkspaceId = null, targetDate = n
         const totalComments  = posts.reduce((s, p) => s + (p.commentCount || 0), 0);
 
         // 4. AI 분석
-        let aiSummary = "", aiSentiment = { positive: 0, neutral: 100, negative: 0 };
-        let aiKeywords = [], aiIssues = [];
+        let aiSummary = "", aiSummary_en = "", aiSentiment = { positive: 0, neutral: 100, negative: 0 };
+        let aiKeywords = [], aiKeywords_en = [], aiIssues = [];
         let promptTokens = 0, completionTokens = 0, totalCost = 0;
 
         try {
@@ -196,10 +191,12 @@ async function runFacebookGroupPipeline(filterWorkspaceId = null, targetDate = n
             customPrompt: groupData.analysisPrompt || "",
             model: groupData.analysisModel || process.env.OPENROUTER_MODEL,
           });
-          aiSummary   = analysisResult.summary   || "";
-          aiSentiment = analysisResult.sentiment || aiSentiment;
-          aiKeywords  = analysisResult.keywords  || [];
-          aiIssues    = analysisResult.issues    || [];
+          aiSummary    = analysisResult.summary    || "";
+          aiSummary_en = analysisResult.summary_en || "";
+          aiSentiment  = analysisResult.sentiment  || aiSentiment;
+          aiKeywords   = analysisResult.keywords   || [];
+          aiKeywords_en= analysisResult.keywords_en || [];
+          aiIssues     = analysisResult.issues     || [];
 
           const usage = analysisResult.usage || {};
           promptTokens     = usage.prompt_tokens     || 0;
@@ -210,7 +207,7 @@ async function runFacebookGroupPipeline(filterWorkspaceId = null, targetDate = n
         }
 
         // 5. Firestore 저장 (base64 이미지 제거 — 문서 크기 초과 방지)
-        const postsForStorage = posts.map(({ images, imageUrls, ...rest }) => rest);
+        const postsForStorage = posts.map(({ images: _images, imageUrls: _imageUrls, ...rest }) => rest);
 
         const crawlStatus = partialFailure ? "partial" : "ok";
         const reportData = {
@@ -223,8 +220,10 @@ async function runFacebookGroupPipeline(filterWorkspaceId = null, targetDate = n
           totalComments,
           posts: postsForStorage,
           aiSummary,
+          aiSummary_en,
           aiSentiment,
           aiKeywords,
+          aiKeywords_en,
           aiIssues,
           model:            groupData.analysisModel || process.env.OPENROUTER_MODEL || "",
           promptTokens,
@@ -269,8 +268,27 @@ async function runFacebookGroupPipeline(filterWorkspaceId = null, targetDate = n
               report: reportData,
             });
             console.log(`[facebookGroupPipeline] 이메일 발송 완료: ${groupName}`);
+            logDelivery(db, workspaceId, {
+              platform: "facebook",
+              target: groupName,
+              targetId: gDoc.id,
+              reportType: "daily",
+              reportDate: date,
+              recipientCount: emailConfig.recipients.length,
+              triggerSource,
+            });
           } catch (emailErr) {
             console.error(`[facebookGroupPipeline] 이메일 발송 실패 (${groupName}): ${emailErr.message}`);
+            logDeliveryFailure(db, workspaceId, {
+              platform: "facebook",
+              target: groupName,
+              targetId: gDoc.id,
+              reportType: "daily",
+              reportDate: date,
+              recipientCount: emailConfig.recipients.length,
+              triggerSource,
+              errorMessage: emailErr.message,
+            });
           }
         }
 
@@ -292,7 +310,7 @@ async function runFacebookGroupPipeline(filterWorkspaceId = null, targetDate = n
       await sleep(GROUP_GAP_MS);
     }
   } finally {
-    try { await browser.close(); } catch (_) {}
+    try { await browser.close(); } catch (_) { /* ignore browser close failure during cleanup */ }
   }
 
   console.log(
@@ -305,7 +323,8 @@ async function runFacebookGroupPipeline(filterWorkspaceId = null, targetDate = n
 /**
  * 저장된 리포트를 읽어 이메일만 재발송
  */
-async function runFacebookGroupEmailSender(filterWorkspaceId = null, targetDate = null) {
+async function runFacebookGroupEmailSender(filterWorkspaceId = null, targetDate = null, options = {}) {
+  const { triggerSource = "manual" } = options;
   const db = admin.firestore();
   const date = targetDate || getKSTYesterdayString();
   const workspaceId = filterWorkspaceId || DEFAULT_WORKSPACE;
@@ -355,9 +374,28 @@ async function runFacebookGroupEmailSender(filterWorkspaceId = null, targetDate 
       });
 
       console.log(`[facebookGroupEmailSender] 발송 완료: ${groupData.groupName}`);
+      logDelivery(db, workspaceId, {
+        platform: "facebook",
+        target: groupData.groupName || gDoc.id,
+        targetId: gDoc.id,
+        reportType: "daily",
+        reportDate: date,
+        recipientCount: emailConfig.recipients.length,
+        triggerSource,
+      });
       results.sent++;
     } catch (err) {
       console.error(`[facebookGroupEmailSender] 오류 (${gDoc.id}): ${err.message}`);
+      logDeliveryFailure(db, workspaceId, {
+        platform: "facebook",
+        target: groupData.groupName || gDoc.id,
+        targetId: gDoc.id,
+        reportType: "daily",
+        reportDate: date,
+        recipientCount: emailConfig.recipients.length,
+        triggerSource,
+        errorMessage: err.message,
+      });
       results.errors++;
     }
   }

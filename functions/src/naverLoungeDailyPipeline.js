@@ -16,16 +16,12 @@ const {
   isAuthError,
 } = require("./collectors/naverLoungeCollector");
 const { analyzeFacebookGroupPosts } = require("./analyzers/openrouterAnalyzer");
-const { sendNaverLoungeEmailReport, logDelivery } = require("./reportDelivery");
-const { getKSTYesterdayString } = require("./utils/dateUtils");
+const { sendNaverLoungeEmailReport, logDelivery, logDeliveryFailure } = require("./reportDelivery");
+const { getKSTYesterdayString, sleep } = require("./utils/dateUtils");
 
 const POST_GAP_MS = 400;     // 게시글별 댓글 수집 간격 ms
 const LOUNGE_GAP_MS = 5000;  // 라운지 간 대기 ms
 const DEFAULT_WORKSPACE = "ws_antigravity";
-
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
-}
 
 // ── 메인 파이프라인 ──────────────────────────────────────────────
 /**
@@ -39,7 +35,7 @@ async function runNaverLoungePipeline(
   targetDate = null,
   options = {}
 ) {
-  const { skipEmail = false } = options;
+  const { skipEmail = false, triggerSource = "schedule" } = options;
   const db = admin.firestore();
   const date = targetDate || getKSTYesterdayString();
   const workspaceId = filterWorkspaceId || DEFAULT_WORKSPACE;
@@ -160,7 +156,9 @@ async function runNaverLoungePipeline(
       const totalComments = posts.reduce((sum, post) => sum + (post.commentCount || 0), 0);
 
       let aiSummary = "";
+      let aiSummary_en = "";
       let aiSentiment = { positive: 0, neutral: 100, negative: 0 };
+      let aiKeywords_en = [];
       let aiIssues = [];
       let promptTokens = 0, completionTokens = 0, totalCost = 0;
 
@@ -174,7 +172,9 @@ async function runNaverLoungePipeline(
           platform: "naver_lounge",
         });
         aiSummary = analysisResult.summary || "";
+        aiSummary_en = analysisResult.summary_en || "";
         aiSentiment = analysisResult.sentiment || aiSentiment;
+        aiKeywords_en = analysisResult.keywords_en || [];
         aiIssues  = analysisResult.issues  || [];
 
         const usage = analysisResult.usage || {};
@@ -197,7 +197,9 @@ async function runNaverLoungePipeline(
         totalComments,
         posts,
         aiSummary,
+        aiSummary_en,
         aiSentiment,
+        aiKeywords_en,
         aiIssues,
         model:            loungeData.analysisModel || process.env.OPENROUTER_MODEL || "",
         promptTokens,
@@ -239,11 +241,29 @@ async function runNaverLoungePipeline(
             report: reportData,
           });
           console.log(`[naverLoungePipeline] 이메일 발송 완료: ${loungeName}`);
-          logDelivery(db, workspaceId, { platform: "naver_lounge", target: loungeName, reportDate: date, recipientCount: emailConfig.recipients.length });
+          logDelivery(db, workspaceId, {
+            platform: "naver_lounge",
+            target: loungeName,
+            targetId: lDoc.id,
+            reportType: "daily",
+            reportDate: date,
+            recipientCount: emailConfig.recipients.length,
+            triggerSource,
+          });
         } catch (emailErr) {
           console.error(
             `[naverLoungePipeline] 이메일 발송 실패 (${loungeName}): ${emailErr.message}`
           );
+          logDeliveryFailure(db, workspaceId, {
+            platform: "naver_lounge",
+            target: loungeName,
+            targetId: lDoc.id,
+            reportType: "daily",
+            reportDate: date,
+            recipientCount: emailConfig.recipients.length,
+            triggerSource,
+            errorMessage: emailErr.message,
+          });
         }
       }
 
@@ -278,8 +298,10 @@ async function runNaverLoungePipeline(
  */
 async function runNaverLoungeEmailSender(
   filterWorkspaceId = null,
-  targetDate = null
+  targetDate = null,
+  options = {}
 ) {
+  const { triggerSource = "manual" } = options;
   const db = admin.firestore();
   const date = targetDate || getKSTYesterdayString();
   const workspaceId = filterWorkspaceId || DEFAULT_WORKSPACE;
@@ -331,9 +353,28 @@ async function runNaverLoungeEmailSender(
       });
 
       console.log(`[naverLoungeEmailSender] 발송 완료: ${loungeData.loungeName}`);
+      logDelivery(db, workspaceId, {
+        platform: "naver_lounge",
+        target: loungeData.loungeName || lDoc.id,
+        targetId: lDoc.id,
+        reportType: "daily",
+        reportDate: date,
+        recipientCount: emailConfig.recipients.length,
+        triggerSource,
+      });
       results.sent++;
     } catch (err) {
       console.error(`[naverLoungeEmailSender] 오류 (${lDoc.id}): ${err.message}`);
+      logDeliveryFailure(db, workspaceId, {
+        platform: "naver_lounge",
+        target: loungeData.loungeName || lDoc.id,
+        targetId: lDoc.id,
+        reportType: "daily",
+        reportDate: date,
+        recipientCount: emailConfig.recipients.length,
+        triggerSource,
+        errorMessage: err.message,
+      });
       results.errors++;
     }
   }

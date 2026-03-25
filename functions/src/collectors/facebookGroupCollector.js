@@ -182,7 +182,7 @@ async function collectGroupPosts(page, groupUrl, targetDate) {
   let reachedOlder = false;
 
   for (let i = 0; i < SCROLL_MAX; i++) {
-    const parsed = await page.evaluate((td) => {
+    const parsed = await page.evaluate((_td) => {
       const KST_OFFSET = 9 * 60 * 60 * 1000;
       const nowMs = Date.now();
 

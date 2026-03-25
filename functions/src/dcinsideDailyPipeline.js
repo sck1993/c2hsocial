@@ -9,15 +9,11 @@
 
 const admin = require("firebase-admin");
 const { analyzeFacebookGroupPosts } = require("./analyzers/openrouterAnalyzer");
-const { sendDcinsideEmailReport } = require("./reportDelivery");
-const { getKSTYesterdayString } = require("./utils/dateUtils");
+const { sendDcinsideEmailReport, logDelivery, logDeliveryFailure } = require("./reportDelivery");
+const { getKSTYesterdayString, sleep } = require("./utils/dateUtils");
 
 const GALLERY_GAP_MS = 3000;
 const DEFAULT_WORKSPACE = "ws_antigravity";
-
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
-}
 
 // ── 메인 파이프라인 ──────────────────────────────────────────────
 
@@ -32,7 +28,7 @@ async function runDcinsidePipeline(
   targetDate = null,
   options = {}
 ) {
-  const { skipEmail = false } = options;
+  const { skipEmail = false, triggerSource = "schedule" } = options;
   const db = admin.firestore();
   const date = targetDate || getKSTYesterdayString();
   const workspaceId = filterWorkspaceId || DEFAULT_WORKSPACE;
@@ -109,7 +105,9 @@ async function runDcinsidePipeline(
 
       // ── AI 분석 ────────────────────────────────────────────────
       let aiSummary = "";
+      let aiSummary_en = "";
       let aiSentiment = { positive: 0, neutral: 100, negative: 0 };
+      let aiKeywords_en = [];
       let aiIssues = [];
       let promptTokens = 0;
       let completionTokens = 0;
@@ -124,9 +122,11 @@ async function runDcinsidePipeline(
           model: gData.analysisModel || process.env.OPENROUTER_MODEL,
           platform: "dcinside",
         });
-        aiSummary   = analysisResult.summary   || "";
-        aiSentiment = analysisResult.sentiment || aiSentiment;
-        aiIssues    = analysisResult.issues    || [];
+        aiSummary    = analysisResult.summary    || "";
+        aiSummary_en = analysisResult.summary_en || "";
+        aiSentiment  = analysisResult.sentiment  || aiSentiment;
+        aiKeywords_en= analysisResult.keywords_en || [];
+        aiIssues     = analysisResult.issues     || [];
 
         const usage  = analysisResult.usage || {};
         promptTokens     = usage.prompt_tokens     || 0;
@@ -151,7 +151,9 @@ async function runDcinsidePipeline(
         totalRecommends,
         posts,
         aiSummary,
+        aiSummary_en,
         aiSentiment,
+        aiKeywords_en,
         aiIssues,
         model:            gData.analysisModel || process.env.OPENROUTER_MODEL || "",
         promptTokens,
@@ -193,10 +195,29 @@ async function runDcinsidePipeline(
             report: reportData,
           });
           console.log(`[dcinsidePipeline] 이메일 발송 완료: ${galleryName}`);
+          logDelivery(db, workspaceId, {
+            platform: "dcinside",
+            target: galleryName,
+            targetId: gDoc.id,
+            reportType: "daily",
+            reportDate: date,
+            recipientCount: emailConfig.recipients.length,
+            triggerSource,
+          });
         } catch (emailErr) {
           console.error(
             `[dcinsidePipeline] 이메일 발송 실패 (${galleryName}): ${emailErr.message}`
           );
+          logDeliveryFailure(db, workspaceId, {
+            platform: "dcinside",
+            target: galleryName,
+            targetId: gDoc.id,
+            reportType: "daily",
+            reportDate: date,
+            recipientCount: emailConfig.recipients.length,
+            triggerSource,
+            errorMessage: emailErr.message,
+          });
         }
       }
 
@@ -221,8 +242,10 @@ async function runDcinsidePipeline(
 
 async function runDcinsideEmailSender(
   filterWorkspaceId = null,
-  targetDate = null
+  targetDate = null,
+  options = {}
 ) {
+  const { triggerSource = "manual" } = options;
   const db = admin.firestore();
   const date = targetDate || getKSTYesterdayString();
   const workspaceId = filterWorkspaceId || DEFAULT_WORKSPACE;
@@ -270,9 +293,28 @@ async function runDcinsideEmailSender(
       });
 
       console.log(`[dcinsideEmailSender] 발송 완료: ${gData.galleryName}`);
+      logDelivery(db, workspaceId, {
+        platform: "dcinside",
+        target: gData.galleryName || gDoc.id,
+        targetId: gDoc.id,
+        reportType: "daily",
+        reportDate: date,
+        recipientCount: emailConfig.recipients.length,
+        triggerSource,
+      });
       results.sent++;
     } catch (err) {
       console.error(`[dcinsideEmailSender] 오류 (${gDoc.id}): ${err.message}`);
+      logDeliveryFailure(db, workspaceId, {
+        platform: "dcinside",
+        target: gData.galleryName || gDoc.id,
+        targetId: gDoc.id,
+        reportType: "daily",
+        reportDate: date,
+        recipientCount: emailConfig.recipients.length,
+        triggerSource,
+        errorMessage: err.message,
+      });
       results.errors++;
     }
   }

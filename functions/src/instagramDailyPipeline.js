@@ -18,12 +18,8 @@ const {
   analyzeInstagramPostComment,
   DEFAULT_IG_POST_COMMENT_PROMPT,
 } = require("./analyzers/openrouterAnalyzer");
-const { sendInstagramEmailReport, logDelivery } = require("./reportDelivery");
-
-// KST(UTC+9) 기준 어제 날짜 문자열 반환
-function getKSTYesterdayString() {
-  return new Date(Date.now() + 9 * 60 * 60 * 1000 - 24 * 60 * 60 * 1000).toISOString().split("T")[0];
-}
+const { sendInstagramEmailReport, logDelivery, logDeliveryFailure } = require("./reportDelivery");
+const { getKSTYesterdayString, getKSTDateFromTimestamp } = require("./utils/dateUtils");
 
 function toIntOrNull(v) {
   if (v === null || v === undefined || v === "") return null;
@@ -41,13 +37,6 @@ function normalizeMediaType(mediaType) {
 function getDateDaysAgo(dateStr, days) {
   const [y, m, d] = String(dateStr).split("-").map(Number);
   return new Date(Date.UTC(y, m - 1, d - days)).toISOString().split("T")[0];
-}
-
-function getKSTDateString(timestamp) {
-  if (!timestamp) return null;
-  const ms = new Date(timestamp).getTime();
-  if (!Number.isFinite(ms)) return null;
-  return new Date(ms + 9 * 60 * 60 * 1000).toISOString().split("T")[0];
 }
 
 function mapPostsById(posts) {
@@ -114,7 +103,12 @@ function buildPostCommentPeriodContext(targetPost, allPosts) {
  * @returns {Promise<{processed: number, skipped: number, errors: number}>}
  */
 async function runInstagramPipeline(filterWorkspaceId = null, targetDate = null, options = {}) {
-  const { skipEmail = false, forceRegenerateComments = false, filterAccountId = null } = options;
+  const {
+    skipEmail = false,
+    forceRegenerateComments = false,
+    filterAccountId = null,
+    triggerSource = "schedule",
+  } = options;
   const db   = admin.firestore();
   const date = targetDate || getKSTYesterdayString();
   const results = { processed: 0, skipped: 0, errors: 0 };
@@ -237,14 +231,12 @@ async function runInstagramPipeline(filterWorkspaceId = null, targetDate = null,
         let sharesDelta = null;
         let savesDelta = null;
         let profileViewsDelta = null;
-        let prevReportData = null;
         try {
           const prevSnap = await db.collection("workspaces").doc(workspaceId)
             .collection("instagram_reports").doc(prevDate)
             .collection("accounts").doc(docId).get();
           if (prevSnap.exists) {
             const prev = prevSnap.data();
-            prevReportData = prev;
             const diff = (cur, p) => (cur != null && p != null) ? cur - p : null;
             followerDelta    = diff(accountMetrics.followerCount, prev.followerCount);
             reachDelta       = diff(accountMetrics.dailyReach,    prev.dailyReach);
@@ -456,9 +448,10 @@ async function runInstagramPipeline(filterWorkspaceId = null, targetDate = null,
 
         // ── e-2. 최근 1주 전체 포스트 성과 리뷰 ──
         let aiPerformanceReview = null;
+        let aiPerformanceReview_en = null;
         if (postsWithInsights.length > 0) {
           try {
-            const { review, usage: perfUsage } = await analyzeInstagramPostPerformance({
+            const { review, review_en, usage: perfUsage } = await analyzeInstagramPostPerformance({
               username,
               posts:                    postsWithInsights,
               accountAvgEngagementRate: avgEngagementRate,
@@ -467,6 +460,7 @@ async function runInstagramPipeline(filterWorkspaceId = null, targetDate = null,
               model:                    performanceReviewModel,
             });
             aiPerformanceReview = review;
+            aiPerformanceReview_en = review_en || "";
             totalPromptTokens     += perfUsage?.prompt_tokens     || 0;
             totalCompletionTokens += perfUsage?.completion_tokens || 0;
             totalCost             += perfUsage?.cost              || 0;
@@ -501,7 +495,7 @@ async function runInstagramPipeline(filterWorkspaceId = null, targetDate = null,
             continue;
           }
 
-          const postKSTDate = getKSTDateString(post.timestamp);
+          const postKSTDate = getKSTDateFromTimestamp(post.timestamp);
           if (postKSTDate === date) {
             postsWithComments.push({
               ...post,
@@ -567,6 +561,7 @@ async function runInstagramPipeline(filterWorkspaceId = null, targetDate = null,
           avgEngagementRate,
           trendData,
           aiPerformanceReview,
+          aiPerformanceReview_en,
           model:            performanceReviewModel,
           promptTokens:     totalPromptTokens,
           completionTokens: totalCompletionTokens,
@@ -595,9 +590,27 @@ async function runInstagramPipeline(filterWorkspaceId = null, targetDate = null,
                 report: reportData,
               });
               console.log(`[instagramPipeline] 이메일 발송 완료 — ${username}`);
-              logDelivery(db, workspaceId, { platform: "instagram", target: username, reportDate: date, recipientCount: emailConfig.recipients.length });
+              logDelivery(db, workspaceId, {
+                platform: "instagram",
+                target: username,
+                targetId: docId,
+                reportType: "daily",
+                reportDate: date,
+                recipientCount: emailConfig.recipients.length,
+                triggerSource,
+              });
             } catch (mailErr) {
               console.error(`[instagramPipeline] 이메일 발송 실패 — ${username}: ${mailErr.message}`);
+              logDeliveryFailure(db, workspaceId, {
+                platform: "instagram",
+                target: username,
+                targetId: docId,
+                reportType: "daily",
+                reportDate: date,
+                recipientCount: emailConfig.recipients.length,
+                triggerSource,
+                errorMessage: mailErr.message,
+              });
             }
           }
         }
@@ -627,7 +640,8 @@ async function runInstagramPipeline(filterWorkspaceId = null, targetDate = null,
  * @param {string|null} targetDate - 지정 시 해당 날짜 리포트 발송 (기본: KST 어제)
  * @returns {Promise<{sent: number, skipped: number, errors: number}>}
  */
-async function runInstagramEmailSender(filterWorkspaceId = null, targetDate = null) {
+async function runInstagramEmailSender(filterWorkspaceId = null, targetDate = null, options = {}) {
+  const { triggerSource = "manual" } = options;
   const db = admin.firestore();
   const date = targetDate || getKSTYesterdayString();
   const results = { sent: 0, skipped: 0, errors: 0 };
@@ -681,9 +695,28 @@ async function runInstagramEmailSender(filterWorkspaceId = null, targetDate = nu
         });
 
         console.log(`[instagramEmailSender] 이메일 발송 완료 — ${acc.username} (${date})`);
+        logDelivery(db, workspaceId, {
+          platform: "instagram",
+          target: acc.username,
+          targetId: docId,
+          reportType: "daily",
+          reportDate: date,
+          recipientCount: emailConfig.recipients.length,
+          triggerSource,
+        });
         results.sent++;
       } catch (err) {
         console.error(`[instagramEmailSender] ${workspaceId}/${docId} 오류: ${err.message}`);
+        logDeliveryFailure(db, workspaceId, {
+          platform: "instagram",
+          target: acc.username || docId,
+          targetId: docId,
+          reportType: "daily",
+          reportDate: date,
+          recipientCount: emailConfig.recipients.length,
+          triggerSource,
+          errorMessage: err.message,
+        });
         results.errors++;
       }
     }

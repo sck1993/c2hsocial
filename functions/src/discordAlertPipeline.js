@@ -8,10 +8,10 @@ const { getKSTDateString, getKSTMidnightMs, getKSTDateFromMs } = require("./util
 const ALERT_COOLDOWN_MS = 4 * 60 * 60 * 1000;  // 4시간
 const CHUNK_TTL_MS      = 48 * 60 * 60 * 1000; // 48시간
 const MAX_BATCHES       = 30; // 배치당 최대 50페이지 × 최대 30배치 = 채널당 최대 150,000개
+const DISCORD_EPOCH     = 1420070400000n;       // Discord Snowflake 기준 epoch (UTC ms)
 
 // Discord Snowflake ID → UTC 타임스탬프(ms) 변환
 function snowflakeToMs(snowflake) {
-  const DISCORD_EPOCH = 1420070400000n;
   return Number((BigInt(snowflake) >> 22n) + DISCORD_EPOCH);
 }
 
@@ -279,7 +279,7 @@ async function checkAndSendAlert(db, chDoc, ch, messages, workspaceId, channelDo
 /**
  * 위기 알림 웹훅 발송.
  */
-async function sendAlertWebhook(url, { channelName, matchedKeywords, workspaceId, threshold }) {
+async function sendAlertWebhook(url, { channelName, matchedKeywords, workspaceId, threshold: _threshold }) {
   const isDiscord = url.includes("discord.com/api/webhooks");
 
   if (isDiscord) {

@@ -2,11 +2,6 @@
 const admin = require("firebase-admin");
 const axios = require("axios");
 
-// KST 오늘 날짜 문자열
-function getKSTDateString() {
-  return new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().split("T")[0];
-}
-
 /**
  * Discord 인사이트 API 호출 → 오늘치 데이터 반환
  * @param {string} guildId

@@ -17,32 +17,61 @@ const DEFAULT_DC_ANALYSIS_PROMPT = `다음 형식으로 요약하라.
 
 각 카테고리에 해당 내용이 없으면 "특이사항 없음"으로 기재한다.`;
 
+const DEFAULT_YOUTUBE_ANALYSIS_PROMPT = `다음 형식으로 요약하라.
+
+[업로드 동향] 오늘 새로 올라온 영상들의 핵심 주제를 1-2문장으로 기술.
+[반응 요약] 조회수, 좋아요, 댓글 수 기준으로 어떤 반응이 관찰되는지 1-2문장으로 기술.
+
+각 카테고리에 해당 내용이 없으면 "특이사항 없음"으로 기재한다.
+핵심 게임명, 채널명, 수치, 반응 포인트는 필요한 경우 굵게 강조한다.`;
+
+/**
+ * OpenRouter API 공통 호출 헬퍼.
+ * 일시적 오류(5xx, 429, 네트워크 오류) 발생 시 1회 재시도.
+ * @param {object} payload - OpenRouter request payload
+ * @param {number} [timeout=60000] - 타임아웃(ms)
+ * @returns {Promise<object>} response data
+ */
+async function callLLM(payload, timeout = 60000) {
+  const config = {
+    headers: {
+      Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+      "Content-Type": "application/json",
+      "HTTP-Referer": "https://sociallistener-8efde.web.app",
+      "X-Title": "AI Social Listening",
+    },
+    timeout,
+  };
+  let lastErr;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const { data } = await axios.post(OPENROUTER_API, payload, config);
+      if (!data.choices || !data.choices.length) throw new Error("OpenRouter 응답에 choices가 없습니다");
+      return data;
+    } catch (err) {
+      lastErr = err;
+      const status = err.response?.status;
+      const retryable = !status || status >= 500 || status === 429;
+      if (attempt === 0 && retryable) {
+        console.warn(`[openrouter] API 오류 (${status || "network"}), 재시도...`);
+        await new Promise(r => setTimeout(r, 2000));
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastErr;
+}
+
 /**
  * LLM 응답 문자열에서 JSON 객체를 추출. 파싱 실패 시 null 반환.
  */
 function extractJson(content) {
-  try { return JSON.parse(content); } catch (_) {}
+  try { return JSON.parse(content); } catch (_) { /* ignore direct JSON parse failure */ }
   const match = content.match(/```(?:json)?\s*([\s\S]*?)```/) ||
                 content.match(/(\{[\s\S]*\})/);
-  if (match) { try { return JSON.parse(match[1]); } catch (_) {} }
+  if (match) { try { return JSON.parse(match[1]); } catch (_) { /* ignore fenced JSON parse failure */ } }
   return null;
-}
-
-/**
- * LLM 응답 문자열에서 JSON 리포트를 파싱.
- * 파싱 실패 시 원문을 summary에 담은 fallback 반환.
- */
-function parseReport(content) {
-  const parsed = extractJson(content);
-  if (parsed) return parsed;
-  console.warn("[openrouter] JSON 파싱 실패. 원문:", content.slice(0, 300));
-  return {
-    summary: content,
-    custom_answer: "",
-    sentiment: { positive: 0, neutral: 100, negative: 0 },
-    keywords: [],
-    issues: [],
-  };
 }
 
 /**
@@ -52,7 +81,7 @@ function parseReport(content) {
  * @param {string} guildName - Discord 서버명
  * @returns {Promise<{report, usage}>}
  */
-async function analyzeGuildMessages(channelsData, guildName, guildId = "", summaryPrompt = "") {
+async function analyzeGuildMessages(channelsData, guildName, _guildId = "", summaryPrompt = "") {
   // 채널별 메시지 텍스트 구성 (메시지 ID 포함)
   const channelsSections = channelsData.map(({ channelName, importance, messages, discordChannelId }) => {
     const importanceLabel = importance === "high" ? "높음" : importance === "low" ? "낮음" : "보통";
@@ -149,17 +178,7 @@ ${channelListForPrompt}
     reasoning: { enabled: true },
   };
 
-  const { data } = await axios.post(OPENROUTER_API, payload, {
-    headers: {
-      Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
-      "Content-Type": "application/json",
-      "HTTP-Referer": "https://sociallistener-8efde.web.app",
-      "X-Title": "AI Social Listening",
-    },
-    timeout: 120000,
-  });
-
-  if (!data.choices || !data.choices.length) throw new Error("OpenRouter 응답에 choices가 없습니다");
+  const data = await callLLM(payload, 120000);
   const choice = data.choices[0];
   const content = choice.message.content || "";
   const report = parseGuildReport(content, channelsData);
@@ -264,17 +283,7 @@ JSON 형식:
     ],
   };
 
-  const { data } = await axios.post(OPENROUTER_API, payload, {
-    headers: {
-      Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
-      "Content-Type": "application/json",
-      "HTTP-Referer": "https://sociallistener-8efde.web.app",
-      "X-Title": "AI Social Listening",
-    },
-    timeout: 120000,
-  });
-
-  if (!data.choices || !data.choices.length) throw new Error("OpenRouter 응답에 choices가 없습니다");
+  const data = await callLLM(payload, 120000);
   const content = data.choices[0].message.content || "";
   const parsed = extractJson(content) || {};
 
@@ -292,7 +301,7 @@ JSON 형식:
  * @param {number|null} opts.followerCount            - 팔로워 수
  * @returns {Promise<{review: string, usage: object}>}
  */
-async function analyzeInstagramPostPerformance({ username, posts, accountAvgEngagementRate, followerCount, customPrompt, model }) {
+async function analyzeInstagramPostPerformance({ username, posts, accountAvgEngagementRate: _accountAvgEngagementRate, followerCount: _followerCount, customPrompt, model }) {
   const resolvedModel = model || process.env.OPENROUTER_MODEL;
   const MEDIA_LABELS = { IMAGE: "사진", VIDEO: "영상", CAROUSEL_ALBUM: "슬라이드" };
   const DOW = ["일", "월", "화", "수", "목", "금", "토"];
@@ -339,6 +348,12 @@ async function analyzeInstagramPostPerformance({ username, posts, accountAvgEnga
 ⚠️ 아쉬운 점: (내용)
 💡 개선 제안: (내용)`;
   const instructionPrompt = (customPrompt && customPrompt.trim()) ? customPrompt.trim() : defaultInstructionPrompt;
+  const outputFormatPrompt = `응답은 반드시 JSON 객체 하나로만 작성하세요. 마크다운 코드블록 금지.
+필드는 아래 두 개만 포함하세요.
+{
+  "review": "한국어 리뷰. 각 줄은 반드시 아래 형식 유지\\n✅ 잘된 점: ...\\n⚠️ 아쉬운 점: ...\\n💡 개선 제안: ...",
+  "review_en": "English review. Each line must use the translated labels exactly\\n✅ What Worked: ...\\n⚠️ What Fell Short: ...\\n💡 Recommendations: ..."
+}`;
 
   const userContent = `@${username} 최근 1주 게시물 테이블 (${(posts || []).length}건):
 ${postLines || "  (포스트 없음)"}`;
@@ -348,23 +363,22 @@ ${postLines || "  (포스트 없음)"}`;
     messages: [
       { role: "system", content: hardConstraintPrompt },
       { role: "system", content: instructionPrompt },
+      { role: "system", content: outputFormatPrompt },
       { role: "user", content: userContent },
     ],
   };
 
-  const { data } = await axios.post(OPENROUTER_API, payload, {
-    headers: {
-      Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
-      "Content-Type": "application/json",
-      "HTTP-Referer": "https://sociallistener-8efde.web.app",
-      "X-Title": "AI Social Listening",
-    },
-    timeout: 60000,
-  });
-
-  if (!data.choices || !data.choices.length) throw new Error("OpenRouter 응답에 choices가 없습니다");
-  const review = data.choices[0].message.content || "";
-  return { review: review.trim(), usage: data.usage };
+  const data = await callLLM(payload, 60000);
+  const content = data.choices[0].message.content || "";
+  const parsed = extractJson(content);
+  if (!parsed) {
+    return { review: content.trim(), review_en: "", usage: data.usage };
+  }
+  return {
+    review: String(parsed.review || "").trim(),
+    review_en: String(parsed.review_en || "").trim(),
+    usage: data.usage,
+  };
 }
 
 const DEFAULT_IG_POST_COMMENT_PROMPT = `당신은 Instagram 콘텐츠 분석가입니다.
@@ -440,17 +454,7 @@ ${commentLines || "(댓글 없음)"}`;
     ],
   };
 
-  const { data } = await axios.post(OPENROUTER_API, payload, {
-    headers: {
-      Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
-      "Content-Type": "application/json",
-      "HTTP-Referer": "https://sociallistener-8efde.web.app",
-      "X-Title": "AI Social Listening",
-    },
-    timeout: 60000,
-  });
-
-  if (!data.choices || !data.choices.length) throw new Error("OpenRouter 응답에 choices가 없습니다");
+  const data = await callLLM(payload, 60000);
   const comment = (data.choices[0].message.content || "").trim();
   return { comment, usage: data.usage };
 }
@@ -467,7 +471,7 @@ ${commentLines || "(댓글 없음)"}`;
  * @param {string}   [opts.model]        - 사용할 모델 (기본: OPENROUTER_MODEL)
  * @param {string}   [opts.pageName]      - Facebook 페이지 이름
  * @param {string}   [opts.platform]     - facebook | facebook_page | naver_lounge
- * @returns {Promise<{ summary, sentiment, keywords, issues, usage }>}
+ * @returns {Promise<{ summary, summary_en, sentiment, keywords, keywords_en, issues, usage }>}
  */
 async function analyzeFacebookGroupPosts({ groupName, pageName, date, posts, customPrompt, model, platform = "facebook" }) {
   const resolvedModel = model || process.env.OPENROUTER_MODEL;
@@ -512,7 +516,8 @@ async function analyzeFacebookGroupPosts({ groupName, pageName, date, posts, cus
 - 각 카테고리 제목은 정확히 [전체 요약], [플레이 반응], [요구/건의] 로 시작하세요.
 - 각 카테고리 내용은 1~2문장 이내로 간결하게 작성하세요.
 - 해당 카테고리에 분석할 내용이 없으면 정확히 "특이사항 없음"이라고 작성하세요.
-- 불필요한 추가 섹션, 이모지, 마크다운 코드블록은 넣지 마세요.`
+- 불필요한 추가 섹션, 이모지, 마크다운 코드블록은 넣지 마세요.
+- summary_en 값은 영문 자연 번역본이며 [Overall Summary], [Player Reaction], [Requests/Suggestions] 형식으로 같은 구조를 유지하세요.`
     : `
 [summary 필드 HTML 형식 규칙]
 - summary 값은 HTML 태그가 포함된 문자열입니다.
@@ -521,7 +526,8 @@ async function analyzeFacebookGroupPosts({ groupName, pageName, date, posts, cus
 - 중요한 표현·수치·키워드는 <strong>굵게</strong> 처리하세요.
 - 사용할 섹션 (내용이 없으면 해당 섹션 생략):
   📊 <strong>전체 동향</strong> — 오늘 ${isFacebookPage ? "페이지 게시물" : "그룹"}의 핵심 흐름 2-3문장
-  📢 <strong>${isFacebookPage ? "주요 반응/문의" : "주요 의견/건의"}</strong> — ${isFacebookPage ? "유저 댓글에서 반복된 질문, 요청, 불만, 호응" : "멤버들의 요구나 건의사항"}`;
+  📢 <strong>${isFacebookPage ? "주요 반응/문의" : "주요 의견/건의"}</strong> — ${isFacebookPage ? "유저 댓글에서 반복된 질문, 요청, 불만, 호응" : "멤버들의 요구나 건의사항"}
+- summary_en 값은 같은 HTML 구조를 유지한 자연스러운 영어 번역본입니다. 이모지는 유지하되 섹션명은 영어로 번역하세요.`;
 
   const defaultInstruction = isDcinside
     ? `디시인사이드 갤러리의 게시글과 댓글 반응을 분석하여 오늘 해당 갤러리의 동향을 파악하세요.
@@ -559,14 +565,16 @@ ${issueGuide}
 
 {
   "summary": "${defaultInstruction} (위 HTML 형식 규칙 적용)",
+  "summary_en": "summary의 자연스러운 영어 번역본",
   "sentiment": {
     "positive": 0에서100사이정수,
     "neutral": 0에서100사이정수,
     "negative": 0에서100사이정수
   },
   "keywords": ["핵심키워드1", "핵심키워드2", "핵심키워드3", "핵심키워드4", "핵심키워드5"],
+  "keywords_en": ["english keyword 1", "english keyword 2", "english keyword 3", "english keyword 4", "english keyword 5"],
   "issues": [
-    { "title": "이슈 제목", "description": "이슈 설명 1-2문장", "count": 언급횟수정수, "postIndex": 게시글번호또는null }
+    { "title": "이슈 제목", "title_en": "Issue title in English", "description": "이슈 설명 1-2문장", "description_en": "Issue description in English", "count": 언급횟수정수, "postIndex": 게시글번호또는null }
   ]
 }`;
 
@@ -607,19 +615,7 @@ ${postsText || "(게시글 없음)"}`;
     ],
   };
 
-  const { data } = await axios.post(OPENROUTER_API, payload, {
-    headers: {
-      Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
-      "Content-Type": "application/json",
-      "HTTP-Referer": "https://sociallistener-8efde.web.app",
-      "X-Title": "AI Social Listening",
-    },
-    timeout: 120000,
-  });
-
-  if (!data.choices || !data.choices.length)
-    throw new Error("OpenRouter 응답에 choices가 없습니다");
-
+  const data = await callLLM(payload, 120000);
   const content = data.choices[0].message.content || "";
   const parsed = extractJson(content);
 
@@ -627,8 +623,10 @@ ${postsText || "(게시글 없음)"}`;
     console.warn(`[openrouter] ${platformLabel} 리포트 JSON 파싱 실패. 원문:`, content.slice(0, 300));
     return {
       summary: content,
+      summary_en: "",
       sentiment: { positive: 0, neutral: 100, negative: 0 },
       keywords: [],
+      keywords_en: [],
       issues: [],
       usage: data.usage,
     };
@@ -643,14 +641,213 @@ ${postsText || "(게시글 없음)"}`;
     };
   }
 
+  const normalizedIssues = Array.isArray(parsed.issues) ? parsed.issues.map((issue) => ({
+    title: issue?.title || "",
+    title_en: issue?.title_en || "",
+    description: issue?.description || "",
+    description_en: issue?.description_en || "",
+    count: Number(issue?.count) || 0,
+    postIndex: issue?.postIndex == null ? null : Number(issue.postIndex) || null,
+  })) : [];
+
   return {
     summary:   parsed.summary   || "",
+    summary_en: parsed.summary_en || "",
     sentiment: parsed.sentiment || { positive: 0, neutral: 100, negative: 0 },
     keywords:  parsed.keywords  || [],
-    issues:    parsed.issues    || [],
+    keywords_en: parsed.keywords_en || [],
+    issues:    normalizedIssues,
     usage: data.usage,
   };
 }
+
+async function analyzeYoutubeVideos({ groupName, date, queries = [], videos = [], customPrompt, model }) {
+  const resolvedModel = model || process.env.OPENROUTER_MODEL;
+  const effectivePrompt = String(customPrompt || "").trim() || DEFAULT_YOUTUBE_ANALYSIS_PROMPT;
+  const videoLines = (Array.isArray(videos) ? videos : [])
+    .slice(0, 50)
+    .map((video, index) => {
+      const queryLabel = Array.isArray(video.matchedQueries) && video.matchedQueries.length
+        ? `키워드: ${video.matchedQueries.join(", ")}`
+        : "키워드: 없음";
+      const metrics = [
+        `조회 ${video.viewCount != null ? Number(video.viewCount).toLocaleString() : "—"}`,
+        `좋아요 ${video.likeCount != null ? Number(video.likeCount).toLocaleString() : "—"}`,
+        `댓글 ${video.commentCount != null ? Number(video.commentCount).toLocaleString() : "—"}`,
+        `길이 ${video.duration || "—"}`,
+      ].join(", ");
+      return [
+        `[${index + 1}] ${video.title || "(제목 없음)"}`,
+        `채널: ${video.channelTitle || "—"} / 업로드: ${video.publishedAt || "—"}`,
+        `${queryLabel}`,
+        `${metrics}`,
+        `설명: ${(video.descriptionSnippet || "").slice(0, 180) || "(없음)"}`,
+      ].join("\n");
+    }).join("\n\n");
+
+  const systemPrompt = `당신은 YouTube 신규 업로드 동향을 정리하는 소셜 리스닝 분석가입니다.
+입력된 영상 목록만 근거로 분석하세요. 없는 맥락을 추정하지 마세요.
+과장 없이 건조한 업무 보고 문체로 작성하세요.
+마크다운 코드블록 없이 순수 JSON만 출력하세요.
+
+[summary 필드 작성 규칙]
+- summary 값은 HTML 태그가 포함된 문자열입니다.
+- 아래 2개 카테고리를 이 순서대로 반드시 모두 포함하세요.
+- 각 카테고리 제목은 정확히 다음 형식을 사용하세요:
+  <strong>[업로드 동향]</strong>
+  <strong>[반응 요약]</strong>
+- 각 카테고리 사이는 반드시 <br><br> 로 구분하세요.
+- 각 카테고리 내용은 1~2문장 이내로 간결하게 작성하세요.
+- 핵심 게임명, 채널명, 중요한 수치, 반응 포인트는 필요할 때 <strong>굵게</strong> 강조하세요.
+- 해당 카테고리에 분석할 내용이 없으면 정확히 "특이사항 없음"이라고 작성하세요.
+- 추가 섹션, 이모지, 마크다운 문법은 넣지 마세요.
+- summary_en도 같은 HTML 구조를 유지하되 섹션 제목은 [Upload Trend], [Reaction Summary]로 자연스럽게 번역하세요.
+
+추가 지시사항:
+${effectivePrompt}
+
+JSON 형식:
+{
+  "summary": "HTML 형식 한국어 요약",
+  "summary_en": "Same HTML structure in English"
+}`;
+
+  const payload = {
+    model: resolvedModel,
+    messages: [
+      { role: "system", content: systemPrompt },
+      {
+        role: "user",
+        content: `그룹명: ${groupName}\n날짜: ${date}\n키워드: ${(queries || []).join(", ") || "(없음)"}\n영상 수: ${(videos || []).length}개\n\n${videoLines || "(영상 없음)"}`,
+      },
+    ],
+  };
+
+  const data = await callLLM(payload, 90000);
+  const content = data.choices[0].message.content || "";
+  const parsed = extractJson(content);
+  if (!parsed) {
+    return {
+      summary: content.trim(),
+      summary_en: "",
+      usage: data.usage,
+    };
+  }
+  return {
+    summary: String(parsed.summary || "").trim(),
+    summary_en: String(parsed.summary_en || "").trim(),
+    usage: data.usage,
+  };
+}
+
+function normalizeYoutubeRelevanceStatus(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "relevant" || normalized === "irrelevant" || normalized === "unsure") return normalized;
+  return "unsure";
+}
+
+async function analyzeYoutubeVideoRelevance({ groupName, queries = [], videos = [], model }) {
+  const resolvedModel = model || process.env.OPENROUTER_MODEL;
+  const candidates = Array.isArray(videos) ? videos : [];
+  if (!candidates.length) {
+    return { items: [], usage: null };
+  }
+
+  const candidateLines = candidates.map((video, index) => {
+    const queryLabel = Array.isArray(video.matchedQueries) && video.matchedQueries.length
+      ? video.matchedQueries.join(", ")
+      : "(없음)";
+    return [
+      `[${index + 1}] ${video.title || "(제목 없음)"}`,
+      `채널: ${video.channelTitle || "—"}`,
+      `키워드: ${queryLabel}`,
+      `설명: ${(video.descriptionSnippet || "").slice(0, 220) || "(없음)"}`,
+    ].join("\n");
+  }).join("\n\n");
+
+  const systemPrompt = `당신은 YouTube 검색 결과에서 특정 모바일게임 관련 영상만 추려내는 분류기입니다.
+입력된 groupName과 queries는 사용자가 보고 싶은 게임/주제에 대한 힌트입니다.
+각 후보 영상이 실제로 그 모바일게임 또는 그 게임의 IP/콘텐츠/업데이트/공략/리뷰/뉴스를 주제로 하는지 판정하세요.
+
+판정 규칙:
+- relevant: 해당 게임/IP가 영상의 핵심 주제라고 볼 수 있음
+- irrelevant: 단순 키워드 우연 일치, 다른 게임/브랜드/일반 주제/음악/밈/뉴스 등으로 보임
+- unsure: 정보가 부족하거나 애매함
+- 너무 공격적으로 relevant를 주지 마세요. 제목과 설명 기준으로 핵심 주제가 아니면 제외하세요.
+- 점수 score는 0~1 사이 숫자이며, 확신이 높을수록 1에 가깝습니다.
+- topicLabel은 영상이 실제로 다루는 주제를 2~6단어 정도로 짧게 적습니다.
+- reason은 판정 근거를 한 문장으로 짧게 적습니다.
+- 마크다운 코드블록 없이 순수 JSON만 출력하세요.
+
+JSON 형식:
+{
+  "items": [
+    {
+      "index": 1,
+      "status": "relevant",
+      "score": 0.92,
+      "topicLabel": "official game trailer",
+      "reason": "제목과 설명이 해당 게임의 공식 트레일러를 직접 가리킵니다."
+    }
+  ]
+}`;
+
+  const payload = {
+    model: resolvedModel,
+    messages: [
+      { role: "system", content: systemPrompt },
+      {
+        role: "user",
+        content: `groupName: ${groupName}\nqueries: ${(queries || []).join(", ") || "(없음)"}\n후보 수: ${candidates.length}\n\n${candidateLines}`,
+      },
+    ],
+  };
+
+  const data = await callLLM(payload, 90000);
+  const content = data.choices[0].message.content || "";
+  const parsed = extractJson(content);
+  if (!parsed || !Array.isArray(parsed.items)) {
+    throw new Error("YouTube 관련성 판정 JSON 파싱 실패");
+  }
+
+  const items = parsed.items.map((item) => ({
+    index: Math.max(1, Math.trunc(Number(item.index) || 0)),
+    status: normalizeYoutubeRelevanceStatus(item.status),
+    score: Math.min(1, Math.max(0, Number(item.score) || 0)),
+    topicLabel: String(item.topicLabel || "").trim(),
+    reason: String(item.reason || "").trim(),
+  })).filter((item) => item.index >= 1 && item.index <= candidates.length);
+
+  return { items, usage: data.usage };
+}
+
+// ── 플랫폼별 허용 모델 목록 (API 입력 검증용) ──
+const IG_PERFORMANCE_REVIEW_MODELS = new Set([
+  "google/gemini-3-flash-preview",
+  "openai/gpt-5.4-mini",
+  "google/gemini-3.1-flash-lite-preview",
+]);
+const FB_ANALYSIS_MODELS = new Set([
+  "openai/gpt-5.4-mini",
+  "google/gemini-3-flash-preview",
+  "google/gemini-3.1-flash-lite-preview",
+]);
+const NL_ANALYSIS_MODELS = new Set([
+  "openai/gpt-5.4-mini",
+  "google/gemini-3-flash-preview",
+  "google/gemini-3.1-flash-lite-preview",
+]);
+const DC_ANALYSIS_MODELS = new Set([
+  "openai/gpt-5.4-mini",
+  "google/gemini-3-flash-preview",
+  "google/gemini-3.1-flash-lite-preview",
+]);
+const YT_ANALYSIS_MODELS = new Set([
+  "openai/gpt-5.4-mini",
+  "google/gemini-3-flash-preview",
+  "google/gemini-3.1-flash-lite-preview",
+]);
+const DEFAULT_IG_PERFORMANCE_REVIEW_MODEL = "openai/gpt-5.4-mini";
 
 module.exports = {
   analyzeGuildMessages,
@@ -658,7 +855,16 @@ module.exports = {
   analyzeInstagramPostPerformance,
   analyzeInstagramPostComment,
   analyzeFacebookGroupPosts,
+  analyzeYoutubeVideos,
+  analyzeYoutubeVideoRelevance,
   DEFAULT_IG_POST_COMMENT_PROMPT,
   DEFAULT_NAVER_LOUNGE_ANALYSIS_PROMPT,
   DEFAULT_DC_ANALYSIS_PROMPT,
+  DEFAULT_YOUTUBE_ANALYSIS_PROMPT,
+  IG_PERFORMANCE_REVIEW_MODELS,
+  FB_ANALYSIS_MODELS,
+  NL_ANALYSIS_MODELS,
+  DC_ANALYSIS_MODELS,
+  YT_ANALYSIS_MODELS,
+  DEFAULT_IG_PERFORMANCE_REVIEW_MODEL,
 };
